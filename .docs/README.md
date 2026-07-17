@@ -7,6 +7,7 @@ Use this index instead of scanning every document.
 - [Cloud protocol](cloud-protocol.md): MQTT topics, command flow, acknowledgements, revisions, and reconnect behavior.
 - [Custom boards](custom-boards.md): STM32, PLC, RTOS, gateway, and non-MQTT adapter integration.
 - [Provisioning](provisioning.md): reusable token redemption and session storage.
+- [OTA updates](ota.md): authenticated MQTT offers, SHA-256 verification, and custom-board adapters.
 - [Clock and offline data](clock-and-offline.md): Engine UTC synchronization and reconnect policies.
 - [Time and schedules](time-and-schedules.md): UTC ownership and developer-local wall-clock schedules.
 - [Testing and release checks](testing.md): compile matrix, hardware checks, and memory review.

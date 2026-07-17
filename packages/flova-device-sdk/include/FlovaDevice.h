@@ -5,6 +5,8 @@
 #include "FlovaTransport.h"
 #include "FlovaTypes.h"
 #include "FlovaBuildConfig.h"
+#include "FlovaOta.h"
+#include "FlovaBootControl.h"
 
 class FlovaDevice {
  public:
@@ -35,7 +37,8 @@ class FlovaDevice {
   void setStatusLed(uint8_t pin, bool activeLow);
   void setFactoryResetButton(uint8_t pin, bool activeLow, uint32_t holdMs = 10000);
   bool isOtaCapable() const { return config_.otaCapable; }
-  void handleOtaOffer(const String&) {}
+  void setOtaInstaller(FlovaOtaInstaller& installer) { otaInstaller_ = &installer; }
+  void setBootControl(FlovaBootControl& control) { bootControl_ = &control; }
   void factoryReset();
   void handleMessage(const String& topic, const String& payload);
   virtual bool installRuntimeConfig(const String&) { return false; }
@@ -101,6 +104,10 @@ class FlovaDevice {
   FlovaWriteResult invokeWriteHandler(DatastreamState& state, const String& value);
   bool handleMappedWrite(const String& commandId, const String& correlationId, const String& key, const String& value, const String& desiredVersion);
   void handleConfigSet(const String& payload);
+  void handleOtaOffer(const String& payload);
+  void processPendingOta();
+  void updateCandidateHealth();
+  void reportOta(const char* status, const char* errorCode = nullptr);
   void applyDigitalOutput(DigitalOutput& output, bool value);
   void ackDigitalOutput(const DigitalOutput& output, const String& commandId, const String& correlationId);
   void flushDigitalOutputs();
@@ -132,6 +139,12 @@ class FlovaDevice {
   FlovaStorage& storage_;
   FlovaClock& clock_;
   FlovaLogger& logger_;
+  FlovaOtaInstaller* otaInstaller_ = nullptr;
+  FlovaBootControl* bootControl_ = nullptr;
+  uint32_t candidateStartedMs_ = 0;
+  uint32_t candidateHealthySinceMs_ = 0;
+  bool candidateHeartbeatPublished_ = false;
+  String pendingOtaPayload_;
   FlovaConfig config_;
   DatastreamState states_[FLOVA_DATASTREAM_CAPACITY];
   uint8_t stateCount_ = 0;

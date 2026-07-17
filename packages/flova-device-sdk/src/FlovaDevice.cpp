@@ -49,7 +49,9 @@ bool FlovaDevice::begin() {
 
 void FlovaDevice::loop() {
   transport_.loop();
+  processPendingOta();
   if (!transport_.connected()) reconnect();
+  updateCandidateHealth();
   updateStatusIndicator();
   if (resetButtonPin_ != 255) {
     bool pressed = digitalRead(resetButtonPin_) == (resetButtonActiveLow_ ? LOW : HIGH);
@@ -67,6 +69,25 @@ void FlovaDevice::loop() {
   flushDigitalOutputs();
   if (transport_.connected()) flushDirtyStates();
   runSchedules();
+}
+
+void FlovaDevice::updateCandidateHealth() {
+  if (!bootControl_ || bootControl_->state() != FlovaBootState::Candidate) return;
+  uint32_t now = clock_.millisNow();
+  if (!candidateStartedMs_) candidateStartedMs_ = now ? now : 1;
+  if (transport_.connected() && candidateHeartbeatPublished_) {
+    if (!candidateHealthySinceMs_) candidateHealthySinceMs_ = now ? now : 1;
+    if (now - candidateHealthySinceMs_ >= 30000UL) {
+      if (bootControl_->confirmCandidate()) publishHeartbeat();
+      return;
+    }
+  } else {
+    candidateHealthySinceMs_ = 0;
+  }
+  if (now - candidateStartedMs_ >= 120000UL) {
+    reportOta("rollback_requested", "health_timeout");
+    bootControl_->rollbackCandidate();
+  }
 }
 
 void FlovaDevice::addDigitalOutput(const char* key, uint8_t pin, bool activeHigh, uint32_t minOutputIntervalMs) {
@@ -278,6 +299,7 @@ void FlovaDevice::handleMessage(const String& topic, const String& payload) {
     handleConfigSet(payload);
     return;
   }
+  if (topic.endsWith("/ota/desired")) { handleOtaOffer(payload); return; }
   String commandId = jsonValue("command_id", payload);
   if (!commandId.length()) commandId = jsonValue("commandId", payload);
   String correlationId = jsonValue("correlation_id", payload);
@@ -366,6 +388,68 @@ void FlovaDevice::handleConfigSet(const String& payload) {
   }
 }
 
+void FlovaDevice::handleOtaOffer(const String& payload) {
+  if (!config_.otaCapable || !otaInstaller_) {
+    pendingOtaPayload_ = payload;
+    reportOta("failed", "ota_not_supported");
+    pendingOtaPayload_ = "";
+    return;
+  }
+  // MQTT callbacks only stage the offer. Flash and network work runs from loop().
+  pendingOtaPayload_ = payload;
+  reportOta("notified");
+}
+
+void FlovaDevice::processPendingOta() {
+  if (!pendingOtaPayload_.length() || !otaInstaller_) return;
+  DynamicJsonDocument json(2048);
+  if (deserializeJson(json, pendingOtaPayload_)) {
+    reportOta("failed", "invalid_manifest"); pendingOtaPayload_ = ""; return;
+  }
+  FlovaOtaOffer offer;
+  offer.installId = String((const char*)(json["install_id"] | ""));
+  offer.releaseId = String((const char*)(json["release_id"] | ""));
+  offer.version = String((const char*)(json["version"] | ""));
+  offer.firmwareTarget = String((const char*)(json["firmware_target"] | ""));
+  offer.artifactUrl = String((const char*)(json["artifact_url"] | ""));
+  offer.sha256 = String((const char*)(json["sha256"] | ""));
+  offer.bootLayoutVersion = String((const char*)(json["boot_layout_version"] | ""));
+  offer.sizeBytes = json["size_bytes"] | 0;
+  offer.contractVersion = json["ota_contract_version"] | 0;
+  offer.allowDowngrade = json["allow_downgrade"] | false;
+  if (!offer.installId.length() || !offer.releaseId.length() || offer.firmwareTarget != config_.firmwareTarget ||
+      offer.contractVersion != 2 || !bootControl_ || offer.bootLayoutVersion != bootControl_->layoutVersion() ||
+      offer.sizeBytes == 0 || offer.sha256.length() != 64 ||
+      (bootControl_->maxImageBytes() && offer.sizeBytes > bootControl_->maxImageBytes())) {
+    reportOta("failed", "incompatible_manifest"); pendingOtaPayload_ = ""; return;
+  }
+  reportOta("installing");
+  FlovaOtaResult result = otaInstaller_->install(offer);
+  if (result != FlovaOtaResult::Installed) {
+    const char* code = result == FlovaOtaResult::HashMismatch ? "checksum_mismatch" :
+                       result == FlovaOtaResult::DownloadFailed ? "download_failed" : "flash_failed";
+    reportOta("failed", code); pendingOtaPayload_ = ""; return;
+  }
+  storage_.setString("ota_release", offer.releaseId.c_str());
+  storage_.setString("ota_install", offer.installId.c_str());
+  storage_.setString("ota_version", offer.version.c_str());
+  reportOta("rebooting");
+  delay(100);
+#if defined(ESP32) || defined(ESP8266)
+  ESP.restart();
+#endif
+}
+
+void FlovaDevice::reportOta(const char* status, const char* errorCode) {
+  String installId = jsonValue("install_id", pendingOtaPayload_);
+  String payload = "{\"protocol\":{\"name\":\"flova\",\"version\":1},\"schema_version\":1,\"message_id\":\"ota-" +
+                   installId + "-" + String(clock_.millisNow()) + "\",\"install_id\":\"" + installId +
+                   "\",\"status\":\"" + String(status) + "\"";
+  if (errorCode) payload += ",\"error_code\":\"" + String(errorCode) + "\"";
+  payload += "}";
+  transport_.publish(topic("ota/reported").c_str(), payload);
+}
+
 bool FlovaDevice::handleMappedWrite(const String& commandId, const String& correlationId, const String& key, const String& value, const String& desiredVersion) {
   for (uint8_t i = 0; i < outputCount_; i++) {
     if (outputs_[i].key == key) {
@@ -449,7 +533,15 @@ String FlovaDevice::datastreamTopic(const char* key, const char* suffix) const {
 }
 
 String FlovaDevice::heartbeatPayload() const {
+  const char* strategy = !bootControl_ || bootControl_->strategy() == FlovaOtaStrategy::None ? "none" :
+                         bootControl_->strategy() == FlovaOtaStrategy::Ab ? "ab" : "ab_recovery";
+  const char* bootState = !bootControl_ || bootControl_->state() == FlovaBootState::Stable ? "stable" :
+                          bootControl_->state() == FlovaBootState::Candidate ? "candidate" :
+                          bootControl_->state() == FlovaBootState::RolledBack ? "rolled_back" : "recovery";
   return "{\"protocol\":{\"name\":\"flova\",\"version\":1},\"schema_version\":1,\"capability_schema_version\":1,\"message_id\":\"heartbeat-" + String(lastHeartbeatMs_) + "\",\"status\":\"online\",\"firmware\":{\"firmwareVersion\":\"" + String(config_.firmwareVersion) +
+         "\",\"firmwareTarget\":\"" + String(config_.firmwareTarget) + "\",\"runningReleaseId\":\"" + String(config_.runningReleaseId) + "\",\"lastInstallId\":\"" + String(config_.lastInstallId) +
+         "\",\"otaStrategy\":\"" + String(strategy) + "\",\"bootState\":\"" + String(bootState) + "\",\"bootLayoutVersion\":\"" + String(bootControl_ ? bootControl_->layoutVersion() : "legacy") + "\",\"activeSlot\":\"" + String(bootControl_ ? bootControl_->activeSlot() : "single") + "\",\"maxImageBytes\":" + String(bootControl_ ? bootControl_->maxImageBytes() : 0) +
+         ",\"rollbackReason\":\"" + String(bootControl_ ? bootControl_->rollbackReason() : "") +
          "\",\"sdkVersion\":\"" + String(config_.sdkVersion) +
          "\",\"protocolName\":\"" + String(config_.protocolName) + "\",\"protocolVersion\":" + String(config_.protocolVersion) +
          ",\"boardType\":\"" + String(config_.boardType) +
@@ -470,6 +562,8 @@ String FlovaDevice::heartbeatPayload() const {
 bool FlovaDevice::publishHeartbeat() {
   lastHeartbeatMs_ = clock_.millisNow();
   bool ok = transport_.publish(topic("heartbeat").c_str(), heartbeatPayload());
+  if (ok && bootControl_ && bootControl_->state() == FlovaBootState::Candidate)
+    candidateHeartbeatPublished_ = true;
   logger_.info(ok ? "MQTT heartbeat published." : "MQTT heartbeat failed.");
   return ok;
 }
@@ -493,6 +587,7 @@ bool FlovaDevice::reconnect() {
   subscribed = transport_.subscribe(topic("config/desired").c_str()) && subscribed;
   subscribed = transport_.subscribe(topic("time/response").c_str()) && subscribed;
   subscribed = transport_.subscribe(topic("schedules/desired").c_str()) && subscribed;
+  subscribed = transport_.subscribe(topic("ota/desired").c_str()) && subscribed;
   logger_.info(subscribed ? "MQTT write subscription ready." : "MQTT write subscription failed.");
   publishHeartbeat();
   requestTimeSync();

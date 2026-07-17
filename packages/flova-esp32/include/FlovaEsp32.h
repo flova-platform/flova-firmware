@@ -4,20 +4,31 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_ota_ops.h>
 #include <FlovaArduino.h>
 #include <FlovaScheduleRuntime.h>
+#include <FlovaEsp32BootControl.h>
+
+#ifndef FLOVA_FIRMWARE_VERSION
+#define FLOVA_FIRMWARE_VERSION "0.1.0"
+#endif
 
 class FlovaEsp32 : public FlovaDevice {
  public:
   FlovaEsp32() : FlovaDevice(transport_, storage_, clock_, logger_) {}
 
   bool begin() {
+    bootControl_.begin();
     if (!loadCredentials()) {
       startProvisioningAp();
       return true;
     }
     storage_.getString("config_version", appliedTemplateVersionId_);
     storage_.getString("config_checksum", configChecksum_);
+    storage_.getString("ota_release", otaReleaseId_);
+    storage_.getString("ota_install", otaInstallId_);
+    storage_.getString("ota_version", otaVersion_);
+    bootControl_.setRolledBack(otaInstallId_.length() && otaVersion_.length() && otaVersion_ != FLOVA_FIRMWARE_VERSION);
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSsid_.c_str(), wifiPassword_.c_str());
@@ -31,6 +42,7 @@ class FlovaEsp32 : public FlovaDevice {
     transport_.configure(mqttHost_, mqttPort_);
     FlovaConfig config;
     config.deviceId = deviceId_.c_str();
+    config.firmwareVersion = FLOVA_FIRMWARE_VERSION;
     config.mqttHost = mqttHost_.c_str();
     config.mqttPort = mqttPort_;
     config.mqttUsername = mqttUsername_.c_str();
@@ -39,11 +51,16 @@ class FlovaEsp32 : public FlovaDevice {
     config.appliedTemplateVersionId = appliedTemplateVersionId_.c_str();
     config.configChecksum = configChecksum_.c_str();
     config.boardType = "esp32";
+    config.firmwareTarget = "universal_esp32";
+    config.runningReleaseId = otaReleaseId_.c_str();
+    config.lastInstallId = otaInstallId_.c_str();
     config.otaCapable = true;
-    config.rollbackCapable = true;
+    config.rollbackCapable = bootControl_.strategy() != FlovaOtaStrategy::None;
     config.flashSize = ESP.getFlashChipSize();
     applyNegotiatedLimits(config);
     configure(config);
+    setOtaInstaller(otaInstaller_);
+    setBootControl(bootControl_);
     applyRuntimeSystem();
     setFactoryResetButton(0, true, 10000);
     applyRuntimeMappings();
@@ -336,9 +353,11 @@ class FlovaEsp32 : public FlovaDevice {
   Storage storage_;
   ArduinoClock clock_;
   ArduinoLogger logger_;
+  ArduinoOtaInstaller otaInstaller_;
+  FlovaEsp32BootControl bootControl_;
   WebServer server_{80};
   bool provisioning_ = false;
   String lastProvisionError_;
-  String wifiSsid_, wifiPassword_, deviceId_, mqttHost_, mqttUsername_, mqttPassword_, datastreamKeys_, runtimeJson_, appliedTemplateVersionId_, configChecksum_;
+  String wifiSsid_, wifiPassword_, deviceId_, mqttHost_, mqttUsername_, mqttPassword_, datastreamKeys_, runtimeJson_, appliedTemplateVersionId_, configChecksum_, otaReleaseId_, otaInstallId_, otaVersion_;
   uint16_t mqttPort_ = 1883;
 };

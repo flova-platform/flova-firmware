@@ -6,6 +6,10 @@
 #include <ESP8266WiFi.h>
 #include <FlovaArduino.h>
 #include <FlovaScheduleRuntime.h>
+
+#ifndef FLOVA_FIRMWARE_VERSION
+#define FLOVA_FIRMWARE_VERSION "0.1.0"
+#endif
 #include <LittleFS.h>
 
 class FlovaEsp8266 : public FlovaDevice {
@@ -20,6 +24,8 @@ class FlovaEsp8266 : public FlovaDevice {
     }
     storage_.getString("config_version", appliedTemplateVersionId_);
     storage_.getString("config_checksum", configChecksum_);
+    storage_.getString("ota_release", otaReleaseId_);
+    storage_.getString("ota_install", otaInstallId_);
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSsid_.c_str(), wifiPassword_.c_str());
@@ -33,6 +39,7 @@ class FlovaEsp8266 : public FlovaDevice {
     transport_.configure(mqttHost_, mqttPort_);
     FlovaConfig config;
     config.deviceId = deviceId_.c_str();
+    config.firmwareVersion = FLOVA_FIRMWARE_VERSION;
     config.mqttHost = mqttHost_.c_str();
     config.mqttPort = mqttPort_;
     config.mqttUsername = mqttUsername_.c_str();
@@ -41,11 +48,16 @@ class FlovaEsp8266 : public FlovaDevice {
     config.appliedTemplateVersionId = appliedTemplateVersionId_.c_str();
     config.configChecksum = configChecksum_.c_str();
     config.boardType = "esp8266";
+    config.firmwareTarget = "universal_esp8266";
+    config.runningReleaseId = otaReleaseId_.c_str();
+    config.lastInstallId = otaInstallId_.c_str();
     config.otaCapable = true;
     config.rollbackCapable = false;
     config.flashSize = ESP.getFlashChipRealSize();
     applyNegotiatedLimits(config);
     configure(config);
+    setOtaInstaller(otaInstaller_);
+    setBootControl(bootControl_);
     applyRuntimeSystem();
     setFactoryResetButton(0, true, 10000);
     applyRuntimeMappings();
@@ -334,7 +346,7 @@ class FlovaEsp8266 : public FlovaDevice {
     bool setUInt(const char* key, uint16_t value) { write(slot(key), String(value)); return true; }
     void clear() override { for (int i = 0; i < 4096; i++) EEPROM.write(i, 0); EEPROM.commit(); LittleFS.format(); }
    private:
-    bool scheduleKey(const char* key) { return String(key).startsWith("schedule_"); }
+    bool scheduleKey(const char* key) { String k(key); return k.startsWith("schedule_") || k.startsWith("ota_"); }
     String path(const char* key) { return "/" + String(key) + ".json"; }
     bool readFile(const char* key, String& out) { File file = LittleFS.open(path(key), "r"); if (!file) return false; out = file.readString(); file.close(); return out.length() > 0; }
     bool writeFile(const char* key, const String& value) { String target = path(key); String output = String(key) == "schedule_active" ? target + ".tmp" : target; File file = LittleFS.open(output, "w"); if (!file) return false; size_t written = file.print(value); file.close(); if (written != value.length()) return false; if (output != target) { LittleFS.remove(target); return LittleFS.rename(output, target); } return true; }
@@ -374,9 +386,11 @@ class FlovaEsp8266 : public FlovaDevice {
   Storage storage_;
   ArduinoClock clock_;
   ArduinoLogger logger_;
+  ArduinoOtaInstaller otaInstaller_;
+  FlovaLegacyBootControl bootControl_;
   ESP8266WebServer server_{80};
   bool provisioning_ = false;
   String lastProvisionError_;
-  String wifiSsid_, wifiPassword_, deviceId_, mqttHost_, mqttUsername_, mqttPassword_, datastreamKeys_, runtimeJson_, appliedTemplateVersionId_, configChecksum_;
+  String wifiSsid_, wifiPassword_, deviceId_, mqttHost_, mqttUsername_, mqttPassword_, datastreamKeys_, runtimeJson_, appliedTemplateVersionId_, configChecksum_, otaReleaseId_, otaInstallId_;
   uint16_t mqttPort_ = 1883;
 };

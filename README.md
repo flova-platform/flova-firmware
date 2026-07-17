@@ -25,7 +25,10 @@ pio run -e universal-esp32
 pio run -e universal-esp8266
 ```
 
-OTA install/campaign logic is intentionally not implemented. The SDK only reports OTA metadata and exposes `handleOtaOffer` as a future hook.
+ESP32 transactional recovery is optional: build `universal-esp32-ab-4m` or
+`universal-esp32-ab-8m` to use the supplied A/B layouts and health-gated rollback.
+
+OTA releases are managed by Engine and delivered as authenticated MQTT offers on `ota/desired`. Universal ESP32/ESP8266 firmware downloads the immutable binary directly, verifies its SHA-256, installs it outside the MQTT callback, reboots, and reports progress on `ota/reported`. See [`.docs/ota.md`](.docs/ota.md).
 
 ## Local-first datastreams
 

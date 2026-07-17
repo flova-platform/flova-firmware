@@ -31,6 +31,9 @@ struct FlovaConfig {
   const char* mqttUsername = "";
   const char* mqttPassword = "";
   const char* firmwareVersion = "0.1.0";
+  const char* firmwareTarget = "custom";
+  const char* runningReleaseId = "";
+  const char* lastInstallId = "";
   const char* sdkVersion = "0.1.0";
   const char* protocolName = "flova";
   uint16_t protocolVersion = 1;

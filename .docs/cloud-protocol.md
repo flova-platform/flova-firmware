@@ -12,8 +12,11 @@ name embedded in a version string:
 
 MQTT topics live under `flova/v1/devices/<device-id>/`. Devices publish
 `heartbeat`, `state`, `command-results`, `config/reported`,
-`schedules/reported`, `schedules/renew`, and `time/request`; they subscribe to
-`commands`, `config/desired`, `schedules/desired`, and `time/response`.
+`schedules/reported`, `schedules/renew`, `ota/reported`, and `time/request`;
+they subscribe to `commands`, `config/desired`, `schedules/desired`,
+`ota/desired`, and `time/response`. Broker ACLs restrict every device to its
+own topic prefix and direction. OTA offers contain metadata and SHA-256 only;
+binary artifacts are downloaded directly over HTTP(S).
 
 The heartbeat advertises physical board capacities. Engine combines those
 capacities with deployment policy and sends the negotiated operational limits
