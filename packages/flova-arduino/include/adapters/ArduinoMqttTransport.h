@@ -14,9 +14,20 @@ class ArduinoMqttTransport : public FlovaTransport {
     Serial.println("[flova] mqtt configured host=" + hostValue_ + " port=" + String(port_));
   }
   bool begin() override {
+#if defined(ESP8266)
+    logHeap("before mqtt buffer");
+#endif
+    if (!mqtt_.setBufferSize(4096)) {
+      Serial.println("[flova] mqtt buffer allocation failed size=4096");
+      return false;
+    }
+#if defined(ESP8266)
+    logHeap("after mqtt buffer");
+#endif
     mqtt_.setServer(host_, port_);
     mqtt_.setCallback([](char* topic, byte* payload, unsigned int length) {
       String body;
+      body.reserve(length);
       for (unsigned int i = 0; i < length; i++) body += char(payload[i]);
       Serial.println("[flova] mqtt recv topic=" + String(topic) + " len=" + String(length));
       if (callbackSlot()) callbackSlot()(String(topic), body);
@@ -25,6 +36,9 @@ class ArduinoMqttTransport : public FlovaTransport {
   }
   bool connected() override { return mqtt_.connected(); }
   bool connect(const char* clientId, const char* username, const char* password) override {
+#if defined(ESP8266)
+    logHeap("before mqtt connect");
+#endif
     Serial.println("[flova] mqtt connect client_id=" + String(clientId) + " username_len=" + String(strlen(username)));
     bool ok = mqtt_.connect(clientId, username, password);
     Serial.println("[flova] mqtt connect result=" + String(ok ? "ok" : "fail") + " state=" + String(mqtt_.state()));
@@ -44,6 +58,13 @@ class ArduinoMqttTransport : public FlovaTransport {
   void loop() override { mqtt_.loop(); }
 
  private:
+#if defined(ESP8266)
+  static void logHeap(const char* stage) {
+    Serial.println("[flova] heap " + String(stage) + " free=" + String(ESP.getFreeHeap()) +
+                   " max_block=" + String(ESP.getMaxFreeBlockSize()) +
+                   " fragmentation=" + String(ESP.getHeapFragmentation()) + "%");
+  }
+#endif
   static FlovaMessageCallback& callbackSlot() {
     static FlovaMessageCallback callback = nullptr;
     return callback;
