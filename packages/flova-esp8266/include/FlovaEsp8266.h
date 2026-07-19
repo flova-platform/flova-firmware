@@ -5,6 +5,7 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 #include <FlovaArduino.h>
+#include <FlovaConfiguration.h>
 #include <FlovaScheduleRuntime.h>
 
 #ifndef FLOVA_FIRMWARE_VERSION
@@ -22,8 +23,6 @@ class FlovaEsp8266 : public FlovaDevice {
       startProvisioningAp();
       return true;
     }
-    storage_.getString("config_version", appliedTemplateVersionId_);
-    storage_.getString("config_checksum", configChecksum_);
     storage_.getString("ota_release", otaReleaseId_);
     storage_.getString("ota_install", otaInstallId_);
 
@@ -76,25 +75,27 @@ class FlovaEsp8266 : public FlovaDevice {
   bool installRuntimeConfig(const String& payload) override {
     DynamicJsonDocument config(4096);
     if (deserializeJson(config, payload) || !config["datastreams"].is<JsonArray>()) return false;
-    String runtime = compactRuntimeConfig(config);
-    String keys = datastreamKeys(payload);
-    if (!runtime.length() || runtime.length() >= 1023 || !keys.length()) return false;
-    return storage_.setString("runtime", runtime) && storage_.setString("ds_keys", keys) &&
-           storage_.setString("config_version", String((const char*)(config["template_version_id"] | ""))) &&
-           storage_.setString("config_checksum", String((const char*)(config["checksum"] | "")));
+    flova::DeviceConfiguration next = configuration();
+    if (!flova::compactRuntime(config, next.runtimeJson, next.datastreamKeys)) return false;
+    next.templateVersionId = String((const char*)(config["template_version_id"] | ""));
+    next.checksum = String((const char*)(config["checksum"] | ""));
+    return storeConfiguration(next);
   }
 
  private:
   bool loadCredentials() {
-    return storage_.getString("wifi_ssid", wifiSsid_) &&
-           storage_.getString("wifi_pass", wifiPassword_) &&
-           storage_.getString("device_id", deviceId_) &&
-           storage_.getString("mqtt_host", mqttHost_) &&
-           storage_.getString("mqtt_user", mqttUsername_) &&
-           storage_.getString("mqtt_pass", mqttPassword_) &&
-           storage_.getString("ds_keys", datastreamKeys_) &&
-           storage_.getString("runtime", runtimeJson_) &&
-           storage_.getUInt("mqtt_port", mqttPort_);
+    String snapshot;
+    flova::DeviceConfiguration config;
+    if (storage_.readConfiguration(snapshot, false) && flova::decodeConfiguration(snapshot, config)) {
+      applyConfiguration(config);
+      return true;
+    }
+    if (storage_.readConfiguration(snapshot, true) && flova::decodeConfiguration(snapshot, config)) {
+      applyConfiguration(config);
+      storage_.writeConfiguration(snapshot);
+      return true;
+    }
+    return false;
   }
 
   void startProvisioningAp() {
@@ -152,29 +153,49 @@ class FlovaEsp8266 : public FlovaDevice {
     String chip = String(ESP.getChipId(), HEX);
     String payload = "{\"provisioning_token\":\"" + token + "\",\"chip_id\":\"esp8266-" + chip + "\",\"mac_address\":\"" + WiFi.macAddress() + "\",\"firmware_target\":\"universal_esp8266\",\"protocol\":{\"name\":\"flova\",\"version\":1},\"schema_version\":1,\"capabilities\":" + capabilityJson() + "}";
     int code = http.POST(payload);
-    String response = http.getString();
-    http.end();
-    Serial.println("[flova] redeem status=" + String(code) + " body_len=" + String(response.length()));
-    if (code < 200 || code >= 300) return recoverProvisioning(response, code <= 0 ? 502 : 422);
+    int responseSize = http.getSize();
+    Serial.println("[flova] redeem status=" + String(code) + " body_len=" + String(responseSize));
+    logHeap("before redeem parse");
+    if (code <= 0) {
+      http.end();
+      return recoverProvisioning("redeem_failed", 502);
+    }
+    if (code < 200 || code >= 300) {
+      recoverProvisioning(http.getStream(), 422);
+      http.end();
+      return;
+    }
+    if (responseSize < 0 || responseSize > (int)flova::kProvisioningResponseBytes) {
+      http.end();
+      return fail(responseSize < 0 ? "response_size_unknown" : "response_too_large");
+    }
+    flova::DeviceConfiguration next;
+    next.wifiSsid = ssid;
+    next.wifiPassword = password;
+    DynamicJsonDocument filter(1024);
+    flova::provisioningResponseFilter(filter);
     DynamicJsonDocument runtime(4096);
-    if (deserializeJson(runtime, response)) return fail("runtime_json_failed");
-    String compactRuntime = compactRuntimeConfig(runtime);
-    if (compactRuntime.length() >= 1023) return fail("runtime_config_too_large");
-    String deviceId = String((const char*)(runtime["device_id"] | runtime["deviceId"] | ""));
-    String mqttHost = String((const char*)(runtime["mqtt"]["host"] | ""));
-    String mqttUser = String((const char*)(runtime["mqtt"]["username"] | ""));
-    String mqttPass = String((const char*)(runtime["mqtt"]["password"] | ""));
-    String keys = datastreamKeys(response);
-    if (!deviceId.length() || !mqttHost.length() || !mqttUser.length() || !mqttPass.length() || !keys.length())
-      return recoverProvisioning("invalid_engine_response", 502);
-    bool stored = storage_.setString("wifi_ssid", ssid) && storage_.setString("wifi_pass", password) &&
-                  storage_.setString("device_id", deviceId) && storage_.setString("mqtt_host", mqttHost) &&
-                  storage_.setUInt("mqtt_port", runtime["mqtt"]["port"] | 1883) &&
-                  storage_.setString("mqtt_user", mqttUser) && storage_.setString("mqtt_pass", mqttPass) &&
-                  storage_.setString("ds_keys", keys) && storage_.setString("runtime", compactRuntime);
-    if (!stored) return recoverProvisioning("configuration_storage_failed", 500);
+    DeserializationError runtimeError =
+        deserializeJson(runtime, http.getStream(), DeserializationOption::Filter(filter));
+    http.end();
+    if (runtimeError) {
+      Serial.println("[flova] runtime json failed detail=" + String(runtimeError.c_str()));
+      return fail(runtimeError == DeserializationError::NoMemory ? "runtime_json_no_memory" : "runtime_json_failed");
+    }
+    next.deviceId = String((const char*)(runtime["device_id"] | runtime["deviceId"] | ""));
+    next.mqttHost = String((const char*)(runtime["mqtt"]["host"] | ""));
+    next.mqttPort = runtime["mqtt"]["port"] | 1883;
+    next.mqttUsername = String((const char*)(runtime["mqtt"]["username"] | ""));
+    next.mqttPassword = String((const char*)(runtime["mqtt"]["password"] | ""));
+    next.templateVersionId =
+        String((const char*)(runtime["template_version_id"] | runtime["device_template_version_id"] | ""));
+    next.checksum = String((const char*)(runtime["checksum"] | ""));
+    if (!flova::compactRuntime(runtime, next.runtimeJson, next.datastreamKeys))
+      return fail("runtime_config_too_large");
+    if (!storeConfiguration(next)) return recoverProvisioning("configuration_storage_failed", 500);
     lastProvisionError_ = "";
-    Serial.println("[flova] stored runtime_len=" + String(compactRuntime.length()));
+    Serial.println("[flova] stored runtime_len=" + String(next.runtimeJson.length()));
+    logHeap("after configuration store");
     server_.send(200, "application/json", "{\"ok\":true,\"status\":\"provisioned\"}");
     delay(500);
     ESP.restart();
@@ -189,90 +210,63 @@ class FlovaEsp8266 : public FlovaDevice {
       lastProvisionError_ = String((const char*)(error["error"]["message"] | error["error"]["code"] | "redeem_failed"));
     else
       lastProvisionError_ = response == "wifi_failed" ? "wifi_failed" : "redeem_failed";
+    finishProvisioningFailure(status);
+  }
+
+  void recoverProvisioning(Stream& response, int status) {
+    DynamicJsonDocument error(384);
+    if (!deserializeJson(error, response))
+      lastProvisionError_ = String((const char*)(error["error"]["message"] | error["error"]["code"] | "redeem_failed"));
+    else
+      lastProvisionError_ = "redeem_failed";
+    finishProvisioningFailure(status);
+  }
+
+  void finishProvisioningFailure(int status) {
     if (lastProvisionError_.startsWith(":")) lastProvisionError_.remove(0, 1);
     if (lastProvisionError_.length() > 64) lastProvisionError_.remove(64);
     Serial.println("[flova] provisioning failed reason=" + lastProvisionError_);
     server_.send(status, "application/json", "{\"ok\":false,\"error\":{\"code\":\"" + lastProvisionError_ + "\",\"retryable\":true}}");
   }
 
-  String jsonValue(const String& payload, const char* key) {
-    String needle = "\"" + String(key) + "\"";
-    int pos = payload.indexOf(needle);
-    int colon = payload.indexOf(':', pos + needle.length());
-    int first = payload.indexOf('"', colon + 1);
-    int second = payload.indexOf('"', first + 1);
-    if (pos < 0 || colon < 0 || first < 0 || second < 0) return "";
-    return payload.substring(first + 1, second);
+  flova::DeviceConfiguration configuration() const {
+    flova::DeviceConfiguration config;
+    config.wifiSsid = wifiSsid_;
+    config.wifiPassword = wifiPassword_;
+    config.deviceId = deviceId_;
+    config.mqttHost = mqttHost_;
+    config.mqttPort = mqttPort_;
+    config.mqttUsername = mqttUsername_;
+    config.mqttPassword = mqttPassword_;
+    config.datastreamKeys = datastreamKeys_;
+    config.runtimeJson = runtimeJson_;
+    config.templateVersionId = appliedTemplateVersionId_;
+    config.checksum = configChecksum_;
+    return config;
   }
 
-  uint16_t jsonUInt(const String& payload, const char* key, uint16_t fallback) {
-    String needle = "\"" + String(key) + "\"";
-    int pos = payload.indexOf(needle);
-    int colon = payload.indexOf(':', pos + needle.length());
-    if (pos < 0 || colon < 0) return fallback;
-    return payload.substring(colon + 1).toInt();
+  void applyConfiguration(const flova::DeviceConfiguration& config) {
+    wifiSsid_ = config.wifiSsid;
+    wifiPassword_ = config.wifiPassword;
+    deviceId_ = config.deviceId;
+    mqttHost_ = config.mqttHost;
+    mqttPort_ = config.mqttPort;
+    mqttUsername_ = config.mqttUsername;
+    mqttPassword_ = config.mqttPassword;
+    datastreamKeys_ = config.datastreamKeys;
+    runtimeJson_ = config.runtimeJson;
+    appliedTemplateVersionId_ = config.templateVersionId;
+    configChecksum_ = config.checksum;
   }
 
-  String jsonObjectValue(const String& payload, const char* objectKey, const char* key) {
-    return jsonValue(jsonObject(payload, objectKey), key);
-  }
-
-  uint16_t jsonObjectUInt(const String& payload, const char* objectKey, const char* key, uint16_t fallback) {
-    return jsonUInt(jsonObject(payload, objectKey), key, fallback);
-  }
-
-  String jsonObject(const String& payload, const char* objectKey) {
-    String needle = "\"" + String(objectKey) + "\"";
-    int pos = payload.indexOf(needle);
-    int start = payload.indexOf('{', pos + needle.length());
-    if (pos < 0 || start < 0) return "";
-    int depth = 0;
-    for (int i = start; i < (int)payload.length(); i++) {
-      if (payload[i] == '{') depth++;
-      if (payload[i] == '}') depth--;
-      if (depth == 0) return payload.substring(start, i + 1);
-    }
-    return "";
-  }
-
-  String datastreamKeys(const String& payload) {
-    int pos = payload.indexOf("\"datastreams\"");
-    int start = payload.indexOf('[', pos);
-    int end = payload.indexOf(']', start);
-    String keys;
-    while (start >= 0 && end > start) {
-      int keyPos = payload.indexOf("\"key\"", start);
-      if (keyPos < 0 || keyPos > end) break;
-      String key = jsonValue(payload.substring(keyPos, end), "key");
-      if (key.length()) keys += (keys.length() ? "," : "") + key;
-      start = keyPos + 5;
-    }
-    return keys;
-  }
-
-  String compactRuntimeConfig(JsonDocument& runtime) {
-    DynamicJsonDocument compact(1024);
-    compact["limits"] = runtime["limits"];
-    JsonObject system = runtime["firmware_system"];
-    if (system.isNull()) system = runtime["system"];
-    if (!system.isNull()) compact["system"] = system;
-    JsonArray out = compact.createNestedArray("datastreams");
-    for (JsonObject stream : runtime["datastreams"].as<JsonArray>()) {
-      JsonObject mapping = stream["hardware_mapping"];
-      if (mapping.isNull()) continue;
-      JsonObject row = out.createNestedObject();
-      row["key"] = stream["key"] | "";
-      JsonObject mapped = row.createNestedObject("hardware_mapping");
-      mapped["kind"] = mapping["kind"] | "";
-      mapped["pin"] = mapping["pin"] | "";
-      mapped["active_level"] = mapping["active_level"] | "high";
-      mapped["pull"] = mapping["pull"] | "none";
-      mapped["debounce_ms"] = mapping["debounce_ms"] | 50;
-      mapped["min_output_interval_ms"] = mapping["min_output_interval_ms"] | 300;
-    }
-    String outJson;
-    serializeJson(compact, outJson);
-    return outJson;
+  bool storeConfiguration(const flova::DeviceConfiguration& config) {
+    String snapshot;
+    if (!flova::encodeConfiguration(config, snapshot) || !storage_.writeConfiguration(snapshot)) return false;
+    String verified;
+    flova::DeviceConfiguration decoded;
+    if (!storage_.readConfiguration(verified, false) || !flova::decodeConfiguration(verified, decoded)) return false;
+    applyConfiguration(decoded);
+    return true;
   }
 
   String capabilityJson() const {
@@ -334,6 +328,28 @@ class FlovaEsp8266 : public FlovaDevice {
   class Storage : public ArduinoStorage {
    public:
     void begin() { EEPROM.begin(4096); LittleFS.begin(); }
+    bool readConfiguration(String& out, bool backup) {
+      return readPath(backup ? "/device-config.backup.json" : "/device-config.json", out);
+    }
+    bool writeConfiguration(const String& value) {
+      const char* next = "/device-config.next.json";
+      const char* current = "/device-config.json";
+      const char* backup = "/device-config.backup.json";
+      if (!writePath(next, value)) return false;
+      String verified;
+      if (!readPath(next, verified) || verified != value) {
+        LittleFS.remove(next);
+        return false;
+      }
+      LittleFS.remove(backup);
+      if (LittleFS.exists(current) && !LittleFS.rename(current, backup)) {
+        LittleFS.remove(next);
+        return false;
+      }
+      if (LittleFS.rename(next, current)) return true;
+      if (LittleFS.exists(backup)) LittleFS.rename(backup, current);
+      return false;
+    }
     bool getString(const char* key, String& out) override { if (scheduleKey(key)) return readFile(key, out); out = read(slot(key)); return out.length() > 0; }
     bool setString(const char* key, const String& value) { if (scheduleKey(key)) return writeFile(key, value); write(slot(key), value); return true; }
     bool getString(const char* key, char* out, size_t maxLen) override {
@@ -342,36 +358,42 @@ class FlovaEsp8266 : public FlovaDevice {
     }
     bool setString(const char* key, const char* value) override { return setString(key, String(value)); }
     bool remove(const char* key) override { if (scheduleKey(key)) return LittleFS.remove(path(key)); write(slot(key), ""); return true; }
-    bool getUInt(const char* key, uint16_t& out) { String value = read(slot(key)); out = value.toInt(); return out > 0; }
-    bool setUInt(const char* key, uint16_t value) { write(slot(key), String(value)); return true; }
     void clear() override { for (int i = 0; i < 4096; i++) EEPROM.write(i, 0); EEPROM.commit(); LittleFS.format(); }
    private:
     bool scheduleKey(const char* key) { String k(key); return k.startsWith("schedule_") || k.startsWith("ota_"); }
     String path(const char* key) { return "/" + String(key) + ".json"; }
     bool readFile(const char* key, String& out) { File file = LittleFS.open(path(key), "r"); if (!file) return false; out = file.readString(); file.close(); return out.length() > 0; }
     bool writeFile(const char* key, const String& value) { String target = path(key); String output = String(key) == "schedule_active" ? target + ".tmp" : target; File file = LittleFS.open(output, "w"); if (!file) return false; size_t written = file.print(value); file.close(); if (written != value.length()) return false; if (output != target) { LittleFS.remove(target); return LittleFS.rename(output, target); } return true; }
+    bool readPath(const char* path, String& out) {
+      File file = LittleFS.open(path, "r");
+      if (!file || file.size() >= flova::kConfigurationJsonBytes) {
+        if (file) file.close();
+        return false;
+      }
+      out = file.readString();
+      file.close();
+      return out.length() > 0;
+    }
+    bool writePath(const char* path, const String& value) {
+      if (!value.length() || value.length() >= flova::kConfigurationJsonBytes) return false;
+      File file = LittleFS.open(path, "w");
+      if (!file) return false;
+      size_t written = file.print(value);
+      file.flush();
+      file.close();
+      return written == value.length();
+    }
     int slot(const char* key) {
       String k(key);
-      if (k == "wifi_ssid") return 0;
-      if (k == "wifi_pass") return 96;
-      if (k == "device_id") return 192;
-      if (k == "mqtt_host") return 288;
-      if (k == "mqtt_user") return 384;
-      if (k == "mqtt_pass") return 480;
-      if (k == "mqtt_port") return 576;
-      if (k == "ds_keys") return 672;
-      if (k == "runtime") return 768;
-      if (k == "config_version") return 1792;
-      if (k == "config_checksum") return 1888;
-      if (k == "command_ids") return 1984;
+      if (k == "command_ids") return 0;
       if (k.startsWith("ds:")) {
         uint16_t hash = 5381;
         for (uint16_t i = 0; i < k.length(); ++i) hash = ((hash << 5) + hash) ^ k[i];
-        return 2208 + (hash % 8) * 224;
+        return 224 + (hash % 8) * 224;
       }
-      return 1984;
+      return 0;
     }
-    int size(int offset) { if (offset == 768) return 1024; if (offset >= 2208) return 224; if (offset == 1984) return 224; return 96; }
+    int size(int) { return 224; }
     String read(int offset) { int len = size(offset); char buf[len]; for (int i = 0; i < len - 1; i++) { buf[i] = EEPROM.read(offset + i); if (buf[i] == 0) break; } buf[len - 1] = 0; return String(buf); }
     void write(int offset, const String& value) { int len = size(offset); for (int i = 0; i < len - 1; i++) EEPROM.write(offset + i, i < (int)value.length() ? value[i] : 0); EEPROM.commit(); }
   };

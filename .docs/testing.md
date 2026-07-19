@@ -16,6 +16,12 @@ The native C++11 suite executes cache-only reads, refresh/report behavior, rejec
 
 Before a release, test one physical ESP32 and ESP8266 for provisioning, MQTT reconnect, an accepted remote relay write, a rejected unsafe write, offline local state followed by reconnect, duplicate command delivery, factory reset, and persistent cache restoration. Record flash and RAM output from PlatformIO for both universal targets.
 
+Provisioning validation must include an Engine response larger than 4096 bytes,
+a reboot from the stored snapshot, and recovery after corrupting the current
+snapshot while leaving its backup intact. Confirm that serial diagnostics report
+response size and heap state without printing MQTT credentials or response
+payloads.
+
 For schedules, also verify capability heartbeat values, retained manifest
 installation, `schedules/reported`, execution while disconnected, reboot
 restoration without replaying missed occurrences, renewal publication, and

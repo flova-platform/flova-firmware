@@ -21,6 +21,11 @@ template <> struct FlovaValueCodec<String> {
   static String encode(const String& value) { return value; }
   static String decode(const String& value) { return value; }
 };
+template <> struct FlovaValueCodec<FlovaObjectValue> {
+  static constexpr FlovaValueType type = FlovaValueType::Object;
+  static String encode(const FlovaObjectValue& value) { return value.json; }
+  static FlovaObjectValue decode(const String& value) { return FlovaObjectValue(value); }
+};
 
 template <typename T> class FlovaDevice::Datastream {
  public:
@@ -58,4 +63,8 @@ template <typename T> class FlovaDevice::Datastream {
 template <typename T> FlovaDevice::Datastream<T> FlovaDevice::datastream(const char* key) {
   DatastreamState* state = stateFor(key, FlovaValueCodec<T>::type, true); if (state && !state->hasValue) state->type = FlovaValueCodec<T>::type;
   return Datastream<T>(*this, key);
+}
+
+inline FlovaDevice::Datastream<FlovaObjectValue> FlovaDevice::objectDatastream(const char* key) {
+  return datastream<FlovaObjectValue>(key);
 }

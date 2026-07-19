@@ -29,3 +29,15 @@ ESP libraries. During a request the wrappers use AP+STA mode and keep the local
 endpoint reachable. `200` means the configuration was stored, while structured
 `4xx`/`5xx` responses are definitive retryable failures. There is no early
 accepted response.
+
+The ESP wrappers parse successful Engine responses directly from the HTTP
+stream with an ArduinoJson filter. Unrelated response metadata therefore does
+not consume the retained JSON arena. The filtered runtime is limited to 2048
+bytes and the complete versioned device configuration to 4096 bytes; overflow,
+missing required fields, and storage verification failures reject provisioning
+without replacing the last valid configuration.
+
+ESP8266 stores the configuration in LittleFS using a verified next file plus a
+last-known-good backup. ESP32 stores current and previous single-blob snapshots
+in Preferences/NVS. Boot accepts only a valid snapshot (or its backup);
+development-era per-key credential layouts are intentionally not migrated.

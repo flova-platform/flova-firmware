@@ -32,7 +32,13 @@ The portable C++11 core supports 12 registered datastreams and 96-byte bounded i
 
 `flova::Device::run()` polls the injected link and flushes dirty state. Board adapters own connectivity and hardware polling. Limits are 12 cached datastreams, 8 compiled schedules, 96 occurrences per schedule, and 4 recent command IDs. KeepLatest uses the snapshot as the single coalesced pending value.
 
-ESP32 persistence uses Preferences/NVS. ESP8266 uses a 4 KiB emulated EEPROM layout with eight bounded 224-byte hashed snapshot slots. Records include their datastream key; a hash collision can discard an older snapshot but cannot restore it into the wrong datastream.
+ESP32 persists its versioned device configuration as current and previous
+single-blob snapshots in Preferences/NVS. ESP8266 stores the same configuration
+contract in LittleFS with verified current and backup files. ESP8266 retains its
+4 KiB emulated EEPROM layout for bounded runtime state, including eight
+224-byte hashed datastream snapshot slots. Records include their datastream key;
+a hash collision can discard an older snapshot but cannot restore it into the
+wrong datastream.
 
 ## Deliberate MVP limits
 

@@ -18,6 +18,7 @@ class FlovaDevice {
   void loop();
   template <typename T> class Datastream;
   template <typename T> Datastream<T> datastream(const char* key);
+  Datastream<FlovaObjectValue> objectDatastream(const char* key);
   void addDigitalOutput(const char* key, uint8_t pin, bool activeHigh = true, uint32_t minOutputIntervalMs = 300);
   void addDigitalInput(const char* key, uint8_t pin, bool activeHigh = true, uint32_t debounceMs = 50, uint8_t mode = INPUT);
   FlovaWriteResult applyWrite(const char* key, const String& value, FlovaValueType type,
@@ -101,7 +102,9 @@ class FlovaDevice {
   void restorePersistentStates();
   bool publishState(DatastreamState& state);
   void flushDirtyStates();
-  FlovaWriteResult invokeWriteHandler(DatastreamState& state, const String& value);
+  FlovaWriteResult invokeWriteHandler(DatastreamState& state, const String& value,
+                                      const String& commandId = "",
+                                      const String& correlationId = "");
   bool handleMappedWrite(const String& commandId, const String& correlationId, const String& key, const String& value, const String& desiredVersion);
   void handleConfigSet(const String& payload);
   void handleOtaOffer(const String& payload);

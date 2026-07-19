@@ -4,8 +4,10 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
 #include <FlovaArduino.h>
+#include <FlovaConfiguration.h>
 #include <FlovaScheduleRuntime.h>
 #include <FlovaEsp32BootControl.h>
 
@@ -23,8 +25,6 @@ class FlovaEsp32 : public FlovaDevice {
       startProvisioningAp();
       return true;
     }
-    storage_.getString("config_version", appliedTemplateVersionId_);
-    storage_.getString("config_checksum", configChecksum_);
     storage_.getString("ota_release", otaReleaseId_);
     storage_.getString("ota_install", otaInstallId_);
     storage_.getString("ota_version", otaVersion_);
@@ -78,25 +78,27 @@ class FlovaEsp32 : public FlovaDevice {
   bool installRuntimeConfig(const String& payload) override {
     DynamicJsonDocument config(8192);
     if (deserializeJson(config, payload) || !config["datastreams"].is<JsonArray>()) return false;
-    String runtime = compactRuntimeConfig(config);
-    String keys = datastreamKeys(payload);
-    if (!runtime.length() || !keys.length()) return false;
-    return storage_.setString("runtime", runtime) && storage_.setString("ds_keys", keys) &&
-           storage_.setString("config_version", String((const char*)(config["template_version_id"] | ""))) &&
-           storage_.setString("config_checksum", String((const char*)(config["checksum"] | "")));
+    flova::DeviceConfiguration next = configuration();
+    if (!flova::compactRuntime(config, next.runtimeJson, next.datastreamKeys)) return false;
+    next.templateVersionId = String((const char*)(config["template_version_id"] | ""));
+    next.checksum = String((const char*)(config["checksum"] | ""));
+    return storeConfiguration(next);
   }
 
  private:
   bool loadCredentials() {
-    return storage_.getString("wifi_ssid", wifiSsid_) &&
-           storage_.getString("wifi_pass", wifiPassword_) &&
-           storage_.getString("device_id", deviceId_) &&
-           storage_.getString("mqtt_host", mqttHost_) &&
-           storage_.getString("mqtt_user", mqttUsername_) &&
-           storage_.getString("mqtt_pass", mqttPassword_) &&
-           storage_.getString("ds_keys", datastreamKeys_) &&
-           storage_.getString("runtime", runtimeJson_) &&
-           storage_.getUInt("mqtt_port", mqttPort_);
+    String snapshot;
+    flova::DeviceConfiguration config;
+    if (storage_.readConfiguration(snapshot, false) && flova::decodeConfiguration(snapshot, config)) {
+      applyConfiguration(config);
+      return true;
+    }
+    if (storage_.readConfiguration(snapshot, true) && flova::decodeConfiguration(snapshot, config)) {
+      applyConfiguration(config);
+      storage_.writeConfiguration(snapshot);
+      return true;
+    }
+    return false;
   }
 
   void startProvisioningAp() {
@@ -153,28 +155,49 @@ class FlovaEsp32 : public FlovaDevice {
     String chip = String((uint32_t)ESP.getEfuseMac(), HEX);
     String payload = "{\"provisioning_token\":\"" + token + "\",\"chip_id\":\"esp32-" + chip + "\",\"mac_address\":\"" + WiFi.macAddress() + "\",\"firmware_target\":\"universal_esp32\",\"protocol\":{\"name\":\"flova\",\"version\":1},\"schema_version\":1,\"capabilities\":" + capabilityJson() + "}";
     int code = http.POST(payload);
-    String response = http.getString();
+    int responseSize = http.getSize();
+    Serial.println("[flova] redeem status=" + String(code) + " body_len=" + String(responseSize));
+    logHeap("before redeem parse");
+    if (code <= 0) {
+      http.end();
+      return recoverProvisioning("redeem_failed", 502);
+    }
+    if (code < 200 || code >= 300) {
+      recoverProvisioning(http.getStream(), 422);
+      http.end();
+      return;
+    }
+    if (responseSize < 0 || responseSize > (int)flova::kProvisioningResponseBytes) {
+      http.end();
+      return fail(responseSize < 0 ? "response_size_unknown" : "response_too_large");
+    }
+    flova::DeviceConfiguration next;
+    next.wifiSsid = ssid;
+    next.wifiPassword = password;
+    DynamicJsonDocument filter(1024);
+    flova::provisioningResponseFilter(filter);
+    DynamicJsonDocument runtime(4096);
+    DeserializationError runtimeError =
+        deserializeJson(runtime, http.getStream(), DeserializationOption::Filter(filter));
     http.end();
-    Serial.println("[flova] redeem status=" + String(code) + " body_len=" + String(response.length()));
-    if (code < 200 || code >= 300) return recoverProvisioning(response, code <= 0 ? 502 : 422);
-    DynamicJsonDocument runtime(8192);
-    if (deserializeJson(runtime, response)) return fail("runtime_json_failed");
-    String compactRuntime = compactRuntimeConfig(runtime);
-    String deviceId = String((const char*)(runtime["device_id"] | runtime["deviceId"] | ""));
-    String mqttHost = String((const char*)(runtime["mqtt"]["host"] | ""));
-    String mqttUser = String((const char*)(runtime["mqtt"]["username"] | ""));
-    String mqttPass = String((const char*)(runtime["mqtt"]["password"] | ""));
-    String keys = datastreamKeys(response);
-    if (!deviceId.length() || !mqttHost.length() || !mqttUser.length() || !mqttPass.length() || !keys.length())
-      return recoverProvisioning("invalid_engine_response", 502);
-    bool stored = storage_.setString("wifi_ssid", ssid) && storage_.setString("wifi_pass", password) &&
-                  storage_.setString("device_id", deviceId) && storage_.setString("mqtt_host", mqttHost) &&
-                  storage_.setUInt("mqtt_port", runtime["mqtt"]["port"] | 1883) &&
-                  storage_.setString("mqtt_user", mqttUser) && storage_.setString("mqtt_pass", mqttPass) &&
-                  storage_.setString("ds_keys", keys) && storage_.setString("runtime", compactRuntime);
-    if (!stored) return recoverProvisioning("configuration_storage_failed", 500);
+    if (runtimeError) {
+      Serial.println("[flova] runtime json failed detail=" + String(runtimeError.c_str()));
+      return fail(runtimeError == DeserializationError::NoMemory ? "runtime_json_no_memory" : "runtime_json_failed");
+    }
+    next.deviceId = String((const char*)(runtime["device_id"] | runtime["deviceId"] | ""));
+    next.mqttHost = String((const char*)(runtime["mqtt"]["host"] | ""));
+    next.mqttPort = runtime["mqtt"]["port"] | 1883;
+    next.mqttUsername = String((const char*)(runtime["mqtt"]["username"] | ""));
+    next.mqttPassword = String((const char*)(runtime["mqtt"]["password"] | ""));
+    next.templateVersionId =
+        String((const char*)(runtime["template_version_id"] | runtime["device_template_version_id"] | ""));
+    next.checksum = String((const char*)(runtime["checksum"] | ""));
+    if (!flova::compactRuntime(runtime, next.runtimeJson, next.datastreamKeys))
+      return fail("runtime_config_too_large");
+    if (!storeConfiguration(next)) return recoverProvisioning("configuration_storage_failed", 500);
     lastProvisionError_ = "";
-    Serial.println("[flova] stored runtime_len=" + String(compactRuntime.length()));
+    Serial.println("[flova] stored runtime_len=" + String(next.runtimeJson.length()));
+    logHeap("after configuration store");
     server_.send(200, "application/json", "{\"ok\":true,\"status\":\"provisioned\"}");
     delay(500);
     ESP.restart();
@@ -189,90 +212,63 @@ class FlovaEsp32 : public FlovaDevice {
       lastProvisionError_ = String((const char*)(error["error"]["message"] | error["error"]["code"] | "redeem_failed"));
     else
       lastProvisionError_ = response == "wifi_failed" ? "wifi_failed" : "redeem_failed";
+    finishProvisioningFailure(status);
+  }
+
+  void recoverProvisioning(Stream& response, int status) {
+    DynamicJsonDocument error(384);
+    if (!deserializeJson(error, response))
+      lastProvisionError_ = String((const char*)(error["error"]["message"] | error["error"]["code"] | "redeem_failed"));
+    else
+      lastProvisionError_ = "redeem_failed";
+    finishProvisioningFailure(status);
+  }
+
+  void finishProvisioningFailure(int status) {
     if (lastProvisionError_.startsWith(":")) lastProvisionError_.remove(0, 1);
     if (lastProvisionError_.length() > 64) lastProvisionError_.remove(64);
     Serial.println("[flova] provisioning failed reason=" + lastProvisionError_);
     server_.send(status, "application/json", "{\"ok\":false,\"error\":{\"code\":\"" + lastProvisionError_ + "\",\"retryable\":true}}");
   }
 
-  String jsonValue(const String& payload, const char* key) {
-    String needle = "\"" + String(key) + "\"";
-    int pos = payload.indexOf(needle);
-    int colon = payload.indexOf(':', pos + needle.length());
-    int first = payload.indexOf('"', colon + 1);
-    int second = payload.indexOf('"', first + 1);
-    if (pos < 0 || colon < 0 || first < 0 || second < 0) return "";
-    return payload.substring(first + 1, second);
+  flova::DeviceConfiguration configuration() const {
+    flova::DeviceConfiguration config;
+    config.wifiSsid = wifiSsid_;
+    config.wifiPassword = wifiPassword_;
+    config.deviceId = deviceId_;
+    config.mqttHost = mqttHost_;
+    config.mqttPort = mqttPort_;
+    config.mqttUsername = mqttUsername_;
+    config.mqttPassword = mqttPassword_;
+    config.datastreamKeys = datastreamKeys_;
+    config.runtimeJson = runtimeJson_;
+    config.templateVersionId = appliedTemplateVersionId_;
+    config.checksum = configChecksum_;
+    return config;
   }
 
-  uint16_t jsonUInt(const String& payload, const char* key, uint16_t fallback) {
-    String needle = "\"" + String(key) + "\"";
-    int pos = payload.indexOf(needle);
-    int colon = payload.indexOf(':', pos + needle.length());
-    if (pos < 0 || colon < 0) return fallback;
-    return payload.substring(colon + 1).toInt();
+  void applyConfiguration(const flova::DeviceConfiguration& config) {
+    wifiSsid_ = config.wifiSsid;
+    wifiPassword_ = config.wifiPassword;
+    deviceId_ = config.deviceId;
+    mqttHost_ = config.mqttHost;
+    mqttPort_ = config.mqttPort;
+    mqttUsername_ = config.mqttUsername;
+    mqttPassword_ = config.mqttPassword;
+    datastreamKeys_ = config.datastreamKeys;
+    runtimeJson_ = config.runtimeJson;
+    appliedTemplateVersionId_ = config.templateVersionId;
+    configChecksum_ = config.checksum;
   }
 
-  String jsonObjectValue(const String& payload, const char* objectKey, const char* key) {
-    return jsonValue(jsonObject(payload, objectKey), key);
-  }
-
-  uint16_t jsonObjectUInt(const String& payload, const char* objectKey, const char* key, uint16_t fallback) {
-    return jsonUInt(jsonObject(payload, objectKey), key, fallback);
-  }
-
-  String jsonObject(const String& payload, const char* objectKey) {
-    String needle = "\"" + String(objectKey) + "\"";
-    int pos = payload.indexOf(needle);
-    int start = payload.indexOf('{', pos + needle.length());
-    if (pos < 0 || start < 0) return "";
-    int depth = 0;
-    for (int i = start; i < (int)payload.length(); i++) {
-      if (payload[i] == '{') depth++;
-      if (payload[i] == '}') depth--;
-      if (depth == 0) return payload.substring(start, i + 1);
-    }
-    return "";
-  }
-
-  String datastreamKeys(const String& payload) {
-    int pos = payload.indexOf("\"datastreams\"");
-    int start = payload.indexOf('[', pos);
-    int end = payload.indexOf(']', start);
-    String keys;
-    while (start >= 0 && end > start) {
-      int keyPos = payload.indexOf("\"key\"", start);
-      if (keyPos < 0 || keyPos > end) break;
-      String key = jsonValue(payload.substring(keyPos, end), "key");
-      if (key.length()) keys += (keys.length() ? "," : "") + key;
-      start = keyPos + 5;
-    }
-    return keys;
-  }
-
-  String compactRuntimeConfig(JsonDocument& runtime) {
-    DynamicJsonDocument compact(2048);
-    compact["limits"] = runtime["limits"];
-    JsonObject system = runtime["firmware_system"];
-    if (system.isNull()) system = runtime["system"];
-    if (!system.isNull()) compact["system"] = system;
-    JsonArray out = compact.createNestedArray("datastreams");
-    for (JsonObject stream : runtime["datastreams"].as<JsonArray>()) {
-      JsonObject mapping = stream["hardware_mapping"];
-      if (mapping.isNull()) continue;
-      JsonObject row = out.createNestedObject();
-      row["key"] = stream["key"] | "";
-      JsonObject mapped = row.createNestedObject("hardware_mapping");
-      mapped["kind"] = mapping["kind"] | "";
-      mapped["pin"] = mapping["pin"] | "";
-      mapped["active_level"] = mapping["active_level"] | "high";
-      mapped["pull"] = mapping["pull"] | "none";
-      mapped["debounce_ms"] = mapping["debounce_ms"] | 50;
-      mapped["min_output_interval_ms"] = mapping["min_output_interval_ms"] | 300;
-    }
-    String outJson;
-    serializeJson(compact, outJson);
-    return outJson;
+  bool storeConfiguration(const flova::DeviceConfiguration& config) {
+    String snapshot;
+    if (!flova::encodeConfiguration(config, snapshot) || !storage_.writeConfiguration(snapshot)) return false;
+    String verified;
+    flova::DeviceConfiguration decoded;
+    if (!storage_.readConfiguration(verified, false) || !flova::decodeConfiguration(verified, decoded)) return false;
+    applyConfiguration(decoded);
+    return true;
   }
 
   String capabilityJson() const {
@@ -334,6 +330,16 @@ class FlovaEsp32 : public FlovaDevice {
   class Storage : public ArduinoStorage {
    public:
     Storage() { prefs_.begin("flova", false); }
+    bool readConfiguration(String& out, bool backup) {
+      out = prefs_.getString(backup ? "config_prev" : "config", "");
+      return out.length() > 0 && out.length() < flova::kConfigurationJsonBytes;
+    }
+    bool writeConfiguration(const String& value) {
+      if (!value.length() || value.length() >= flova::kConfigurationJsonBytes) return false;
+      String current = prefs_.getString("config", "");
+      if (current.length() && prefs_.putString("config_prev", current) != current.length()) return false;
+      return prefs_.putString("config", value) == value.length();
+    }
     bool getString(const char* key, String& out) override { out = prefs_.getString(key, ""); return out.length() > 0; }
     bool setString(const char* key, const String& value) { return prefs_.putString(key, value) > 0; }
     bool getString(const char* key, char* out, size_t maxLen) override {
@@ -342,12 +348,16 @@ class FlovaEsp32 : public FlovaDevice {
     }
     bool setString(const char* key, const char* value) override { return prefs_.putString(key, value) > 0; }
     bool remove(const char* key) override { return prefs_.remove(key); }
-    bool getUInt(const char* key, uint16_t& out) { out = prefs_.getUShort(key, 0); return out > 0; }
-    bool setUInt(const char* key, uint16_t value) { return prefs_.putUShort(key, value) > 0; }
     void clear() override { prefs_.clear(); }
    private:
     Preferences prefs_;
   };
+
+  void logHeap(const char* stage) {
+    Serial.println("[flova] heap " + String(stage) + " free=" + String(ESP.getFreeHeap()) +
+                   " min=" + String(ESP.getMinFreeHeap()) + " max_block=" +
+                   String(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+  }
 
   ArduinoMqttTransport transport_;
   Storage storage_;

@@ -133,6 +133,10 @@ const FlovaDevice::DatastreamState* FlovaDevice::stateFor(const char* key) const
 bool FlovaDevice::valueMatchesType(const String& value, FlovaValueType type) const {
   if (type == FlovaValueType::Bool) return value == "true" || value == "false" || value == "1" || value == "0";
   if (type == FlovaValueType::String) return true;
+  if (type == FlovaValueType::Object) {
+    DynamicJsonDocument document(min<size_t>(config_.limits.messageBytes, 4096));
+    return !deserializeJson(document, value) && document.is<JsonObject>();
+  }
   if (!value.length()) return false;
   bool decimal = false;
   for (uint16_t i = 0; i < value.length(); ++i) {
@@ -191,11 +195,16 @@ void FlovaDevice::configureDatastream(const char* key, FlovaDatastreamMode mode,
   state->mode = mode; state->offline = offline; state->persistence = persistence; state->restore = restore;
 }
 
-FlovaWriteResult FlovaDevice::invokeWriteHandler(DatastreamState& state, const String& value) {
+FlovaWriteResult FlovaDevice::invokeWriteHandler(DatastreamState& state, const String& value,
+                                                 const String& commandId,
+                                                 const String& correlationId) {
   if (state.writeHandler) {
     if (state.type == FlovaValueType::Bool) return reinterpret_cast<FlovaWriteResult (*)(bool)>(state.writeHandler)(value == "true" || value == "1");
     if (state.type == FlovaValueType::Float) return reinterpret_cast<FlovaWriteResult (*)(float)>(state.writeHandler)(value.toFloat());
     if (state.type == FlovaValueType::Number) return reinterpret_cast<FlovaWriteResult (*)(double)>(state.writeHandler)(value.toDouble());
+    if (state.type == FlovaValueType::Object)
+      return reinterpret_cast<FlovaWriteResult (*)(FlovaObjectValue)>(state.writeHandler)(
+          FlovaObjectValue(value, commandId, correlationId));
     return reinterpret_cast<FlovaWriteResult (*)(String)>(state.writeHandler)(value);
   }
   for (uint8_t i = 0; i < outputCount_; ++i) if (outputs_[i].key == state.key) { applyDigitalOutput(outputs_[i], value == "true" || value == "1"); return FlovaWriteResult::accept(); }
@@ -236,7 +245,9 @@ FlovaWriteResult FlovaDevice::applyWrite(const char* key, const String& value, F
   // state without touching hardware or replacing a newer local value.
   bool stale = desiredVersion && desiredVersion <= state->lastDesiredVersion;
   bool unchanged = state->hasValue && state->value == value;
-  FlovaWriteResult result = stale || unchanged ? FlovaWriteResult::noChange() : invokeWriteHandler(*state, value);
+  FlovaWriteResult result = stale || unchanged
+      ? FlovaWriteResult::noChange()
+      : invokeWriteHandler(*state, value, commandId, correlationId);
   bool shouldUpdate = result.accepted() && !stale && !unchanged;
   if (shouldUpdate) {
     bool dirty = !transport_.connected() && state->offline == FlovaOfflinePolicy::KeepLatest;

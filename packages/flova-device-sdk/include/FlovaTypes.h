@@ -58,7 +58,7 @@ enum class FlovaRestorePolicy : uint8_t { DoNotRestore, RestoreCacheOnly, Restor
 enum class FlovaValueOrigin : uint8_t { Unknown, LocalLogic, SensorRead, PhysicalInput, UserCommand, CloudAutomation, CloudSync, DeviceRestore, Provisioning, Internal };
 enum class FlovaValueQuality : uint8_t { Good, Stale, Invalid, Uncertain, HardwareError };
 enum class FlovaWriteStatus : uint8_t { Accepted, Rejected, NoChange, Failed };
-enum class FlovaValueType : uint8_t { Bool, Float, Number, String };
+enum class FlovaValueType : uint8_t { Bool, Float, Number, String, Object };
 enum class FlovaStatusIndicatorState : uint8_t { Offline, Online };
 
 struct FlovaWriteResult {
@@ -72,6 +72,16 @@ struct FlovaWriteResult {
   static FlovaWriteResult noChange() { return FlovaWriteResult(FlovaWriteStatus::NoChange, "", ""); }
   static FlovaWriteResult failure(const char* reason, const char* message = "") { return FlovaWriteResult(FlovaWriteStatus::Failed, reason, message); }
   bool accepted() const { return status == FlovaWriteStatus::Accepted || status == FlovaWriteStatus::NoChange; }
+};
+
+struct FlovaObjectValue {
+  String json;
+  String commandId;
+  String correlationId;
+  FlovaObjectValue() = default;
+  explicit FlovaObjectValue(const String& value) : json(value) {}
+  FlovaObjectValue(const String& value, const String& command, const String& correlation)
+      : json(value), commandId(command), correlationId(correlation) {}
 };
 
 template <typename T> struct FlovaReadResult {

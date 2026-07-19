@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <FlovaConfiguration.h>
 #include <FlovaDevice.h>
 #include <unity.h>
 
@@ -110,6 +111,62 @@ static void test_offline_state_coalesces_latest_value() {
   TEST_ASSERT_TRUE(transport.lastPayload.indexOf("true") >= 0);
 }
 
+static flova::DeviceConfiguration validConfiguration() {
+  flova::DeviceConfiguration config;
+  config.wifiSsid = "home_wifi";
+  config.wifiPassword = "secret";
+  config.deviceId = "device-1";
+  config.mqttHost = "mqtt.local";
+  config.mqttPort = 1883;
+  config.mqttUsername = "device";
+  config.mqttPassword = "password";
+  config.datastreamKeys = "relay,temperature";
+  config.runtimeJson = "{\"limits\":{},\"datastreams\":[]}";
+  config.templateVersionId = "version-1";
+  config.checksum = "checksum";
+  return config;
+}
+
+static void test_configuration_snapshot_round_trip() {
+  flova::DeviceConfiguration expected = validConfiguration();
+  String snapshot;
+  TEST_ASSERT_TRUE(flova::encodeConfiguration(expected, snapshot));
+  TEST_ASSERT_LESS_THAN(flova::kConfigurationJsonBytes, snapshot.length());
+
+  flova::DeviceConfiguration actual;
+  TEST_ASSERT_TRUE(flova::decodeConfiguration(snapshot, actual));
+  TEST_ASSERT_EQUAL_STRING(expected.deviceId.c_str(), actual.deviceId.c_str());
+  TEST_ASSERT_EQUAL_STRING(expected.runtimeJson.c_str(), actual.runtimeJson.c_str());
+  TEST_ASSERT_EQUAL(expected.mqttPort, actual.mqttPort);
+}
+
+static void test_configuration_rejects_oversized_runtime() {
+  flova::DeviceConfiguration config = validConfiguration();
+  config.runtimeJson.reserve(flova::kRuntimeJsonBytes + 1);
+  while (config.runtimeJson.length() < flova::kRuntimeJsonBytes) config.runtimeJson += "x";
+  String snapshot;
+  TEST_ASSERT_FALSE(flova::encodeConfiguration(config, snapshot));
+}
+
+static void test_filtered_response_ignores_large_metadata() {
+  String response =
+      "{\"device_id\":\"device-1\",\"mqtt\":{\"host\":\"mqtt.local\",\"port\":1883,"
+      "\"username\":\"device\",\"password\":\"password\"},\"datastreams\":["
+      "{\"key\":\"relay\",\"hardware_mapping\":{\"kind\":\"digital_output\",\"pin\":\"GPIO5\"}}],"
+      "\"metadata\":\"";
+  while (response.length() < 5000) response += "x";
+  response += "\"}";
+
+  DynamicJsonDocument filter(1024);
+  flova::provisioningResponseFilter(filter);
+  DynamicJsonDocument runtime(4096);
+  TEST_ASSERT_FALSE(deserializeJson(runtime, response, DeserializationOption::Filter(filter)));
+  String compact, keys;
+  TEST_ASSERT_TRUE(flova::compactRuntime(runtime, compact, keys));
+  TEST_ASSERT_EQUAL_STRING("relay", keys.c_str());
+  TEST_ASSERT_LESS_THAN(flova::kRuntimeJsonBytes, compact.length());
+}
+
 void setup() {
   FlovaConfig config; config.deviceId = "test"; config.datastreamKeys = "relay,temperature"; config.heartbeatIntervalMs = 0xffffffff;
   device.configure(config); relay.onWrite(handleRelay); temperature.onRead(readTemperature); device.begin();
@@ -119,6 +176,9 @@ void setup() {
   RUN_TEST(test_rejection_preserves_authoritative_state);
   RUN_TEST(test_cloud_uses_same_handler_and_acknowledges);
   RUN_TEST(test_offline_state_coalesces_latest_value);
+  RUN_TEST(test_configuration_snapshot_round_trip);
+  RUN_TEST(test_configuration_rejects_oversized_runtime);
+  RUN_TEST(test_filtered_response_ignores_large_metadata);
   UNITY_END();
 }
 
