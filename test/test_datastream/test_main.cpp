@@ -96,6 +96,7 @@ static void test_cloud_uses_same_handler_and_acknowledges() {
   device.handleMessage("flova/v1/devices/test/commands", "{\"command_id\":\"cmd-1\",\"behavior\":\"command\",\"key\":\"relay\",\"value\":true}");
   TEST_ASSERT_EQUAL(1, writes);
   TEST_ASSERT_TRUE(relay.read());
+  TEST_ASSERT_EQUAL(1, transport.publishes);
   TEST_ASSERT_TRUE(transport.lastTopic.endsWith("/ack"));
 }
 
@@ -109,6 +110,88 @@ static void test_offline_state_coalesces_latest_value() {
   device.loop();
   TEST_ASSERT_EQUAL(beforeReconnect + 1, transport.publishes);
   TEST_ASSERT_TRUE(transport.lastPayload.indexOf("true") >= 0);
+}
+
+static void test_state_message_id_changes_between_boots() {
+  TestTransport firstTransport, secondTransport;
+  TestStorage firstStorage, secondStorage;
+  TestClock firstClock, secondClock;
+  TestLogger firstLogger, secondLogger;
+  FlovaConfig config;
+  config.deviceId = "test";
+  config.datastreamKeys = "touch";
+  config.heartbeatIntervalMs = 0xffffffff;
+
+  FlovaDevice first(firstTransport, firstStorage, firstClock, firstLogger);
+  FlovaDevice second(secondTransport, secondStorage, secondClock, secondLogger);
+  auto firstTouch = first.datastream<bool>("touch");
+  auto secondTouch = second.datastream<bool>("touch");
+  first.configure(config);
+  second.configure(config);
+  TEST_ASSERT_TRUE(first.begin());
+  TEST_ASSERT_TRUE(firstTouch.write(true).accepted());
+  String firstPayload = firstTransport.lastPayload;
+  TEST_ASSERT_TRUE(second.begin());
+  TEST_ASSERT_TRUE(secondTouch.write(true).accepted());
+
+  TEST_ASSERT_NOT_EQUAL(0, firstPayload.length());
+  TEST_ASSERT_NOT_EQUAL(0, secondTransport.lastPayload.length());
+  TEST_ASSERT_FALSE(firstPayload == secondTransport.lastPayload);
+}
+
+static void test_publish_interval_coalesces_to_latest_value() {
+  TestTransport localTransport;
+  TestStorage localStorage;
+  TestClock localClock;
+  TestLogger localLogger;
+  FlovaConfig config;
+  config.deviceId = "interval";
+  config.datastreamKeys = "temperature";
+  config.heartbeatIntervalMs = 0xffffffff;
+  FlovaDevice localDevice(localTransport, localStorage, localClock, localLogger);
+  auto stream = localDevice.datastream<float>("temperature").publishEvery(1000);
+  localDevice.configure(config);
+  TEST_ASSERT_TRUE(localDevice.begin());
+  localTransport.publishes = 0;
+
+  TEST_ASSERT_TRUE(stream.report(10.0f).accepted());
+  TEST_ASSERT_EQUAL(1, localTransport.publishes);
+  TEST_ASSERT_TRUE(stream.report(20.0f).accepted());
+  TEST_ASSERT_EQUAL(1, localTransport.publishes);
+
+  localClock.now += 1000;
+  localDevice.loop();
+  TEST_ASSERT_EQUAL(2, localTransport.publishes);
+  TEST_ASSERT_TRUE(localTransport.lastPayload.indexOf("20.000000") >= 0);
+}
+
+static void test_opt_in_batch_publishes_logical_readings_once() {
+  TestTransport localTransport;
+  TestStorage localStorage;
+  TestClock localClock;
+  TestLogger localLogger;
+  FlovaConfig config;
+  config.deviceId = "batch";
+  config.datastreamKeys = "temperature,humidity";
+  config.heartbeatIntervalMs = 0xffffffff;
+  FlovaDevice localDevice(localTransport, localStorage, localClock, localLogger);
+  auto temperatureStream = localDevice.datastream<float>("temperature");
+  auto humidityStream = localDevice.datastream<float>("humidity");
+  localDevice.configure(config);
+  localDevice.enableStateBatching(2, 100);
+  TEST_ASSERT_TRUE(localDevice.begin());
+  localTransport.publishes = 0;
+
+  TEST_ASSERT_TRUE(temperatureStream.report(21.5f).accepted());
+  TEST_ASSERT_TRUE(humidityStream.report(40.0f).accepted());
+  TEST_ASSERT_EQUAL(0, localTransport.publishes);
+  localDevice.loop();
+
+  TEST_ASSERT_EQUAL(1, localTransport.publishes);
+  TEST_ASSERT_TRUE(localTransport.lastTopic.endsWith("/state"));
+  TEST_ASSERT_TRUE(localTransport.lastPayload.indexOf("\"readings\":[") >= 0);
+  TEST_ASSERT_TRUE(localTransport.lastPayload.indexOf("\"key\":\"temperature\"") >= 0);
+  TEST_ASSERT_TRUE(localTransport.lastPayload.indexOf("\"key\":\"humidity\"") >= 0);
 }
 
 static flova::DeviceConfiguration validConfiguration() {
@@ -167,6 +250,25 @@ static void test_filtered_response_ignores_large_metadata() {
   TEST_ASSERT_LESS_THAN(flova::kRuntimeJsonBytes, compact.length());
 }
 
+static void test_retained_applied_config_is_acknowledged_without_reinstall() {
+  FlovaConfig config;
+  config.deviceId = "test";
+  config.datastreamKeys = "relay,temperature";
+  config.appliedTemplateVersionId = "version-2";
+  config.configChecksum = "checksum-2";
+  config.heartbeatIntervalMs = 0xffffffff;
+  device.configure(config);
+
+  device.handleMessage(
+      "flova/v1/devices/test/config/desired",
+      "{\"command_id\":\"00000000-0000-0000-0000-000000000001\","
+      "\"template_version_id\":\"version-2\",\"checksum\":\"checksum-2\","
+      "\"datastreams\":[]}");
+
+  TEST_ASSERT_TRUE(transport.lastTopic.endsWith("/config/reported"));
+  TEST_ASSERT_TRUE(transport.lastPayload.indexOf("\"status\":\"ok\"") >= 0);
+}
+
 void setup() {
   FlovaConfig config; config.deviceId = "test"; config.datastreamKeys = "relay,temperature"; config.heartbeatIntervalMs = 0xffffffff;
   device.configure(config); relay.onWrite(handleRelay); temperature.onRead(readTemperature); device.begin();
@@ -176,9 +278,13 @@ void setup() {
   RUN_TEST(test_rejection_preserves_authoritative_state);
   RUN_TEST(test_cloud_uses_same_handler_and_acknowledges);
   RUN_TEST(test_offline_state_coalesces_latest_value);
+  RUN_TEST(test_state_message_id_changes_between_boots);
+  RUN_TEST(test_publish_interval_coalesces_to_latest_value);
+  RUN_TEST(test_opt_in_batch_publishes_logical_readings_once);
   RUN_TEST(test_configuration_snapshot_round_trip);
   RUN_TEST(test_configuration_rejects_oversized_runtime);
   RUN_TEST(test_filtered_response_ignores_large_metadata);
+  RUN_TEST(test_retained_applied_config_is_acknowledged_without_reinstall);
   UNITY_END();
 }
 

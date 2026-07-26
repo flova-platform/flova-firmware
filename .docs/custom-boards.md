@@ -33,3 +33,20 @@ ctest --test-dir /tmp/flova-core-build --output-on-failure
 ```
 
 All new board ports use `flova::Device` directly. Board packages supply the required adapters and must not create a second datastream engine.
+
+Custom firmware owns its factory-reset input. Universal template
+`firmware_system.factory_reset` settings are not applied automatically by a
+custom board port; call `setFactoryResetButton(...)` explicitly in Arduino
+ports or implement the same deliberate boot gesture in the board runtime.
+
+## Template hardware identifiers
+
+For a custom board, a template hardware mapping's `pin` is an opaque identifier
+owned by that board's firmware, such as `PWM_A`, `ADC_BATTERY`, or `relay:1`.
+Flova validates only that the identifier is non-empty and bounded. Unlike the
+universal ESP32 and ESP8266 targets, the custom-board runtime does not
+automatically call GPIO APIs.
+
+Use the typed datastream API to bind the identifier to the board HAL. This
+keeps the cloud contract numeric or boolean while the port controls native ADC
+resolution, PWM resolution, safety checks, and actual peripherals.

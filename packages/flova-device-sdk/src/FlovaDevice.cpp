@@ -31,6 +31,7 @@ void FlovaDevice::initializeResourceContract() {
 
 bool FlovaDevice::begin() {
   activeDevice = this;
+  bootNonce_ = (uint32_t)random(1, 0x7fffffffL);
   transport_.setCallback(dispatchMessage);
   char storedCommands[160] = {0};
   if (storage_.getString("command_ids", storedCommands, sizeof(storedCommands))) {
@@ -52,22 +53,23 @@ void FlovaDevice::loop() {
   processPendingOta();
   if (!transport_.connected()) reconnect();
   updateCandidateHealth();
+  processFactoryResetGesture();
   updateStatusIndicator();
-  if (resetButtonPin_ != 255) {
-    bool pressed = digitalRead(resetButtonPin_) == (resetButtonActiveLow_ ? LOW : HIGH);
-    if (pressed && resetStartedMs_ == 0) resetStartedMs_ = clock_.millisNow();
-    if (!pressed) resetStartedMs_ = 0;
-    if (pressed && clock_.millisNow() - resetStartedMs_ >= resetHoldMs_) factoryReset();
-  }
 
   uint32_t now = clock_.millisNow();
   if (transport_.connected() && now - lastHeartbeatMs_ >= config_.heartbeatIntervalMs) {
     publishHeartbeat();
   }
   if (transport_.connected() && (!clock_.utcValid() || now - lastTimeRequestMs_ >= 21600000UL)) requestTimeSync();
-  if (transport_.connected()) pollDigitalInputs();
+  if (transport_.connected()) {
+    pollDigitalInputs();
+    pollAnalogInputs();
+  }
   flushDigitalOutputs();
-  if (transport_.connected()) flushDirtyStates();
+  if (transport_.connected()) {
+    flushDueStates();
+    flushDirtyStates();
+  }
   runSchedules();
 }
 
@@ -91,7 +93,7 @@ void FlovaDevice::updateCandidateHealth() {
 }
 
 void FlovaDevice::addDigitalOutput(const char* key, uint8_t pin, bool activeHigh, uint32_t minOutputIntervalMs) {
-  if (outputCount_ >= config_.limits.hardwareOutputs) return;
+  if (outputCount_ + pwmOutputCount_ >= config_.limits.hardwareOutputs) return;
   outputs_[outputCount_].key = String(key);
   outputs_[outputCount_].pin = pin;
   outputs_[outputCount_].activeHigh = activeHigh;
@@ -104,7 +106,7 @@ void FlovaDevice::addDigitalOutput(const char* key, uint8_t pin, bool activeHigh
 }
 
 void FlovaDevice::addDigitalInput(const char* key, uint8_t pin, bool activeHigh, uint32_t debounceMs, uint8_t mode) {
-  if (inputCount_ >= config_.limits.hardwareInputs) return;
+  if (inputCount_ + analogInputCount_ >= config_.limits.hardwareInputs) return;
   pinMode(pin, mode);
   bool raw = digitalRead(pin) == (activeHigh ? HIGH : LOW);
   inputs_[inputCount_].key = String(key);
@@ -115,6 +117,41 @@ void FlovaDevice::addDigitalInput(const char* key, uint8_t pin, bool activeHigh,
   inputs_[inputCount_].lastSent = !raw;
   inputs_[inputCount_].changedAt = clock_.millisNow();
   inputCount_++;
+}
+
+void FlovaDevice::addAnalogInput(const char* key, uint8_t pin, uint32_t sampleIntervalMs) {
+  if (inputCount_ + analogInputCount_ >= config_.limits.hardwareInputs) return;
+  AnalogInput& input = analogInputs_[analogInputCount_++];
+  input.key = String(key);
+  input.pin = pin;
+  input.sampleIntervalMs = sampleIntervalMs < 100 ? 100 : sampleIntervalMs;
+  DatastreamState* state = stateFor(key, FlovaValueType::Number, true);
+  if (state) {
+    state->type = FlovaValueType::Number;
+    state->mode = FlovaDatastreamMode::Sample;
+    state->offline = FlovaOfflinePolicy::Drop;
+  }
+  pinMode(pin, INPUT);
+}
+
+void FlovaDevice::addPwmOutput(const char* key, uint8_t pin, double minimum, double maximum,
+                               double initialValue) {
+  if (outputCount_ + pwmOutputCount_ >= config_.limits.hardwareOutputs || minimum >= maximum) return;
+  PwmOutput& output = pwmOutputs_[pwmOutputCount_++];
+  output.key = String(key);
+  output.pin = pin;
+  output.minimum = minimum;
+  output.maximum = maximum;
+  DatastreamState* state = stateFor(key, FlovaValueType::Number, true);
+  if (state) {
+    state->type = FlovaValueType::Number;
+    state->mode = FlovaDatastreamMode::State;
+    state->value = String(initialValue);
+    state->hasValue = true;
+    state->quality = FlovaValueQuality::Good;
+  }
+  pinMode(pin, OUTPUT);
+  applyPwmOutput(output, String(initialValue));
 }
 
 FlovaDevice::DatastreamState* FlovaDevice::stateFor(const char* key, FlovaValueType type, bool create) {
@@ -169,7 +206,7 @@ void FlovaDevice::restorePersistentStates() {
     String row(stored); int first = row.indexOf('|'); int second = row.indexOf('|', first + 1); int third = row.indexOf('|', second + 1);
     if (first < 1 || second <= first || third <= second || row.substring(first + 1, second) != states_[i].key) continue;
     FlovaValueType type = (FlovaValueType)row.substring(0, first).toInt(); String value = row.substring(third + 1);
-    if (type == states_[i].type && valueMatchesType(value, type)) { states_[i].value = value; states_[i].hasValue = true; states_[i].revision = row.substring(second + 1, third).toInt(); states_[i].origin = FlovaValueOrigin::DeviceRestore; states_[i].quality = FlovaValueQuality::Good; }
+    if (type == states_[i].type && valueMatchesType(value, type)) { states_[i].value = value; states_[i].hasValue = true; states_[i].revision = row.substring(second + 1, third).toInt(); states_[i].origin = FlovaValueOrigin::DeviceRestore; states_[i].quality = FlovaValueQuality::Good; states_[i].dirty = true; }
   }
 }
 
@@ -195,6 +232,16 @@ void FlovaDevice::configureDatastream(const char* key, FlovaDatastreamMode mode,
   state->mode = mode; state->offline = offline; state->persistence = persistence; state->restore = restore;
 }
 
+void FlovaDevice::configurePublishInterval(const char* key, uint32_t minimumIntervalMs) {
+  DatastreamState* state = stateFor(key, FlovaValueType::String, true);
+  if (state) state->minimumPublishIntervalMs = minimumIntervalMs;
+}
+
+void FlovaDevice::enableStateBatching(uint8_t maximumReadings, uint32_t flushIntervalMs) {
+  batchMaximumReadings_ = min<uint8_t>(maximumReadings, 32);
+  batchFlushIntervalMs_ = flushIntervalMs ? flushIntervalMs : 1;
+}
+
 FlovaWriteResult FlovaDevice::invokeWriteHandler(DatastreamState& state, const String& value,
                                                  const String& commandId,
                                                  const String& correlationId) {
@@ -208,20 +255,86 @@ FlovaWriteResult FlovaDevice::invokeWriteHandler(DatastreamState& state, const S
     return reinterpret_cast<FlovaWriteResult (*)(String)>(state.writeHandler)(value);
   }
   for (uint8_t i = 0; i < outputCount_; ++i) if (outputs_[i].key == state.key) { applyDigitalOutput(outputs_[i], value == "true" || value == "1"); return FlovaWriteResult::accept(); }
+  for (uint8_t i = 0; i < pwmOutputCount_; ++i)
+    if (pwmOutputs_[i].key == state.key) return applyPwmOutput(pwmOutputs_[i], value);
   return FlovaWriteResult::failure("write_handler_missing");
 }
 
 bool FlovaDevice::publishState(DatastreamState& state) {
-  String payload = "{\"protocol\":{\"name\":\"flova\",\"version\":1},\"schema_version\":1,\"message_id\":\"state-" + state.key + "-" + String(state.revision) + "\",\"key\":\"" + state.key + "\",\"value\":" + jsonScalar(state.value) + ",\"revision\":" + String(state.revision);
+  String payload = "{\"protocol\":{\"name\":\"flova\",\"version\":1},\"schema_version\":1,\"message_id\":\"" + stateMessageId(state) + "\",\"key\":\"" + state.key + "\",\"value\":" + jsonScalar(state.value) + ",\"revision\":" + String(state.revision);
   String ts = clock_.isoNow(); if (ts.length()) payload += ",\"ts\":\"" + ts + "\""; payload += "}";
-  if (transport_.publish(datastreamTopic(state.key.c_str(), "update").c_str(), payload)) { state.dirty = false; return true; }
-  return false;
+  bool published = transport_.publish(datastreamTopic(state.key.c_str(), "update").c_str(), payload);
+  if (published) {
+    state.lastPublishedMs = clock_.millisNow();
+    state.publishPending = false;
+  }
+  return published;
+}
+
+bool FlovaDevice::publishStateBatch() {
+  if (!batchMaximumReadings_ || batchPayload_.length()) return false;
+
+  String readings;
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < stateCount_ && count < batchMaximumReadings_; ++i) {
+    DatastreamState& state = states_[i];
+    if (!state.publishPending || state.mode == FlovaDatastreamMode::Event) continue;
+    String reading = (count ? "," : "") + String("{\"key\":\"") + state.key +
+                     "\",\"value\":" + jsonScalar(state.value) +
+                     ",\"revision\":" + String(state.revision) + "}";
+    if (readings.length() + reading.length() + 160 > config_.limits.messageBytes) break;
+    readings += reading;
+    state.batchedRevision = state.revision;
+    state.batchInFlight = true;
+    state.publishPending = false;
+    count++;
+  }
+  if (!count) return false;
+
+  batchMessageId_ = "state-batch-" + String(bootNonce_, HEX) + "-" + String(++batchSequence_);
+  batchPayload_ = "{\"protocol\":{\"name\":\"flova\",\"version\":1},\"schema_version\":1,\"message_id\":\"" +
+                  batchMessageId_ + "\",\"readings\":[" + readings + "]}";
+  bool published = transport_.publish(topic("state").c_str(), batchPayload_);
+  if (published) batchLastPublishedMs_ = clock_.millisNow();
+  return published;
+}
+
+void FlovaDevice::flushDueStates() {
+  uint32_t now = clock_.millisNow();
+  uint8_t pending = 0;
+  for (uint8_t i = 0; i < stateCount_; ++i) {
+    DatastreamState& state = states_[i];
+    if (!state.publishPending) continue;
+    if (state.lastPublishedMs && state.minimumPublishIntervalMs &&
+        now - state.lastPublishedMs < state.minimumPublishIntervalMs)
+      continue;
+    if (!batchMaximumReadings_ || state.mode == FlovaDatastreamMode::Event) publishState(state);
+    else pending++;
+  }
+  if (!pending || batchPayload_.length()) return;
+  if (!batchQueuedAtMs_) batchQueuedAtMs_ = now ? now : 1;
+  if (pending >= batchMaximumReadings_ || now - batchQueuedAtMs_ >= batchFlushIntervalMs_) {
+    if (publishStateBatch()) batchQueuedAtMs_ = 0;
+  }
+}
+
+String FlovaDevice::stateMessageId(const DatastreamState& state) const {
+  return "state-" + state.key + "-" + String(bootNonce_, HEX) + "-" + String(state.revision);
 }
 
 void FlovaDevice::flushDirtyStates() {
   // KeepLatest uses the snapshot itself as the queue: many offline writes cost
   // one slot and reconnect publishes only the final accepted state.
-  for (uint8_t i = 0; i < stateCount_; ++i) if (states_[i].dirty && states_[i].offline == FlovaOfflinePolicy::KeepLatest) publishState(states_[i]);
+  uint32_t now = clock_.millisNow();
+  if (now - lastCriticalRetryMs_ < 5000) return;
+  lastCriticalRetryMs_ = now;
+  if (batchPayload_.length()) {
+    if (transport_.publish(topic("state").c_str(), batchPayload_)) batchLastPublishedMs_ = now;
+    return;
+  }
+  for (uint8_t i = 0; i < stateCount_; ++i)
+    if (states_[i].dirty && states_[i].offline == FlovaOfflinePolicy::KeepLatest)
+      states_[i].publishPending = true;
 }
 
 FlovaWriteResult FlovaDevice::reportValue(const char* key, const String& value, FlovaValueType type, FlovaValueOrigin origin) {
@@ -229,9 +342,15 @@ FlovaWriteResult FlovaDevice::reportValue(const char* key, const String& value, 
   DatastreamState* state = stateFor(key, type, true);
   if (!state || state->type != type || !valueMatchesType(value, type)) return FlovaWriteResult::reject("invalid_value");
   if (!transport_.connected() && state->offline == FlovaOfflinePolicy::Reject) return FlovaWriteResult::reject("offline_delivery_required");
-  bool dirty = !transport_.connected() && state->offline == FlovaOfflinePolicy::KeepLatest;
+  bool dirty = state->offline == FlovaOfflinePolicy::KeepLatest;
   updateState(*state, value, origin, dirty);
-  if (transport_.connected()) publishState(*state);
+  state->publishPending = true;
+  if (transport_.connected() &&
+      (state->mode == FlovaDatastreamMode::Event ||
+       (!batchMaximumReadings_ &&
+        (!state->lastPublishedMs || !state->minimumPublishIntervalMs ||
+         clock_.millisNow() - state->lastPublishedMs >= state->minimumPublishIntervalMs))))
+    publishState(*state);
   return FlovaWriteResult::accept();
 }
 
@@ -252,7 +371,11 @@ FlovaWriteResult FlovaDevice::applyWrite(const char* key, const String& value, F
   if (shouldUpdate) {
     bool dirty = !transport_.connected() && state->offline == FlovaOfflinePolicy::KeepLatest;
     updateState(*state, value, origin, dirty);
-    if (transport_.connected()) publishState(*state);
+    // A cloud write is reported by command-results below. Publishing the same
+    // accepted value as a separate state event doubles MQTT/DB work and delays
+    // the next input. The retained desired command is retried until this result
+    // is acknowledged by Engine.
+    if (transport_.connected() && !acknowledgeCloud) publishState(*state);
   }
   if (result.accepted() && desiredVersion > state->lastDesiredVersion) state->lastDesiredVersion = desiredVersion;
   if (acknowledgeCloud) {
@@ -278,17 +401,62 @@ void FlovaDevice::updateStatusIndicator() {
     : FlovaStatusIndicatorState::Offline;
   if (statusLedPin_ == 255) return;
 
+  uint32_t now = clock_.millisNow();
+  if (resetGesture_.showingProgress()) {
+    bool on = (now / 100) % 2 == 0;
+    digitalWrite(statusLedPin_, on == statusLedActiveLow_ ? LOW : HIGH);
+    return;
+  }
+  if ((int32_t)(resetTapFlashUntilMs_ - now) > 0) {
+    digitalWrite(statusLedPin_, statusLedActiveLow_ ? LOW : HIGH);
+    return;
+  }
+
   // Online is steady on; Offline blinks while MQTT reconnects.
   bool on = statusIndicatorState_ == FlovaStatusIndicatorState::Online ||
-            (millis() / 500) % 2 == 0;
+            (now / 500) % 2 == 0;
   digitalWrite(statusLedPin_, on == statusLedActiveLow_ ? LOW : HIGH);
 }
 
-void FlovaDevice::setFactoryResetButton(uint8_t pin, bool activeLow, uint32_t holdMs) {
+void FlovaDevice::setFactoryResetButton(uint8_t pin, bool activeLow, uint32_t holdMs,
+                                        uint8_t mode) {
   resetButtonPin_ = pin;
   resetButtonActiveLow_ = activeLow;
-  resetHoldMs_ = holdMs;
-  pinMode(pin, activeLow ? INPUT_PULLUP : INPUT);
+  pinMode(pin, mode == 255 ? (activeLow ? INPUT_PULLUP : INPUT) : mode);
+  resetGesture_.configure(holdMs);
+}
+
+void FlovaDevice::processFactoryResetGesture() {
+  if (resetButtonPin_ == 255) return;
+  uint32_t now = clock_.millisNow();
+  bool pressed =
+      digitalRead(resetButtonPin_) == (resetButtonActiveLow_ ? LOW : HIGH);
+  switch (resetGesture_.update(pressed, now)) {
+    case FlovaFactoryResetGesture::Armed:
+      logger_.info("Factory reset gesture armed.");
+      break;
+    case FlovaFactoryResetGesture::TapAccepted:
+      resetTapFlashUntilMs_ = now + 150UL;
+      logger_.info("Factory reset gesture tap accepted.");
+      break;
+    case FlovaFactoryResetGesture::HoldStarted:
+      logger_.info("Factory reset confirmation hold started.");
+      break;
+    case FlovaFactoryResetGesture::ReleaseRequested:
+      logger_.info("Release factory reset input to confirm.");
+      break;
+    case FlovaFactoryResetGesture::Confirmed:
+      factoryReset();
+      break;
+    case FlovaFactoryResetGesture::WindowClosed:
+      logger_.info("Factory reset gesture window closed.");
+      break;
+    case FlovaFactoryResetGesture::ConfirmationExpired:
+      logger_.info("Factory reset confirmation expired.");
+      break;
+    case FlovaFactoryResetGesture::None:
+      break;
+  }
 }
 
 void FlovaDevice::factoryReset() {
@@ -301,6 +469,7 @@ void FlovaDevice::factoryReset() {
 }
 
 void FlovaDevice::handleMessage(const String& topic, const String& payload) {
+  if (topic.endsWith("/ingestion/ack")) { handleIngestionAck(payload); return; }
   if (topic.endsWith("/time/response")) { handleTimeSync(payload); return; }
   if (topic.endsWith("/schedules/desired")) {
     installScheduleManifest(payload);
@@ -340,6 +509,29 @@ void FlovaDevice::handleMessage(const String& topic, const String& payload) {
   // Remember rejected commands too: an MQTT retry must not run a safety check
   // or hardware side effect a second time.
   if (behavior == "command") rememberCommand(commandId);
+}
+
+void FlovaDevice::handleIngestionAck(const String& payload) {
+  String messageId = jsonValue("message_id", payload);
+  if (!messageId.startsWith("state-")) return;
+  if (messageId == batchMessageId_) {
+    for (uint8_t i = 0; i < stateCount_; ++i) {
+      if (!states_[i].batchInFlight) continue;
+      if (states_[i].revision == states_[i].batchedRevision) states_[i].dirty = false;
+      states_[i].batchInFlight = false;
+    }
+    batchMessageId_ = "";
+    batchPayload_ = "";
+    logger_.info("MQTT state batch processing acknowledged.");
+    return;
+  }
+  for (uint8_t i = 0; i < stateCount_; ++i) {
+    if (messageId == stateMessageId(states_[i])) {
+      states_[i].dirty = false;
+      logger_.info("MQTT state processing acknowledged.");
+      return;
+    }
+  }
 }
 
 bool FlovaDevice::commandSeen(const String& commandId) const {
@@ -385,18 +577,15 @@ void FlovaDevice::handleConfigSet(const String& payload) {
   String commandId = jsonValue("command_id", payload);
   String versionId = jsonValue("template_version_id", payload);
   String checksum = jsonValue("checksum", payload);
-  bool ok = commandId.length() && versionId.length() && checksum.length() && installRuntimeConfig(payload);
-  String result = "{\"command_id\":\"" + commandId + "\",\"template_version_id\":\"" + versionId +
+  bool valid = commandId.length() && versionId.length() && checksum.length();
+  bool alreadyApplied =
+      valid && versionId == config_.appliedTemplateVersionId && checksum == config_.configChecksum;
+  bool ok = alreadyApplied || (valid && installRuntimeConfig(payload));
+  String result = "{\"message_id\":\"" + commandId + "\",\"command_id\":\"" + commandId + "\",\"template_version_id\":\"" + versionId +
                   "\",\"checksum\":\"" + checksum + "\",\"status\":\"" + (ok ? "ok" : "error") + "\"";
   if (!ok) result += ",\"error_message\":\"invalid_runtime_config\"";
   result += "}";
   transport_.publish(topic("config/reported").c_str(), result);
-  if (ok) {
-#if defined(ESP32) || defined(ESP8266)
-    delay(100);
-    ESP.restart();
-#endif
-  }
 }
 
 void FlovaDevice::handleOtaOffer(const String& payload) {
@@ -534,6 +723,34 @@ void FlovaDevice::pollDigitalInputs() {
   }
 }
 
+void FlovaDevice::pollAnalogInputs() {
+  uint32_t now = clock_.millisNow();
+  for (uint8_t i = 0; i < analogInputCount_; i++) {
+    AnalogInput& input = analogInputs_[i];
+    if (input.sampled && now - input.lastSampleMs < input.sampleIntervalMs) continue;
+    input.sampled = true;
+    input.lastSampleMs = now;
+    int raw = analogRead(input.pin);
+    reportValue(input.key.c_str(), String(raw), FlovaValueType::Number,
+                FlovaValueOrigin::PhysicalInput);
+  }
+}
+
+FlovaWriteResult FlovaDevice::applyPwmOutput(PwmOutput& output, const String& value) {
+  double number = value.toDouble();
+  if (number < output.minimum || number > output.maximum)
+    return FlovaWriteResult::reject("out_of_range");
+#if defined(ESP8266)
+  const uint16_t nativeMaximum = 1023;
+#else
+  const uint16_t nativeMaximum = 255;
+#endif
+  uint16_t duty = (uint16_t)round(
+      (number - output.minimum) * nativeMaximum / (output.maximum - output.minimum));
+  analogWrite(output.pin, duty);
+  return FlovaWriteResult::accept();
+}
+
 String FlovaDevice::topic(const char* suffix) const {
   return "flova/v1/devices/" + String(config_.deviceId) + "/" + String(suffix);
 }
@@ -599,6 +816,7 @@ bool FlovaDevice::reconnect() {
   subscribed = transport_.subscribe(topic("time/response").c_str()) && subscribed;
   subscribed = transport_.subscribe(topic("schedules/desired").c_str()) && subscribed;
   subscribed = transport_.subscribe(topic("ota/desired").c_str()) && subscribed;
+  subscribed = transport_.subscribe(topic("ingestion/ack").c_str()) && subscribed;
   logger_.info(subscribed ? "MQTT write subscription ready." : "MQTT write subscription failed.");
   publishHeartbeat();
   requestTimeSync();
@@ -733,7 +951,7 @@ void FlovaDevice::requestScheduleRenewal() {
 
 void FlovaDevice::reportScheduleStatus(const char* status) {
   if (!transport_.connected()) return;
-  String body = "{\"status\":\"" + String(status) + "\",\"revision\":" + String((unsigned long long)scheduleRevision_) + ",\"valid_until\":" + String((unsigned long long)scheduleValidUntil_) + "}";
+  String body = "{\"message_id\":\"schedule-" + String((unsigned long long)scheduleRevision_) + "-" + String(status) + "\",\"status\":\"" + String(status) + "\",\"revision\":" + String((unsigned long long)scheduleRevision_) + ",\"valid_until\":" + String((unsigned long long)scheduleValidUntil_) + "}";
   transport_.publish(topic("schedules/reported").c_str(), body);
 }
 

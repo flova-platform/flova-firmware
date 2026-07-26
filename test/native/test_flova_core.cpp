@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <string.h>
 #include <FlovaCore.h>
+#include <FlovaFactoryResetGesture.h>
 #include <FlovaProvisioning.h>
 #include <FlovaScheduler.h>
 #include <FlovaScheduleRuntime.h>
@@ -35,6 +36,40 @@ static void renewSchedule(uint32_t, uint64_t) { renewals++; }
 static void scheduleStatus(const char*, uint32_t, uint64_t) {}
 
 int main() {
+  FlovaFactoryResetGesture resetGesture;
+  resetGesture.configure();
+  uint32_t gestureNow = 100;
+  assert(resetGesture.update(false, gestureNow) == FlovaFactoryResetGesture::None);
+  gestureNow += 500;
+  assert(resetGesture.update(false, gestureNow) == FlovaFactoryResetGesture::Armed);
+  for (int tap = 0; tap < 3; tap++) {
+    gestureNow += 10; resetGesture.update(true, gestureNow);
+    gestureNow += 50; resetGesture.update(true, gestureNow);
+    gestureNow += 10; resetGesture.update(false, gestureNow);
+    gestureNow += 50;
+    assert(resetGesture.update(false, gestureNow) == FlovaFactoryResetGesture::TapAccepted);
+  }
+  gestureNow += 10; resetGesture.update(true, gestureNow);
+  gestureNow += 50;
+  assert(resetGesture.update(true, gestureNow) == FlovaFactoryResetGesture::HoldStarted);
+  gestureNow += 10000;
+  assert(resetGesture.update(true, gestureNow) == FlovaFactoryResetGesture::ReleaseRequested);
+  gestureNow += 10; resetGesture.update(false, gestureNow);
+  gestureNow += 50;
+  assert(resetGesture.update(false, gestureNow) == FlovaFactoryResetGesture::Confirmed);
+
+  FlovaFactoryResetGesture stuckGesture;
+  stuckGesture.configure();
+  assert(stuckGesture.update(true, 100) == FlovaFactoryResetGesture::None);
+  assert(stuckGesture.update(true, 60100) == FlovaFactoryResetGesture::WindowClosed);
+
+  FlovaFactoryResetGesture wrapGesture;
+  wrapGesture.configure();
+  uint32_t wrapNow = 0xFFFFFF00UL;
+  wrapGesture.update(false, wrapNow);
+  wrapNow += 500;
+  assert(wrapGesture.update(false, wrapNow) == FlovaFactoryResetGesture::Armed);
+
   flova::ResourceManager resourceTest;
   flova::ResourceBudget resourceBudgets[static_cast<size_t>(flova::ResourceKind::Count)];
   resourceBudgets[static_cast<size_t>(flova::ResourceKind::History)].maximumBytes = 100;

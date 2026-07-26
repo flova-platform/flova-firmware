@@ -36,6 +36,9 @@ inline void provisioningResponseFilter(JsonDocument& filter) {
   filter["firmware_system"] = true;
   filter["system"] = true;
   filter["datastreams"][0]["key"] = true;
+  filter["datastreams"][0]["min_value"] = true;
+  filter["datastreams"][0]["max_value"] = true;
+  filter["datastreams"][0]["default_value"] = true;
   filter["datastreams"][0]["hardware_mapping"] = true;
 }
 
@@ -59,12 +62,16 @@ inline bool compactRuntime(JsonDocument& source, String& runtimeJson, String& ke
     if (mapping.isNull()) continue;
     JsonObject row = out.createNestedObject();
     row["key"] = key;
+    row["min_value"] = stream["min_value"];
+    row["max_value"] = stream["max_value"];
+    row["default_value"] = stream["default_value"];
     JsonObject mapped = row.createNestedObject("hardware_mapping");
     mapped["kind"] = mapping["kind"] | "";
     mapped["pin"] = mapping["pin"] | "";
     mapped["active_level"] = mapping["active_level"] | "high";
     mapped["pull"] = mapping["pull"] | "none";
     mapped["debounce_ms"] = mapping["debounce_ms"] | 50;
+    mapped["sample_interval_ms"] = mapping["sample_interval_ms"] | 1000;
     mapped["min_output_interval_ms"] = mapping["min_output_interval_ms"] | 300;
   }
   if (!keys.length() || compact.overflowed() || measureJson(compact) >= kRuntimeJsonBytes) return false;

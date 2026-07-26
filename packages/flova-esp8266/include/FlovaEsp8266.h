@@ -57,9 +57,8 @@ class FlovaEsp8266 : public FlovaDevice {
     configure(config);
     setOtaInstaller(otaInstaller_);
     setBootControl(bootControl_);
-    applyRuntimeSystem();
-    setFactoryResetButton(0, true, 10000);
     applyRuntimeMappings();
+    applyRuntimeSystem();
     logHeap("before device begin");
     return FlovaDevice::begin();
   }
@@ -70,6 +69,11 @@ class FlovaEsp8266 : public FlovaDevice {
       return;
     }
     FlovaDevice::loop();
+    if (runtimeRestartPending_) {
+      Serial.println("[flova] runtime configuration stored; restarting to apply");
+      delay(100);
+      ESP.restart();
+    }
   }
 
   bool installRuntimeConfig(const String& payload) override {
@@ -79,7 +83,9 @@ class FlovaEsp8266 : public FlovaDevice {
     if (!flova::compactRuntime(config, next.runtimeJson, next.datastreamKeys)) return false;
     next.templateVersionId = String((const char*)(config["template_version_id"] | ""));
     next.checksum = String((const char*)(config["checksum"] | ""));
-    return storeConfiguration(next);
+    if (!storeConfiguration(next)) return false;
+    runtimeRestartPending_ = true;
+    return true;
   }
 
  private:
@@ -303,15 +309,28 @@ class FlovaEsp8266 : public FlovaDevice {
       String key = stream["key"] | "";
       String kind = mapping["kind"] | "";
       String pinName = mapping["pin"] | "";
+      bool analogPin = pinName == "A0";
+      if (!analogPin && !pinName.startsWith("GPIO")) continue;
       String active = mapping["active_level"] | "high";
-      uint8_t pin = (uint8_t)pinName.substring(4).toInt();
+      uint8_t pin = analogPin ? A0 : (uint8_t)pinName.substring(4).toInt();
       bool activeHigh = active != "low";
-      if (kind == "digital_output") addDigitalOutput(key.c_str(), pin, activeHigh, mapping["min_output_interval_ms"] | 300);
+      if (kind == "digital_output") {
+        addDigitalOutput(key.c_str(), pin, activeHigh, mapping["min_output_interval_ms"] | 300);
+        Serial.println("[flova] output mapped key=" + key + " pin=" + pinName + " active=" + active);
+      }
       if (kind == "digital_input") {
         String pull = mapping["pull"] | "none";
         uint8_t mode = pull == "pullup" ? INPUT_PULLUP : INPUT;
         addDigitalInput(key.c_str(), pin, activeHigh, mapping["debounce_ms"] | 50, mode);
         Serial.println("[flova] input mapped key=" + key + " pin=" + pinName + " active=" + active + " pull=" + pull);
+      }
+      if (kind == "analog_input" && analogPin)
+        addAnalogInput(key.c_str(), pin, mapping["sample_interval_ms"] | 1000);
+      if (kind == "pwm_output" && !analogPin) {
+        double minimum = stream["min_value"] | 0.0;
+        double maximum = stream["max_value"] | 100.0;
+        double initial = stream["default_value"]["value"] | minimum;
+        addPwmOutput(key.c_str(), pin, minimum, maximum, initial);
       }
     }
   }
@@ -321,9 +340,43 @@ class FlovaEsp8266 : public FlovaDevice {
     if (deserializeJson(runtime, runtimeJson_)) return;
     JsonObject status = runtime["system"]["status_led"];
     String pinName = status["pin"] | "";
-    if (!pinName.startsWith("GPIO")) return;
-    setStatusLed((uint8_t)pinName.substring(4).toInt(), status["active_low"] | false);
+    if (pinName.startsWith("GPIO")) {
+      setStatusLed((uint8_t)pinName.substring(4).toInt(), status["active_low"] | false);
+      Serial.println("[flova] status LED configured pin=" + pinName +
+                     " active=" + ((status["active_low"] | false) ? "low" : "high"));
+    }
+
+    JsonObject reset = runtime["system"]["factory_reset"];
+    String source = reset["source"] | "";
+    if (source == "gpio") {
+      String resetPin = reset["pin"] | "";
+      if (!resetPin.startsWith("GPIO")) return;
+      bool activeLow = reset["active_low"] | true;
+      setFactoryResetButton((uint8_t)resetPin.substring(4).toInt(), activeLow);
+      Serial.println("[flova] factory reset input configured pin=" + resetPin +
+                     " active=" + (activeLow ? "low" : "high"));
+      return;
+    }
+    if (source != "datastream") return;
+    String resetKey = reset["key"] | "";
+    for (JsonObject stream : runtime["datastreams"].as<JsonArray>()) {
+      JsonObject mapping = stream["hardware_mapping"];
+      if (String((const char*)(stream["key"] | "")) != resetKey ||
+          String((const char*)(mapping["kind"] | "")) != "digital_input")
+        continue;
+      String resetPin = mapping["pin"] | "";
+      if (!resetPin.startsWith("GPIO")) return;
+      String active = mapping["active_level"] | "high";
+      String pull = mapping["pull"] | "none";
+      uint8_t mode = pull == "pullup" ? INPUT_PULLUP : INPUT;
+      setFactoryResetButton((uint8_t)resetPin.substring(4).toInt(), active == "low",
+                            10000, mode);
+      Serial.println("[flova] factory reset input configured datastream=" + resetKey);
+      return;
+    }
   }
+
+  bool runtimeRestartPending_ = false;
 
   class Storage : public ArduinoStorage {
    public:

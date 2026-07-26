@@ -16,8 +16,8 @@ local write or MQTT write
   -> reject non-writable semantics
   -> invoke the registered hardware handler
   -> on acceptance only: update cache and optional persistence
-  -> publish reported state, or mark KeepLatest state dirty offline
-  -> return locally or acknowledge the cloud command
+  -> publish device-originated state, or mark KeepLatest state dirty offline
+  -> return locally, or publish one cloud command result with applied value
 ```
 
 `read()` never touches hardware or the network. `refresh()` reads hardware and enters the `report()` path. `report()` records an observed value and never calls the actuator handler.

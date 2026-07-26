@@ -1,4 +1,6 @@
 #pragma once
+
+#include "FlovaFactoryResetGesture.h"
 #include "FlovaClock.h"
 #include "FlovaLogger.h"
 #include "FlovaStorage.h"
@@ -21,6 +23,9 @@ class FlovaDevice {
   Datastream<FlovaObjectValue> objectDatastream(const char* key);
   void addDigitalOutput(const char* key, uint8_t pin, bool activeHigh = true, uint32_t minOutputIntervalMs = 300);
   void addDigitalInput(const char* key, uint8_t pin, bool activeHigh = true, uint32_t debounceMs = 50, uint8_t mode = INPUT);
+  void addAnalogInput(const char* key, uint8_t pin, uint32_t sampleIntervalMs = 1000);
+  void addPwmOutput(const char* key, uint8_t pin, double minimum = 0, double maximum = 100,
+                    double initialValue = 0);
   FlovaWriteResult applyWrite(const char* key, const String& value, FlovaValueType type,
                               FlovaValueOrigin origin = FlovaValueOrigin::LocalLogic,
                               const String& commandId = "", const String& correlationId = "",
@@ -35,8 +40,11 @@ class FlovaDevice {
   bool registerTypedRead(const char* key, void* handler, FlovaValueType type);
   void configureDatastream(const char* key, FlovaDatastreamMode mode, FlovaOfflinePolicy offline,
                            FlovaPersistencePolicy persistence, FlovaRestorePolicy restore);
+  void configurePublishInterval(const char* key, uint32_t minimumIntervalMs);
+  void enableStateBatching(uint8_t maximumReadings = 32, uint32_t flushIntervalMs = 100);
   void setStatusLed(uint8_t pin, bool activeLow);
-  void setFactoryResetButton(uint8_t pin, bool activeLow, uint32_t holdMs = 10000);
+  void setFactoryResetButton(uint8_t pin, bool activeLow, uint32_t holdMs = 10000,
+                             uint8_t mode = 255);
   bool isOtaCapable() const { return config_.otaCapable; }
   void setOtaInstaller(FlovaOtaInstaller& installer) { otaInstaller_ = &installer; }
   void setBootControl(FlovaBootControl& control) { bootControl_ = &control; }
@@ -56,8 +64,10 @@ class FlovaDevice {
     FlovaValueOrigin origin = FlovaValueOrigin::Unknown;
     FlovaValueQuality quality = FlovaValueQuality::Stale;
     uint32_t updatedAt = 0, revision = 0;
+    uint32_t minimumPublishIntervalMs = 0, lastPublishedMs = 0;
+    uint32_t batchedRevision = 0;
     uint32_t lastDesiredVersion = 0;
-    bool hasValue = false, dirty = false;
+    bool hasValue = false, dirty = false, publishPending = false, batchInFlight = false;
     void* writeHandler = nullptr;
     void* readHandler = nullptr;
   };
@@ -83,12 +93,26 @@ class FlovaDevice {
     bool lastSent = false;
     uint32_t changedAt = 0;
   };
+  struct AnalogInput {
+    String key;
+    uint8_t pin = 255;
+    uint32_t sampleIntervalMs = 1000;
+    uint32_t lastSampleMs = 0;
+    bool sampled = false;
+  };
+  struct PwmOutput {
+    String key;
+    uint8_t pin = 255;
+    double minimum = 0;
+    double maximum = 100;
+  };
 
   String topic(const char* suffix) const;
   String datastreamTopic(const char* key, const char* suffix) const;
   String heartbeatPayload() const;
   void initializeResourceContract();
   void updateStatusIndicator();
+  void processFactoryResetGesture();
   bool publishHeartbeat();
   bool reconnect();
   String jsonValue(const char* key, const String& payload) const;
@@ -101,6 +125,9 @@ class FlovaDevice {
   void persistState(const DatastreamState& state);
   void restorePersistentStates();
   bool publishState(DatastreamState& state);
+  bool publishStateBatch();
+  void flushDueStates();
+  String stateMessageId(const DatastreamState& state) const;
   void flushDirtyStates();
   FlovaWriteResult invokeWriteHandler(DatastreamState& state, const String& value,
                                       const String& commandId = "",
@@ -115,12 +142,15 @@ class FlovaDevice {
   void ackDigitalOutput(const DigitalOutput& output, const String& commandId, const String& correlationId);
   void flushDigitalOutputs();
   void pollDigitalInputs();
+  void pollAnalogInputs();
+  FlovaWriteResult applyPwmOutput(PwmOutput& output, const String& value);
   bool commandSeen(const String& commandId) const;
   void rememberCommand(const String& commandId);
   void acknowledgeDuplicateCommand(const String& commandId, const String& correlationId,
                                    const String& key, const String& value);
   void requestTimeSync();
   void handleTimeSync(const String& payload);
+  void handleIngestionAck(const String& payload);
   bool installScheduleManifest(const String& payload, bool persist = true);
   void restoreScheduleManifest();
   void runSchedules();
@@ -155,16 +185,29 @@ class FlovaDevice {
   uint8_t outputCount_ = 0;
   DigitalInput inputs_[FLOVA_HARDWARE_INPUT_CAPACITY];
   uint8_t inputCount_ = 0;
+  AnalogInput analogInputs_[FLOVA_HARDWARE_INPUT_CAPACITY];
+  uint8_t analogInputCount_ = 0;
+  PwmOutput pwmOutputs_[FLOVA_HARDWARE_OUTPUT_CAPACITY];
+  uint8_t pwmOutputCount_ = 0;
   uint32_t lastHeartbeatMs_ = 0;
+  uint32_t bootNonce_ = 0;
   uint32_t lastReconnectMs_ = 0;
+  uint32_t lastCriticalRetryMs_ = 0;
+  uint32_t batchSequence_ = 0;
+  uint32_t batchQueuedAtMs_ = 0;
+  uint32_t batchLastPublishedMs_ = 0;
+  uint32_t batchFlushIntervalMs_ = 100;
+  uint8_t batchMaximumReadings_ = 0;
+  String batchMessageId_;
+  String batchPayload_;
   uint32_t reconnectDelayMs_ = 1000;
   uint8_t statusLedPin_ = 255;
   bool statusLedActiveLow_ = false;
   FlovaStatusIndicatorState statusIndicatorState_ = FlovaStatusIndicatorState::Offline;
   uint8_t resetButtonPin_ = 255;
   bool resetButtonActiveLow_ = false;
-  uint32_t resetHoldMs_ = 10000;
-  uint32_t resetStartedMs_ = 0;
+  FlovaFactoryResetGesture resetGesture_;
+  uint32_t resetTapFlashUntilMs_ = 0;
   String recentCommandIds_[FLOVA_COMMAND_DEDUP_CAPACITY];
   uint8_t recentCommandCursor_ = 0;
   uint32_t lastTimeRequestMs_ = 0;

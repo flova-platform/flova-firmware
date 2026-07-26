@@ -53,6 +53,7 @@ template <typename T> class FlovaDevice::Datastream {
   Datastream& offline(FlovaOfflinePolicy value) { offline_ = value; sync(); return *this; }
   Datastream& persist(FlovaPersistencePolicy value) { persistence_ = value; sync(); return *this; }
   Datastream& restore(FlovaRestorePolicy value) { restore_ = value; sync(); return *this; }
+  Datastream& publishEvery(uint32_t milliseconds) { device_.configurePublishInterval(key_.c_str(), milliseconds); return *this; }
  private:
   void sync() { device_.configureDatastream(key_.c_str(), mode_, offline_, persistence_, restore_); }
   FlovaDevice& device_; String key_; WriteHandler writeHandler_ = nullptr; ReadHandler readHandler_ = nullptr;
