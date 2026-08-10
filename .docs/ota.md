@@ -1,6 +1,6 @@
 # OTA updates
 
-Firmware binaries are built outside Engine and uploaded as immutable `.bin` releases. Engine sends the install offer over the device's authenticated MQTT connection; the device downloads the artifact directly over HTTP(S).
+Firmware binaries are built outside Engine and uploaded as immutable `.bin` releases. Engine sends the install offer over the authenticated Device Link; the device downloads the artifact directly over HTTPS.
 
 ## Build and release configuration
 
@@ -8,16 +8,23 @@ Build the non-transactional universal artifacts with `pio run -e universal-esp32
 
 Transactional recovery is opt-in. ESP32 developers can use `universal-esp32-ab-4m` or `universal-esp32-ab-8m`, or copy that environment's partition file and build flags into their board profile. The default environment never replaces the developer's partition table and reports `otaStrategy=none`.
 
-The offer includes `version`, `firmware_target`, `sha256`, `size_bytes`, and `artifact_url`. Devices compute SHA-256 while streaming into the platform updater. A mismatch aborts before the new boot image is activated. OTA requires TLS plus per-device broker credentials and topic ACLs in production; there is no OTA-specific key to provision.
+The offer includes `version`, `firmware_target`, `sha256`, `size_bytes`, and `artifact_url`. Devices verify the artifact server's public certificate and compute SHA-256 while streaming into the platform updater. A mismatch aborts before the new boot image is activated; there is no OTA-specific key to provision.
 
-## MQTT v1 lifecycle
+## Device Link lifecycle
 
-- Desired offer: `flova/v1/devices/{device_id}/ota/desired`
-- Device reports: `flova/v1/devices/{device_id}/ota/reported`
+- Desired offer: Device Link `ota_desired` frame.
+- Device reports: Device Link `ota_reported` frame.
 - Report states: `notified`, `installing`, `rebooting`, `candidate`, `health_checking`, `confirmed`, `rollback_requested`, `rolled_back`, or `failed`.
-- Final success requires a matching release/install heartbeat and a stable boot state. A candidate must publish an authenticated MQTT heartbeat and stay connected for 30 seconds; it is rolled back after a two-minute health deadline.
+- Final success requires a matching release/install heartbeat and a stable boot state. A candidate must publish an authenticated heartbeat and stay connected for 30 seconds; it is rolled back after a two-minute health deadline.
 
-OTA is staged in the MQTT callback and executed from `FlovaDevice::loop()`. Binary data never travels through MQTT.
+OTA is staged in the Device Link callback and executed from `FlovaDevice::loop()`. Firmware binary data never travels through Device Link.
+
+Before downloading, the shared runtime publishes `installing`, disconnects
+Device Link, and releases its TLS session. ESP8266 reuses the device's single
+pre-parsed CA list with the shared-IRAM HTTPS TLS profile and existing 512-byte
+firmware streaming buffer. A failed download reconnects Device Link before
+reporting `failed`; a missing or insufficient TLS memory profile reports
+`resource_unavailable`. WSS and HTTPS are never active together.
 
 ## Custom boards
 

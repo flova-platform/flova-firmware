@@ -2,44 +2,111 @@
 
 ## Product boundary
 
-Flova Cloud runs end-user automations, schedules, notifications, and cross-device workflows. Firmware contains developer-authored product logic and safety rules. The device does not download or execute user-authored rules, scripts, or automation bytecode.
+Flova Cloud runs user automations, schedules, notifications, and cross-device
+workflows. Firmware contains developer-authored product logic and safety rules;
+devices never execute user-authored scripts or automation bytecode.
 
-Datastreams are the shared contract across firmware, Cloud, mobile experiences, and operations dashboards. A physical change, local condition, direct user action, and cloud automation all resolve to a datastream value, but firmware remains authoritative about whether hardware can safely accept a write.
+Datastreams are the shared contract across firmware, Cloud, mobile, and
+operations dashboards. A physical change, local condition, user action, or
+cloud automation resolves to a datastream value, while firmware remains
+authoritative about safe hardware writes.
+
+Public APIs remain JSON-over-HTTPS. The constrained device plane is Flova Link:
+verified binary WSS, a fixed 12-byte header, and deterministic bounded CBOR
+defined only by version-controlled CDDL. Generated zcbor structures isolate
+wire details, so SDK users keep their strongly typed read/write, state, command
+result, configuration, and OTA APIs without handling CBOR.
 
 ## Local-first lifecycle
 
-Each registered datastream owns a bounded in-memory snapshot: value, origin, quality, revision, update time, and dirty state.
-
 ```text
-local write or MQTT write
-  -> validate key and value type
-  -> reject non-writable semantics
-  -> invoke the registered hardware handler
-  -> on acceptance only: update cache and optional persistence
-  -> publish device-originated state, or mark KeepLatest state dirty offline
-  -> return locally, or publish one cloud command result with applied value
+local write or Device Link command
+  -> validate compact ID, generation, type, and safety limits
+  -> invoke registered hardware handler from Device::run()/loop()
+  -> on acceptance only, update cache and optional persistence
+  -> report state or retain one bounded durable snapshot offline
+  -> return locally or report one correlated command result
 ```
 
-`read()` never touches hardware or the network. `refresh()` reads hardware and enters the `report()` path. `report()` records an observed value and never calls the actuator handler.
+`read()` never touches hardware/network. `refresh()` enters `report()`;
+`report()` observes state and never invokes an actuator. Transport callbacks
+only decode/queue bounded records and never invoke hardware directly.
 
-## Portable core
+## Portable core and protocol boundary
 
-`FlovaCore.h` owns transport-independent typed state and accepts structured envelopes through `flova::Link`. MQTT topics, JSON, GPIO, provisioning, restart behavior, and network credentials belong to adapters. This permits Ethernet, cellular, BLE, LoRaWAN, serial, CAN, gateway, STM32, and PLC integrations without changing datastream semantics.
+`FlovaCore.h` remains Arduino/ESP/GPIO/exception/RTTI-free. Board adapters own
+WSS, TLS, Wi-Fi, SoftAP handoff, GPIO, and storage. The C++11 core uses fixed
+arrays and explicit callbacks, not dynamic protocol containers or generic
+CBOR/JSON object trees.
 
-The portable C++11 core supports 12 registered datastreams and 96-byte bounded identifiers/text values by default. It uses fixed arrays, explicit callback types, no exceptions, and no RTTI. It is the only datastream engine.
+The frame layer validates the 12-byte header and the 512-byte complete-frame
+limit before zcbor. Encoders/decoders use generated schema-aware fixed C/C++
+structures and caller-provided buffers. CDDL fixes every scalar/collection
+bound and nesting is capped at four. There is no handwritten TLV/value codec,
+format negotiation, compatibility decoder, or JSON intermediary in this path.
+Each WSS binary message is exactly one complete frame; payload capacity is 500
+bytes. Larger logical work is a CDDL-defined bounded record/chunk sequence.
+OTA images stay outside Link as streamed verified HTTPS downloads.
 
-## Execution and bounds
+## Streamed configuration and provisioning
 
-`flova::Device::run()` polls the injected link and flushes dirty state. Board adapters own connectivity and hardware polling. Limits are 12 cached datastreams, 8 compiled schedules, 96 occurrences per schedule, and 4 recent command IDs. KeepLatest uses the snapshot as the single coalesced pending value.
+```text
+CONFIG_BEGIN -> validate/stage metadata and compact IDs
+CONFIG_RECORD -> fixed decode -> validate -> inactive A/B write -> verify -> ACK
+CONFIG_END -> count/checksum validation -> atomic promotion -> ACK
+```
 
-ESP32 persists its versioned device configuration as current and previous
-single-blob snapshots in Preferences/NVS. ESP8266 stores the same configuration
-contract in LittleFS with verified current and backup files. ESP8266 retains its
-4 KiB emulated EEPROM layout for bounded runtime state, including eight
-224-byte hashed datastream snapshot slots. Records include their datastream key;
-a hash collision can discard an older snapshot but cannot restore it into the
-wrong datastream.
+`CONFIG_BEGIN` establishes a configuration generation and compact datastream ID
+mapping. Subsequent telemetry/state/commands use that ID plus generation rather
+than UUIDs. Records preserve bounded nested hardware mappings, schedules,
+system settings, and safety policies but are persisted independently, reusing
+one working record. RAM therefore stays essentially constant as configuration
+count rises. Schedule metadata and at-most-16-value occurrence chunks use the
+same record transaction; the fixed compiler rejects duplicate, missing, or
+out-of-order chunks before installation. Commands may carry a bounded UTC
+expiry deadline; expiry-protected commands are rejected when the device clock
+is invalid or the deadline has passed.
 
-## Deliberate MVP limits
+The SoftAP only hands off Wi-Fi/bootstrap inputs. Once connected, Engine
+bootstrap uses the same WSS transactional CBOR exchange and A/B installer as a
+normal update. Credentials are authoritative only after verified commit, and
+final confirmation is idempotent if the connection is lost.
 
-Rate/deadband configuration, schema min/max/enum metadata, and hardware restoration policies beyond cache restore remain follow-up work. Commands are delivered by Cloud with expiry and are never queued by firmware for later execution.
+## ESP8266 memory and TLS profile
+
+ESP8266 permits one active TLS workload. Official Link WSS uses verified
+BearSSL **2,048-byte RX / 512-byte TX**, shared IRAM, certificate-chain and
+hostname validation. Generic/self-hosted endpoints use the full profile until
+explicitly certified for the smaller receive record. No plaintext,
+`setInsecure()`, or fingerprint-only fallback is permitted.
+
+Link owns one fixed 512-byte receive buffer, one fixed 512-byte transmit
+buffer, bounded zcbor state, and one fixed decoded-record workspace. After
+transport initialization, encode/decode, telemetry/state, commands, ACKs,
+configuration installation/storage, and reconnect perform zero dynamic heap
+allocation and never allocate from a peer-controlled length.
+
+OTA releases Link first, then opens its independent streamed verified HTTPS
+client with ESP8266 **16,384-byte RX / 512-byte TX** buffers; it never retains
+the artifact in RAM.
+
+## Reliability and validation
+
+Message IDs, durable application ACKs, idempotent retries, permanent
+rejections, connection-generation fencing, newest-connection-wins,
+authentication deadlines, flow control, overload handling, command correlation,
+and full-jitter reconnect backoff remain protocol invariants. Best-effort
+telemetry may be shed; durable messages keep their ID until persistence is
+acknowledged.
+
+Required acceptance includes generated-schema/cross-language canonical-CBOR
+vectors, 512/513-byte frame tests, malformed-input and fuzz coverage,
+transactional A/B power-loss/reconnect coverage, and ESP8266 TLS/WSS/max-frame/
+nested-record/reconnect memory instrumentation. The static
+`scripts/check_flova_link_contract.sh` guard rejects dynamic JSON, generic
+trees, heap allocation, dynamic containers, and Arduino `String` in explicit
+Link/configuration/storage paths; exceptions are exact, documented, and only
+valid outside those paths.
+
+This is the required architecture, not evidence that a particular build has
+completed every acceptance test. Release claims require measured results.

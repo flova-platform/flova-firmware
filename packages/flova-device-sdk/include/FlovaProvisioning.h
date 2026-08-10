@@ -3,7 +3,7 @@
 
 namespace flova {
 
-enum class ProvisioningStatus : uint8_t { Idle, Redeeming, Committing, Ready, Failed };
+enum class ProvisioningStatus : uint8_t { Idle, Bootstrapping, Committing, Ready, Failed };
 enum class ProvisioningPoll : uint8_t { Pending, Complete, Failed };
 
 struct ProvisioningRequest {
@@ -13,31 +13,31 @@ struct ProvisioningRequest {
 struct ProvisioningSession {
   uint32_t schemaVersion;
   char deviceId[kMaxText], organizationId[kMaxText], templateVersionId[kMaxText];
-  char host[kMaxText], username[kMaxText], password[kMaxText];
-  uint16_t port; uint64_t serverUtcMs;
-  ProvisioningSession() : schemaVersion(0), port(0), serverUtcMs(0) { deviceId[0] = organizationId[0] = templateVersionId[0] = host[0] = username[0] = password[0] = 0; }
-  bool valid() const { return schemaVersion == 1 && deviceId[0] && host[0] && username[0] && password[0] && port; }
+  char linkUrl[kMaxText], secret[kMaxText];
+  uint64_t serverUtcMs;
+  ProvisioningSession() : schemaVersion(0), serverUtcMs(0) { deviceId[0] = organizationId[0] = templateVersionId[0] = linkUrl[0] = secret[0] = 0; }
+  bool valid() const { return schemaVersion == 1 && deviceId[0] && strncmp(linkUrl, "wss://", 6) == 0 && secret[0]; }
 };
 
-class EngineClient {
+class LinkBootstrapClient {
  public:
-  virtual ~EngineClient() {}
-  virtual bool beginRedeem(const ProvisioningRequest& request) = 0;
+  virtual ~LinkBootstrapClient() {}
+  virtual bool beginBootstrap(const ProvisioningRequest& request) = 0;
   virtual ProvisioningPoll poll(ProvisioningSession& session) = 0;
 };
 
 class Provisioner {
  public:
-  Provisioner(EngineClient& client, Storage& storage, Clock& clock) : client_(client), storage_(storage), clock_(clock), status_(ProvisioningStatus::Idle), error_("") {}
+  Provisioner(LinkBootstrapClient& client, Storage& storage, Clock& clock) : client_(client), storage_(storage), clock_(clock), status_(ProvisioningStatus::Idle), error_("") {}
   bool begin(const ProvisioningRequest& request) {
     if (!request.engineUrl[0] || !request.token[0] || !request.hardwareId[0]) return fail("invalid_provisioning_input");
 #ifndef FLOVA_ALLOW_INSECURE_PROVISIONING
     if (strncmp(request.engineUrl, "https://", 8) != 0) return fail("https_required");
 #endif
-    status_ = ProvisioningStatus::Redeeming; error_ = ""; return client_.beginRedeem(request) || fail("redeem_start_failed");
+    status_ = ProvisioningStatus::Bootstrapping; error_ = ""; return client_.beginBootstrap(request) || fail("bootstrap_start_failed");
   }
   void run() {
-    if (status_ != ProvisioningStatus::Redeeming) return;
+    if (status_ != ProvisioningStatus::Bootstrapping) return;
     ProvisioningPoll result = client_.poll(pending_); if (result == ProvisioningPoll::Pending) return;
     if (result == ProvisioningPoll::Failed || !pending_.valid()) { fail("invalid_provisioning_response"); return; }
     status_ = ProvisioningStatus::Committing;
@@ -49,6 +49,6 @@ class Provisioner {
   const char* error() const { return error_; }
  private:
   bool fail(const char* error) { status_ = ProvisioningStatus::Failed; error_ = error; return false; }
-  EngineClient& client_; Storage& storage_; Clock& clock_; ProvisioningStatus status_; const char* error_; ProvisioningSession pending_;
+  LinkBootstrapClient& client_; Storage& storage_; Clock& clock_; ProvisioningStatus status_; const char* error_; ProvisioningSession pending_;
 };
 }  // namespace flova

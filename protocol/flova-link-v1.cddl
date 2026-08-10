@@ -1,0 +1,199 @@
+; Flova Link v1 payload contract.
+;
+; The 12-byte outer frame selects exactly one entry type below. Payloads are
+; deterministic CBOR (RFC 8949 section 4.2.1). The protocol never carries a
+; generic CBOR value: every value is reached through a message-specific type.
+; Maximum CBOR nesting depth: 4
+
+uint8 = 0..255
+uint16 = 0..65535
+uint32 = 0..4294967295
+uint64 = 0..18446744073709551615
+int64 = -9223372036854775808..9223372036854775807
+
+uuid = bstr .size 16
+secret = bstr .size 32
+sha256 = bstr .size 32
+empty-id = bstr .size 0
+correlation-id = empty-id / uuid
+error-code = tstr .size (1..48)
+short-text = tstr .size (0..96)
+long-text = tstr .size (0..192)
+url = tstr .size (1..192)
+token = bstr .size (32..64)
+compact-id = uint16
+generation = uint32
+sequence = uint32
+
+; The explicit value discriminator is part of the schema, so float32 and
+; float64 never describe the same wire value. `typed-value-fields` is embedded
+; directly in hot arrays; `typed-value` is used by control maps.
+typed-value-fields =
+  (value-bool-type: 0, value-bool: bool) /
+  (value-int-type: 1, value-int: int64) /
+  (value-f32-type: 2, value-f32: float32) /
+  (value-f64-type: 3, value-f64: float64) /
+  (value-text-type: 4, value-text: short-text)
+typed-value = [typed-value-fields]
+
+; 0x01..0x08 authentication and bootstrap.
+auth = [auth-device-id: uuid, auth-secret: secret]
+auth-ok = [auth-server-utc-ms: uint64, auth-heartbeat-ms: uint32, auth-frame-bytes: 512, auth-connection-generation: uint32]
+auth-error = [auth-error-code: error-code]
+ping = []
+pong = []
+
+bootstrap-auth = {
+  bootstrap-token: 0 => token,
+  bootstrap-secret: 1 => secret,
+  hardware-id: 2 => tstr .size (1..96),
+  firmware-target: 3 => tstr .size (1..64),
+  bootstrap-capabilities: 4 => capabilities
+}
+
+capabilities = {
+  datastream-slots: 0 => capability-datastream-slots,
+  input-slots: 1 => capability-input-slots,
+  output-slots: 2 => capability-output-slots,
+  command-slots: 3 => capability-command-slots,
+  schedule-slots: 4 => capability-schedule-slots,
+  manifest-bytes: 5 => capability-manifest-bytes,
+  history-bytes: 6 => capability-history-bytes,
+  frame-bytes: 7 => 512
+}
+
+capability-datastream-slots = uint16
+capability-input-slots = uint16
+capability-output-slots = uint16
+capability-command-slots = uint16
+capability-schedule-slots = uint16
+capability-manifest-bytes = uint16
+capability-history-bytes = uint16
+
+bootstrap-committed = [committed-device-id: uuid, committed-generation: generation, committed-server-utc-ms: uint64]
+bootstrap-error = [bootstrap-error-code: error-code]
+
+; 0x10..0x18 device-to-Engine hot-path messages.
+heartbeat = [heartbeat-generation: generation, heartbeat-uptime-ms: uint64, heartbeat-status: uint8, heartbeat-firmware-version: tstr .size (1..32)]
+state = [state-generation: generation, state-values: state-readings]
+state-readings = [1*4 state-reading]
+state-reading = [reading-compact-id: compact-id, typed-value-fields, reading-revision: uint32]
+
+command-result = command-result-ok / command-result-error
+command-result-ok = [result-ok-generation: generation, result-ok-command-id: uuid, result-ok-compact-id: compact-id, result-ok-status: 0..2, typed-value-fields, result-ok-version: uint32, result-ok-correlation-id: correlation-id]
+command-result-error = [result-error-generation: generation, result-error-command-id: uuid, result-error-compact-id: compact-id, result-error-status: 3..255, result-error-code: error-code, result-error-message: long-text, result-error-version: uint32, result-error-correlation-id: correlation-id]
+
+config-reported = [reported-config-generation: generation, reported-config-status: 0..255, reported-config-checksum: sha256]
+ota-reported = [reported-ota-id: uuid, reported-ota-status: 0..255, reported-ota-error: error-code, reported-ota-progress: uint32]
+schedule-reported = [reported-schedule-generation: generation, reported-schedule-revision: uint32, reported-schedule-status: 0..255, reported-schedule-checksum: sha256]
+schedule-renew = [renew-generation: generation, renew-revision: uint32]
+time-request = [time-request-id: uint64, time-request-monotonic-ms: uint64]
+config-ack = [ack-generation: generation, ack-sequence: sequence, ack-status: 0..255, ack-reason: error-code]
+
+; 0x20..0x27 Engine-to-device hot-path and reliability messages.
+command = [command-generation: generation, command-id: uuid, command-compact-id: compact-id, typed-value-fields, command-desired-version: uint32, command-expires-at-utc-ms: uint64, command-correlation-id: correlation-id]
+ingestion-ack = []
+config-desired = [desired-config-generation: generation, desired-config-checksum: sha256, desired-config-record-count: uint32]
+ota-desired = {
+  ota-install-id: 0 => uuid,
+  ota-version: 1 => tstr .size (1..32),
+  ota-url: 2 => url,
+  ota-checksum: 3 => sha256,
+  ota-size: 4 => uint32,
+  ? ota-target: 5 => tstr .size (1..32)
+}
+schedule-desired = [desired-schedule-generation: generation, desired-schedule-revision: uint32, desired-schedule-record-count: uint16, desired-schedule-checksum: sha256]
+time-response = [time-response-request-id: uint64, time-response-server-utc-ms: uint64]
+flow-control = [flow-retry-after-ms: uint32, flow-reason: error-code, flow-capacity: uint16]
+message-rejected = [rejection-reason: error-code]
+
+; 0x28..0x2c transactional configuration and schedule records. Integer-keyed
+; maps are encoded in ascending key order. CONFIG_RECORD carries one record;
+; no complete configuration object exists on the wire or in device RAM.
+config-begin = {
+  config-generation: 0 => generation,
+  config-schema-version: 1 => 1,
+  config-checksum: 2 => sha256,
+  config-record-count: 3 => uint32,
+  negotiated-limits: 4 => capabilities,
+  config-device-id: 5 => uuid,
+  config-template-id: 6 => uuid,
+  config-link-url: 7 => url,
+  ? config-command-id: 8 => uuid
+}
+
+config-record = {
+  record-generation: 0 => generation,
+  record-sequence: 1 => sequence,
+  record-body: 2 => config-record-body
+}
+
+config-record-body = datastream-record / system-record / schedule-record / schedule-occurrence-record / safety-record
+
+datastream-record = {
+  datastream-kind: 0 => 0,
+  datastream-compact-id: 1 => compact-id,
+  datastream-uuid: 2 => uuid,
+  datastream-key: 3 => tstr .size (1..48),
+  datastream-value-type: 4 => 0..4,
+  ? datastream-minimum: 5 => typed-value,
+  ? datastream-maximum: 6 => typed-value,
+  ? datastream-default: 7 => typed-value,
+  ? datastream-mapping: 8 => hardware-mapping
+}
+
+hardware-mapping = {
+  mapping-kind: 0 => 0..3,
+  mapping-pin: 1 => uint16,
+  ? mapping-active-high: 2 => bool,
+  ? mapping-pull: 3 => 0..3,
+  ? mapping-debounce-ms: 4 => uint32,
+  ? mapping-sample-ms: 5 => uint32,
+  ? mapping-min-output-ms: 6 => uint32
+}
+
+system-record = {
+  system-kind: 0 => 1,
+  ? system-heartbeat-ms: 1 => uint32,
+  ? system-status-led-pin: 2 => uint8,
+  ? system-status-led-active-low: 3 => bool,
+  ? system-batch-flush-ms: 4 => uint32
+}
+
+schedule-record = {
+  schedule-kind: 0 => 2,
+  schedule-id: 1 => uint32,
+  schedule-enabled: 2 => bool,
+  schedule-valid-from: 3 => uint64,
+  schedule-valid-until: 4 => uint64,
+  schedule-actions: 5 => [1*8 schedule-action]
+}
+
+schedule-action = [action-offset-ms: uint32, action-compact-id: compact-id, typed-value-fields]
+
+; Schedule metadata and occurrences are separate records. Each chunk is
+; independently bounded and ordered by chunk-index; CONFIG_END verifies the
+; complete transaction checksum before promotion.
+schedule-occurrence-record = {
+  occurrence-kind: 0 => 4,
+  occurrence-schedule-id: 1 => uint32,
+  occurrence-chunk-index: 2 => uint16,
+  occurrence-chunk-count: 3 => uint16,
+  occurrence-values: 4 => [1*16 uint64]
+}
+
+safety-record = {
+  safety-kind: 0 => 3,
+  safety-compact-id: 1 => compact-id,
+  safety-policy: 2 => 0..4,
+  ? safety-minimum: 3 => typed-value,
+  ? safety-maximum: 4 => typed-value,
+  ? safety-timeout-ms: 5 => uint32
+}
+
+config-end = [end-generation: generation, end-record-count: uint32, end-checksum: sha256]
+schedule-record-message = [schedule-message-generation: generation, schedule-message-sequence: uint32, schedule-message-record: schedule-record]
+schedule-end = [schedule-end-generation: generation, schedule-end-record-count: uint32, schedule-end-checksum: sha256]
+
+; 0x7f connection/protocol failure.
+error = [protocol-error-code: error-code]

@@ -1,0 +1,7 @@
+{
+  "name": "zcbor",
+  "version": "0.9.1",
+  "build": {
+    "flags": ["-DZCBOR_CANONICAL"]
+  }
+}

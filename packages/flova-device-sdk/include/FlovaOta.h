@@ -14,7 +14,13 @@ struct FlovaOtaOffer {
   bool allowDowngrade = false;
 };
 
-enum class FlovaOtaResult { Installed, DownloadFailed, HashMismatch, FlashFailed };
+enum class FlovaOtaResult {
+  Installed,
+  DownloadFailed,
+  HashMismatch,
+  FlashFailed,
+  ResourceUnavailable
+};
 
 class FlovaOtaInstaller {
  public:

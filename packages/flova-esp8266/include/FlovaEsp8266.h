@@ -1,471 +1,689 @@
 #pragma once
-#include <ArduinoJson.h>
+
 #include <EEPROM.h>
-#include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
+#include <LittleFS.h>
+#include <time.h>
 #include <FlovaArduino.h>
 #include <FlovaConfiguration.h>
-#include <FlovaScheduleRuntime.h>
+#include <FlovaLinkCodec.h>
+#include <FlovaLinkConfigurationStorage.h>
+#include <FlovaProvisioningHandoff.h>
+#include <FlovaTlsProfile.h>
+#include <FlovaTlsRoots.h>
+
+extern "C" {
+#include <user_interface.h>
+}
 
 #ifndef FLOVA_FIRMWARE_VERSION
 #define FLOVA_FIRMWARE_VERSION "0.1.0"
 #endif
-#include <LittleFS.h>
 
+// ESP8266 uses fixed credential images plus the existing bounded state slots.
+// Engine configuration is never represented as JSON or retained as one RAM
+// object; the verified WSS transaction supplies one schema-defined record at a
+// time to the board installer.
 class FlovaEsp8266 : public FlovaDevice {
  public:
-  FlovaEsp8266() : FlovaDevice(transport_, storage_, clock_, logger_) {}
+  FlovaEsp8266()
+      : FlovaDevice(transport_, storage_, clock_, logger_),
+        configurationStorage_(storage_, kMaximumConfigurationRecords),
+        configurationInstaller_(configurationStorage_, kMaximumConfigurationRecords) {
+    transport_.setTrustAnchors(trustAnchors_);
+    otaInstaller_.setTrustAnchors(trustAnchors_);
+  }
 
   bool begin() {
     storage_.begin();
-    if (!loadCredentials()) {
+    if (const rst_info* reset = system_get_rst_info()) {
+      Serial.printf(
+          "[flova] reset reason=%u exccause=%u epc1=0x%08lx depc=0x%08lx excvaddr=0x%08lx\n",
+          static_cast<unsigned>(reset->reason),
+          static_cast<unsigned>(reset->exccause),
+          static_cast<unsigned long>(reset->epc1),
+          static_cast<unsigned long>(reset->depc),
+          static_cast<unsigned long>(reset->excvaddr));
+    }
+    const bool hasCredentials = loadCredentials();
+    const bool hasPendingHandoff = loadPendingImage(provisioningImageWorkspace_);
+    const flova::ProvisioningBootMode mode =
+        flova::provisioningBootMode(hasCredentials, hasPendingHandoff,
+                                    provisioningImageWorkspace_.inProgress);
+    if (mode == flova::ProvisioningBootMode::InterruptedBootstrap) {
+      storage_.setString("prov_error", "firmware_reset_during_bootstrap");
+      storage_.remove("prov_pending");
       startProvisioningAp();
       return true;
     }
-    storage_.getString("ota_release", otaReleaseId_);
-    storage_.getString("ota_install", otaInstallId_);
-
+    if (mode == flova::ProvisioningBootMode::Bootstrap) {
+      startBootstrap(provisioningImageWorkspace_.handoff);
+      return true;
+    }
+    if (mode == flova::ProvisioningBootMode::Setup) {
+      startProvisioningAp();
+      return true;
+    }
+    storage_.remove("prov_pending");
+    WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
-    WiFi.begin(wifiSsid_.c_str(), wifiPassword_.c_str());
-    uint32_t started = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - started < 15000) delay(100);
-    if (WiFi.status() != WL_CONNECTED) {
-      startProvisioningAp();
-      return true;
-    }
-
-    transport_.configure(mqttHost_, mqttPort_);
-    FlovaConfig config;
-    config.deviceId = deviceId_.c_str();
-    config.firmwareVersion = FLOVA_FIRMWARE_VERSION;
-    config.mqttHost = mqttHost_.c_str();
-    config.mqttPort = mqttPort_;
-    config.mqttUsername = mqttUsername_.c_str();
-    config.mqttPassword = mqttPassword_.c_str();
-    config.datastreamKeys = datastreamKeys_.c_str();
-    config.appliedTemplateVersionId = appliedTemplateVersionId_.c_str();
-    config.configChecksum = configChecksum_.c_str();
-    config.boardType = "esp8266";
-    config.firmwareTarget = "universal_esp8266";
-    config.runningReleaseId = otaReleaseId_.c_str();
-    config.lastInstallId = otaInstallId_.c_str();
-    config.otaCapable = true;
-    config.rollbackCapable = false;
-    config.flashSize = ESP.getFlashChipRealSize();
-    applyNegotiatedLimits(config);
-    configure(config);
-    setOtaInstaller(otaInstaller_);
-    setBootControl(bootControl_);
-    applyRuntimeMappings();
-    applyRuntimeSystem();
-    logHeap("before device begin");
-    return FlovaDevice::begin();
-  }
-
-  void loop() {
-    if (provisioning_) {
-      server_.handleClient();
-      return;
-    }
-    FlovaDevice::loop();
-    if (runtimeRestartPending_) {
-      Serial.println("[flova] runtime configuration stored; restarting to apply");
-      delay(100);
-      ESP.restart();
-    }
-  }
-
-  bool installRuntimeConfig(const String& payload) override {
-    DynamicJsonDocument config(4096);
-    if (deserializeJson(config, payload) || !config["datastreams"].is<JsonArray>()) return false;
-    flova::DeviceConfiguration next = configuration();
-    if (!flova::compactRuntime(config, next.runtimeJson, next.datastreamKeys)) return false;
-    next.templateVersionId = String((const char*)(config["template_version_id"] | ""));
-    next.checksum = String((const char*)(config["checksum"] | ""));
-    if (!storeConfiguration(next)) return false;
-    runtimeRestartPending_ = true;
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(config_.wifiSsid, config_.wifiPassword);
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    runtimePreparing_ = true;
     return true;
   }
 
+  void loop() {
+    if (runtimePreparing_) {
+      if (WiFi.status() == WL_CONNECTED && time(nullptr) >= kMinimumTlsEpoch)
+        finishRuntimeStart();
+      return;
+    }
+    if (provisioning_) {
+      server_.handleClient();
+      // ESP8266WebServer writes the response after the handler returns. Do
+      // not tear down the SoftAP from inside handleProvision(), or the phone
+      // receives a connection failure instead of the 202 acceptance.
+      if (handoffPending_ && millis() - handoffAcceptedAt_ >= kProvisioningResponseGraceMs) {
+        handoffPending_ = false;
+        provisioning_ = false;
+        server_.stop();
+        WiFi.softAPdisconnect(true);
+        Serial.println("[flova] provisioning handoff saved; rebooting for bootstrap");
+        delay(100);
+        ESP.restart();
+      }
+      return;
+    }
+    if (bootstrapPreparing_) {
+      if (WiFi.status() == WL_CONNECTED && time(nullptr) >= kMinimumTlsEpoch) {
+        Serial.printf("[flova] TLS clock synchronized epoch=%lu\n",
+                      static_cast<unsigned long>(time(nullptr)));
+        finishBootstrapStart();
+      } else if (millis() - bootstrapStartedAt_ >= kBootstrapPreparationTimeoutMs) {
+        failBootstrap(WiFi.status() == WL_CONNECTED ? "clock_sync_failed" : "wifi_or_url_failed");
+      }
+      return;
+    }
+    if (bootstrapActive_) {
+      transport_.loop();
+      applyPendingConfiguration();
+      char errorCode[flova::kProvisioningErrorBytes] = {};
+      if (transport_.takeBootstrapError(errorCode, sizeof(errorCode))) {
+        Serial.println("[flova] bootstrap rejected; returning to setup AP");
+        failBootstrap(errorCode[0] ? errorCode : "bootstrap_rejected", true);
+        return;
+      }
+      if (!transport_.connected() &&
+          millis() - bootstrapStartedAt_ >= kBootstrapAttemptTimeoutMs) {
+        Serial.println("[flova] bootstrap timeout");
+        failBootstrap("bootstrap_timeout");
+      }
+      return;
+    }
+    if (runtimeReady_) FlovaDevice::loop();
+  }
+
+ protected:
+  bool applyConfigurationRecord(const FlovaLinkConfigurationRecord& record) override {
+    return applyConfiguration(record);
+  }
+
+  bool restoreActiveConfiguration() override {
+    uint32_t newest = 0, previous = 0;
+    configurationStorage_.generations(newest, previous);
+    Serial.printf("[flova] runtime restore candidates newest=%lu previous=%lu\n",
+                  static_cast<unsigned long>(newest),
+                  static_cast<unsigned long>(previous));
+    const uint32_t candidates[2] = {newest, previous};
+    for (uint8_t candidate = 0; candidate < 2; ++candidate) {
+      const uint32_t generation = candidates[candidate];
+      if (!generation) continue;
+      Serial.printf("[flova] runtime restore validate generation=%lu\n",
+                    static_cast<unsigned long>(generation));
+      if (!validateConfigurationGeneration(generation)) {
+        Serial.printf("[flova] configuration generation=%lu corrupt; discarding\n",
+                      static_cast<unsigned long>(generation));
+        configurationStorage_.discardGeneration(generation);
+        continue;
+      }
+      Serial.printf("[flova] runtime restore apply generation=%lu\n",
+                    static_cast<unsigned long>(generation));
+      if (!applyConfigurationGeneration(generation)) {
+        configurationStorage_.discardGeneration(generation);
+        Serial.printf("[flova] configuration generation=%lu apply failed; recovering without reboot\n",
+                      static_cast<unsigned long>(generation));
+        continue;
+      }
+      setActiveConfiguration(generation, restoreManifestWorkspace_.checksum.bytes);
+      Serial.printf("[flova] runtime restore applied generation=%lu\n",
+                    static_cast<unsigned long>(generation));
+      return true;
+    }
+    static const uint8_t emptyChecksum[32] = {};
+    setActiveConfiguration(0, emptyChecksum, false);
+    Serial.println("[flova] no valid runtime configuration; recovery sync enabled");
+    return true;
+  }
+
+  void onConfigurationCommitted(uint32_t generation) override {
+    Serial.printf("[flova] configuration generation=%lu committed; rebooting cleanly\n",
+                  static_cast<unsigned long>(generation));
+    transport_.disconnect();
+    delay(100);
+    ESP.restart();
+  }
+
+  void onRuntimeRestoreBegin() override {
+    String marker;
+    const bool interrupted = storage_.getString("prov_error", marker) &&
+                             marker == "runtime_restore_in_progress";
+    if (interrupted) {
+      Serial.println("[flova] interrupted runtime restore; quarantining newest generation");
+      configurationStorage_.discardNewestGeneration();
+    }
+    storage_.setString("prov_error", "runtime_restore_in_progress");
+    Serial.println("[flova] runtime configuration restore begin");
+  }
+
+  void onRuntimeRestoreComplete(bool restored) override {
+    if (restored) storage_.remove("prov_error");
+    Serial.printf("[flova] runtime configuration restore complete status=%u generation=%lu\n",
+                  restored ? 0U : 1U,
+                  static_cast<unsigned long>(activeConfigurationGeneration()));
+  }
+
+  void onBootstrapCommitted(const FlovaLinkBootstrapCommitted& committed) override {
+    flova::DeviceConfiguration& final = credentialWorkspace_;
+    final = flova::DeviceConfiguration();
+    if (!uuidText(committed.deviceId, final.deviceId, sizeof(final.deviceId)) ||
+        !flova::copyBounded(pending_.wifiSsid, final.wifiSsid) ||
+        !flova::copyBounded(pending_.wifiPassword, final.wifiPassword) ||
+        !flova::copyBounded(pending_.linkUrl, final.linkUrl) ||
+        !flova::copyBounded(pending_.linkSecret, final.linkSecret)) {
+      failBootstrap("credential_storage_failed");
+      return;
+    }
+    final.generation = committed.generation;
+    if (!storage_.writeConfig(final)) {
+      failBootstrap("credential_storage_failed");
+      return;
+    }
+    Serial.printf("[flova] bootstrap committed generation=%lu; rebooting into runtime\n",
+                  static_cast<unsigned long>(committed.generation));
+    storage_.remove("prov_pending");
+    storage_.remove("prov_error");
+    bootstrapActive_ = false;
+    if (bootstrapTransportReady_) transport_.disconnect();
+    delay(100);
+    ESP.restart();
+  }
+
  private:
+  void finishRuntimeStart() {
+    runtimePreparing_ = false;
+    Serial.printf("[flova] TLS clock synchronized epoch=%lu\n",
+                  static_cast<unsigned long>(time(nullptr)));
+    if (!transport_.configure(config_.linkUrl)) {
+      Serial.println("[flova] runtime Link URL invalid; staying offline");
+      return;
+    }
+    FlovaConfig deviceConfig;
+    deviceConfig.deviceId = config_.deviceId;
+    deviceConfig.linkSecret = config_.linkSecret;
+    deviceConfig.firmwareVersion = FLOVA_FIRMWARE_VERSION;
+    deviceConfig.firmwareTarget = "universal_esp8266";
+    deviceConfig.boardType = "esp8266";
+    deviceConfig.otaCapable = true;
+    deviceConfig.flashSize = ESP.getFlashChipRealSize();
+    deviceConfig.capabilities.datastreamSlots = FLOVA_DATASTREAM_CAPACITY;
+    deviceConfig.capabilities.hardwareInputSlots = FLOVA_HARDWARE_INPUT_CAPACITY;
+    deviceConfig.capabilities.hardwareOutputSlots = FLOVA_HARDWARE_OUTPUT_CAPACITY;
+    deviceConfig.capabilities.commandDedupSlots = FLOVA_COMMAND_DEDUP_CAPACITY;
+    deviceConfig.capabilities.scheduleSlots = FLOVA_SCHEDULE_RUNTIME_ENABLED ? FLOVA_SCHEDULE_CAPACITY : 0;
+    deviceConfig.capabilities.messageBytes = flova::link::kMaximumFrameBytes;
+    deviceConfig.limits.messageBytes = flova::link::kMaximumFrameBytes;
+    deviceConfig.appliedTemplateVersionId = config_.templateVersionId;
+    deviceConfig.configChecksum = config_.checksum;
+    configure(deviceConfig);
+    setOtaInstaller(otaInstaller_);
+    // Valid credentials make this a runtime boot. Wi-Fi, SNTP, and Link all
+    // recover through their native retry paths; none may reopen setup mode.
+    runtimeReady_ = beginTransportOnly();
+  }
+
+  bool validateConfigurationGeneration(uint32_t generation) {
+    restoreManifestWorkspace_ = flova::config::GenerationManifest();
+    if (!configurationStorage_.generationManifest(generation, restoreManifestWorkspace_) ||
+        !restoreManifestWorkspace_.finalized ||
+        restoreManifestWorkspace_.recordCount > kMaximumConfigurationRecords) return false;
+    flova::config::Digest digest;
+    for (uint32_t sequence = 0; sequence < restoreManifestWorkspace_.recordCount; ++sequence) {
+      configurationRecordWorkspace_ = flova::config::Record();
+      Serial.printf("[flova] runtime restore validate record=%lu\n",
+                    static_cast<unsigned long>(sequence));
+      if (!configurationStorage_.readRecord(generation, sequence, configurationRecordWorkspace_) ||
+          configurationRecordWorkspace_.generation != generation ||
+          configurationRecordWorkspace_.sequence != sequence) return false;
+      digest.addRecord(configurationRecordWorkspace_);
+      optimistic_yield(1000);
+    }
+    flova::config::Checksum actual;
+    digest.finish(actual);
+    return actual.equals(restoreManifestWorkspace_.checksum);
+  }
+
+  bool applyConfigurationGeneration(uint32_t generation) {
+    setConfigurationApplyingGeneration(generation);
+    transport_.clearConfigurationMappings();
+    for (uint32_t sequence = 0; sequence < restoreManifestWorkspace_.recordCount; ++sequence) {
+      configurationRecordWorkspace_ = flova::config::Record();
+      configurationDecodeWorkspace_ = FlovaLinkConfigurationRecord();
+      Serial.printf("[flova] runtime restore decode record=%lu\n",
+                    static_cast<unsigned long>(sequence));
+      if (!configurationStorage_.readRecord(generation, sequence, configurationRecordWorkspace_) ||
+          !transport_.decodeStoredConfigurationRecord(configurationRecordWorkspace_.body,
+                                                       configurationRecordWorkspace_.length,
+                                                       configurationDecodeWorkspace_) ||
+          configurationDecodeWorkspace_.generation != generation ||
+          configurationDecodeWorkspace_.sequence != sequence ||
+          (configurationDecodeWorkspace_.recordType == 0 &&
+           !transport_.configureDatastream(generation, configurationDecodeWorkspace_.datastreamId,
+                                           configurationDecodeWorkspace_.datastreamKey)) ||
+          !applyConfigurationUnit(configurationDecodeWorkspace_.typedUnit)) return false;
+      Serial.printf("[flova] runtime restore applied record=%lu\n",
+                    static_cast<unsigned long>(sequence));
+      optimistic_yield(1000);
+    }
+    return true;
+  }
   bool loadCredentials() {
-    String snapshot;
-    flova::DeviceConfiguration config;
-    if (storage_.readConfiguration(snapshot, false) && flova::decodeConfiguration(snapshot, config)) {
-      applyConfiguration(config);
-      return true;
-    }
-    if (storage_.readConfiguration(snapshot, true) && flova::decodeConfiguration(snapshot, config)) {
-      applyConfiguration(config);
-      storage_.writeConfiguration(snapshot);
-      return true;
-    }
-    return false;
+    credentialWorkspace_ = flova::DeviceConfiguration();
+    if (!storage_.readConfig(credentialWorkspace_)) return false;
+    config_ = credentialWorkspace_;
+    return flova::configurationValid(config_);
   }
 
   void startProvisioningAp() {
     provisioning_ = true;
+    runtimeReady_ = false;
+    bootstrapActive_ = false;
+    bootstrapPreparing_ = false;
+    bootstrapTransportReady_ = false;
+    handoffPending_ = false;
     WiFi.mode(WIFI_AP);
-    String ssid = "Flova-Setup-" + String(ESP.getChipId(), HEX);
+    char ssid[32] = {};
+    snprintf(ssid, sizeof(ssid), "Flova-Setup-%06lx", static_cast<unsigned long>(ESP.getChipId()));
     WiFi.softAP(ssid);
-    server_.on("/status", HTTP_GET, [this]() { handleStatus(); });
-    server_.on("/provision", HTTP_POST, [this]() { handleProvision(); });
+    if (!serverRoutesRegistered_) {
+      server_.on("/status", HTTP_GET, [this]() {
+        Serial.println("[flova] GET /status");
+        String body = "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true";
+        String error;
+        if (storage_.getString("prov_error", error)) {
+          char safeError[flova::kProvisioningErrorBytes] = {};
+          flova::sanitizeProvisioningError(error.c_str(), safeError);
+          body += ",\"last_error_code\":\"" + String(safeError) + "\"";
+        }
+        body += "}";
+        server_.send(200, "application/json", body);
+      });
+      server_.on("/provision", HTTP_POST, [this]() { handleProvision(); });
+      serverRoutesRegistered_ = true;
+    }
     server_.begin();
-    Serial.println("[flova] provisioning AP started: " + ssid);
-    Serial.println("[flova] AP IP: " + WiFi.softAPIP().toString());
-  }
-
-  void handleStatus() {
-    String chip = String(ESP.getChipId(), HEX);
-    Serial.println("[flova] GET /status");
-    server_.send(200, "application/json", "{\"status\":\"setup_mode\",\"last_error\":\"" + lastProvisionError_ + "\",\"ap_ssid\":\"Flova-Setup-" + chip + "\",\"chip_id\":\"esp8266-" + chip + "\",\"mac_address\":\"" + WiFi.softAPmacAddress() + "\",\"firmware_target\":\"universal_esp8266\",\"protocol\":{\"name\":\"flova\",\"version\":1},\"schema_version\":1}");
   }
 
   void handleProvision() {
     String body = server_.arg("plain");
-    Serial.println("[flova] POST /provision body_len=" + String(body.length()));
-    Serial.println("[flova] content_type=" + server_.header("Content-Type"));
-    DynamicJsonDocument request(1024);
-    DeserializationError jsonError = deserializeJson(request, body);
-    if (jsonError) {
-      Serial.println("[flova] invalid_json detail=" + String(jsonError.c_str()));
-      return fail("invalid_json", jsonError.c_str());
-    }
-    String ssid = request["wifi"]["ssid"] | "";
-    String password = request["wifi"]["password"] | "";
-    String token = request["flova"]["provisioning_token"] | "";
-    String engine = request["flova"]["api_base_url"] | "";
-    Serial.println("[flova] fields ssid_len=" + String(ssid.length()) + " pass_len=" + String(password.length()) + " token_len=" + String(token.length()) + " engine=" + engine);
-    if (ssid.length() == 0 || token.length() == 0 || engine.length() == 0) return fail("missing_fields");
-
-    // Keep the setup endpoint reachable until the final result is returned.
-    WiFi.mode(WIFI_AP_STA);
-    Serial.println("[flova] connecting wifi ssid=" + ssid);
-    WiFi.begin(ssid.c_str(), password.c_str());
-    uint32_t started = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - started < 20000) delay(100);
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("[flova] wifi_failed status=" + String(WiFi.status()));
-      return recoverProvisioning("wifi_failed", 422);
-    }
-    Serial.println("[flova] wifi connected ip=" + WiFi.localIP().toString());
-
-    WiFiClient client;
-    HTTPClient http;
-    http.begin(client, engine + "/api/device/provision");
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("Accept", "application/json");
-    String chip = String(ESP.getChipId(), HEX);
-    String payload = "{\"provisioning_token\":\"" + token + "\",\"chip_id\":\"esp8266-" + chip + "\",\"mac_address\":\"" + WiFi.macAddress() + "\",\"firmware_target\":\"universal_esp8266\",\"protocol\":{\"name\":\"flova\",\"version\":1},\"schema_version\":1,\"capabilities\":" + capabilityJson() + "}";
-    int code = http.POST(payload);
-    int responseSize = http.getSize();
-    Serial.println("[flova] redeem status=" + String(code) + " body_len=" + String(responseSize));
-    logHeap("before redeem parse");
-    if (code <= 0) {
-      http.end();
-      return recoverProvisioning("redeem_failed", 502);
-    }
-    if (code < 200 || code >= 300) {
-      recoverProvisioning(http.getStream(), 422);
-      http.end();
+    pending_ = flova::ProvisioningHandoff();
+    if (body.length() >= 768 || !flova::parseProvisioningHandoff(body.c_str(), body.length(), pending_) ||
+        !flova::generateSecret(pending_.linkSecret)) {
+      server_.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
       return;
     }
-    if (responseSize < 0 || responseSize > (int)flova::kProvisioningResponseBytes) {
-      http.end();
-      return fail(responseSize < 0 ? "response_size_unknown" : "response_too_large");
+    provisioningImageWorkspace_ = flova::ProvisioningHandoffImage();
+    flova::makeProvisioningImage(pending_, provisioningImageWorkspace_);
+    if (!storage_.write("prov_pending", &provisioningImageWorkspace_, sizeof(provisioningImageWorkspace_))) {
+      server_.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
+      return;
     }
-    flova::DeviceConfiguration next;
-    next.wifiSsid = ssid;
-    next.wifiPassword = password;
-    DynamicJsonDocument filter(1024);
-    flova::provisioningResponseFilter(filter);
-    DynamicJsonDocument runtime(4096);
-    DeserializationError runtimeError =
-        deserializeJson(runtime, http.getStream(), DeserializationOption::Filter(filter));
-    http.end();
-    if (runtimeError) {
-      Serial.println("[flova] runtime json failed detail=" + String(runtimeError.c_str()));
-      return fail(runtimeError == DeserializationError::NoMemory ? "runtime_json_no_memory" : "runtime_json_failed");
+    storage_.remove("prov_error");
+    server_.send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
+    server_.client().flush(1000);
+    Serial.println("[flova] provisioning accepted");
+    handoffPending_ = true;
+    handoffAcceptedAt_ = millis();
+  }
+
+  bool loadPendingImage(flova::ProvisioningHandoffImage& image) {
+    return storage_.read("prov_pending", &image, sizeof(image)) &&
+           flova::verifyProvisioningImage(image);
+  }
+
+  void startBootstrap(const flova::ProvisioningHandoff& handoff) {
+    if (!loadPendingImage(provisioningImageWorkspace_)) {
+      storage_.setString("prov_error", "invalid_handoff");
+      startProvisioningAp();
+      return;
     }
-    next.deviceId = String((const char*)(runtime["device_id"] | runtime["deviceId"] | ""));
-    next.mqttHost = String((const char*)(runtime["mqtt"]["host"] | ""));
-    next.mqttPort = runtime["mqtt"]["port"] | 1883;
-    next.mqttUsername = String((const char*)(runtime["mqtt"]["username"] | ""));
-    next.mqttPassword = String((const char*)(runtime["mqtt"]["password"] | ""));
-    next.templateVersionId =
-        String((const char*)(runtime["template_version_id"] | runtime["device_template_version_id"] | ""));
-    next.checksum = String((const char*)(runtime["checksum"] | ""));
-    if (!flova::compactRuntime(runtime, next.runtimeJson, next.datastreamKeys))
-      return fail("runtime_config_too_large");
-    if (!storeConfiguration(next)) return recoverProvisioning("configuration_storage_failed", 500);
-    lastProvisionError_ = "";
-    Serial.println("[flova] stored runtime_len=" + String(next.runtimeJson.length()));
-    logHeap("after configuration store");
-    server_.send(200, "application/json", "{\"ok\":true,\"status\":\"provisioned\"}");
-    delay(500);
+    if (provisioningImageWorkspace_.attempts >= kMaximumBootstrapAttempts) {
+      Serial.println("[flova] bootstrap stopped; returning to setup AP");
+      storage_.remove("prov_pending");
+      storage_.setString("prov_error", "bootstrap_attempts_exhausted");
+      startProvisioningAp();
+      return;
+    }
+    pending_ = handoff;
+    flova::markProvisioningAttempt(provisioningImageWorkspace_);
+    if (!storage_.write("prov_pending", &provisioningImageWorkspace_, sizeof(provisioningImageWorkspace_))) {
+      storage_.setString("prov_error", "storage_failed");
+      storage_.remove("prov_pending");
+      startProvisioningAp();
+      return;
+    }
+    bootstrapActive_ = false;
+    bootstrapPreparing_ = false;
+    if (bootstrapTransportReady_) transport_.disconnect();
+    if (!transport_.configure(pending_.linkUrl)) {
+      failBootstrap("wifi_or_url_failed");
+      return;
+    }
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(pending_.wifiSsid, pending_.wifiPassword);
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    bootstrapPreparing_ = true;
+    bootstrapStartedAt_ = millis();
+  }
+
+  void finishBootstrapStart() {
+    bootstrapPreparing_ = false;
+    FlovaConfig deviceConfig;
+    deviceConfig.linkSecret = pending_.linkSecret;
+    deviceConfig.firmwareVersion = FLOVA_FIRMWARE_VERSION;
+    deviceConfig.firmwareTarget = "universal_esp8266";
+    deviceConfig.boardType = "esp8266";
+    deviceConfig.capabilities.messageBytes = flova::link::kMaximumFrameBytes;
+    deviceConfig.limits.messageBytes = flova::link::kMaximumFrameBytes;
+    configure(deviceConfig);
+    // Bootstrap only persists the transactional configuration. Runtime String
+    // objects and hardware mappings are restored after commit on a clean boot,
+    // when BearSSL is not competing with the configuration installer.
+    deferConfigurationRuntime(true);
+    if (!bootstrapTransportReady_ && !beginTransportOnly()) {
+      Serial.println("[flova] bootstrap transport setup failed");
+      failBootstrap("transport_setup_failed");
+      return;
+    }
+    bootstrapTransportReady_ = true;
+    char hardwareId[48] = {};
+    snprintf(hardwareId, sizeof(hardwareId), "esp8266-%06lx", static_cast<unsigned long>(ESP.getChipId()));
+    if (!transport_.connectBootstrap(pending_.token, hardwareId, "universal_esp8266", pending_.linkSecret)) {
+      Serial.println("[flova] bootstrap transport connect failed");
+      failBootstrap("tls_connect_failed");
+      return;
+    }
+    bootstrapActive_ = true;
+    bootstrapStartedAt_ = millis();
+  }
+
+  void failBootstrap(const char* errorCode, bool terminal = false) {
+    if (bootstrapTransportReady_) transport_.disconnect();
+    bootstrapActive_ = false;
+    bootstrapPreparing_ = false;
+    char safeError[flova::kProvisioningErrorBytes] = {};
+    flova::sanitizeProvisioningError(errorCode, safeError);
+    storage_.setString("prov_error", safeError);
+    if (loadPendingImage(provisioningImageWorkspace_)) {
+      flova::markProvisioningFailure(provisioningImageWorkspace_, safeError);
+      storage_.write("prov_pending", &provisioningImageWorkspace_, sizeof(provisioningImageWorkspace_));
+    }
+    if (terminal || !loadPendingImage(provisioningImageWorkspace_) ||
+        provisioningImageWorkspace_.attempts >= kMaximumBootstrapAttempts) {
+      if (terminal) Serial.println("[flova] bootstrap stopped; returning to setup AP");
+      else Serial.println("[flova] bootstrap attempts exhausted");
+      storage_.remove("prov_pending");
+    }
+    // Every retry starts from a fresh heap. This also guarantees the setup
+    // HTTP server and BearSSL are never alive in the same boot lifecycle.
+    delay(100);
     ESP.restart();
   }
 
-  void fail(const char* reason) { server_.send(422, "application/json", "{\"ok\":false,\"error\":\"" + String(reason) + "\"}"); }
-  void fail(const char* reason, const char* detail) { server_.send(422, "application/json", "{\"ok\":false,\"error\":\"" + String(reason) + "\",\"detail\":\"" + String(detail) + "\"}"); }
-
-  void recoverProvisioning(const String& response, int status) {
-    DynamicJsonDocument error(384);
-    if (!deserializeJson(error, response))
-      lastProvisionError_ = String((const char*)(error["error"]["message"] | error["error"]["code"] | "redeem_failed"));
-    else
-      lastProvisionError_ = response == "wifi_failed" ? "wifi_failed" : "redeem_failed";
-    finishProvisioningFailure(status);
-  }
-
-  void recoverProvisioning(Stream& response, int status) {
-    DynamicJsonDocument error(384);
-    if (!deserializeJson(error, response))
-      lastProvisionError_ = String((const char*)(error["error"]["message"] | error["error"]["code"] | "redeem_failed"));
-    else
-      lastProvisionError_ = "redeem_failed";
-    finishProvisioningFailure(status);
-  }
-
-  void finishProvisioningFailure(int status) {
-    if (lastProvisionError_.startsWith(":")) lastProvisionError_.remove(0, 1);
-    if (lastProvisionError_.length() > 64) lastProvisionError_.remove(64);
-    Serial.println("[flova] provisioning failed reason=" + lastProvisionError_);
-    server_.send(status, "application/json", "{\"ok\":false,\"error\":{\"code\":\"" + lastProvisionError_ + "\",\"retryable\":true}}");
-  }
-
-  flova::DeviceConfiguration configuration() const {
-    flova::DeviceConfiguration config;
-    config.wifiSsid = wifiSsid_;
-    config.wifiPassword = wifiPassword_;
-    config.deviceId = deviceId_;
-    config.mqttHost = mqttHost_;
-    config.mqttPort = mqttPort_;
-    config.mqttUsername = mqttUsername_;
-    config.mqttPassword = mqttPassword_;
-    config.datastreamKeys = datastreamKeys_;
-    config.runtimeJson = runtimeJson_;
-    config.templateVersionId = appliedTemplateVersionId_;
-    config.checksum = configChecksum_;
-    return config;
-  }
-
-  void applyConfiguration(const flova::DeviceConfiguration& config) {
-    wifiSsid_ = config.wifiSsid;
-    wifiPassword_ = config.wifiPassword;
-    deviceId_ = config.deviceId;
-    mqttHost_ = config.mqttHost;
-    mqttPort_ = config.mqttPort;
-    mqttUsername_ = config.mqttUsername;
-    mqttPassword_ = config.mqttPassword;
-    datastreamKeys_ = config.datastreamKeys;
-    runtimeJson_ = config.runtimeJson;
-    appliedTemplateVersionId_ = config.templateVersionId;
-    configChecksum_ = config.checksum;
-  }
-
-  bool storeConfiguration(const flova::DeviceConfiguration& config) {
-    String snapshot;
-    if (!flova::encodeConfiguration(config, snapshot) || !storage_.writeConfiguration(snapshot)) return false;
-    String verified;
-    flova::DeviceConfiguration decoded;
-    if (!storage_.readConfiguration(verified, false) || !flova::decodeConfiguration(verified, decoded)) return false;
-    applyConfiguration(decoded);
+  static bool uuidText(const FlovaLinkId& id, char* output, size_t capacity) {
+    if (!id.present || capacity < 37) return false;
+    static const char hex[] = "0123456789abcdef";
+    size_t out = 0;
+    for (size_t i = 0; i < 16; ++i) {
+      if (i == 4 || i == 6 || i == 8 || i == 10) output[out++] = '-';
+      output[out++] = hex[id.bytes[i] >> 4];
+      output[out++] = hex[id.bytes[i] & 15];
+    }
+    output[out] = 0;
     return true;
   }
 
-  String capabilityJson() const {
-    return "{\"datastream_slots\":" + String(FLOVA_DATASTREAM_CAPACITY) +
-           ",\"hardware_input_slots\":" + String(FLOVA_HARDWARE_INPUT_CAPACITY) +
-           ",\"hardware_output_slots\":" + String(FLOVA_HARDWARE_OUTPUT_CAPACITY) +
-           ",\"command_dedup_slots\":" + String(FLOVA_COMMAND_DEDUP_CAPACITY) +
-           ",\"schedule_slots\":" + String(FLOVA_SCHEDULE_RUNTIME_ENABLED ? FLOVA_SCHEDULE_CAPACITY : 0) +
-           ",\"schedule_manifest_bytes\":" + String(FLOVA_SCHEDULE_RUNTIME_ENABLED ? 3800 : 0) +
-           ",\"history_bytes\":" + String(FLOVA_HISTORY_RUNTIME_ENABLED ? FLOVA_HISTORY_CAPACITY * (FLOVA_TEXT_CAPACITY + 96UL) : 0) +
-           ",\"message_bytes\":4096,\"schedule_chunks\":false}";
+  bool applyConfiguration(const FlovaLinkConfigurationRecord& input) {
+    if (input.phase == FlovaLinkConfigurationPhase::Begin) {
+      flova::config::Begin begin;
+      begin.messageId = input.messageId;
+      begin.generation = input.generation;
+      begin.schemaVersion = input.schemaVersion;
+      begin.maximumRecordBytes = input.maximumRecordBytes;
+      begin.recordCount = input.recordCount;
+      memcpy(begin.checksum.bytes, input.checksum, sizeof(input.checksum));
+      const flova::config::Ack ack = configurationInstaller_.begin(begin);
+      Serial.printf("[flova] configuration begin status=%u records=%lu\n",
+                    static_cast<unsigned>(ack.status),
+                    static_cast<unsigned long>(input.recordCount));
+      return ack.accepted();
+    }
+    if (input.phase == FlovaLinkConfigurationPhase::Record) {
+      flova::config::Record& record = configurationRecordWorkspace_;
+      record = flova::config::Record();
+      record.messageId = input.messageId;
+      record.generation = input.generation;
+      record.sequence = input.sequence;
+      record.kind = static_cast<flova::config::RecordKind>(input.recordType);
+      record.length = input.recordLength;
+      if (record.length > sizeof(record.body)) return false;
+      memcpy(record.body, input.record, record.length);
+      flova::logTlsHeap("before configuration record persistence");
+      const flova::config::Ack ack = configurationInstaller_.record(record);
+      flova::logTlsHeap("after configuration record persistence");
+      Serial.printf("[flova] configuration record sequence=%lu status=%u bytes=%u\n",
+                    static_cast<unsigned long>(input.sequence),
+                    static_cast<unsigned>(ack.status),
+                    static_cast<unsigned>(input.recordLength));
+      if (!ack.accepted()) return false;
+      return true;
+    }
+    flova::config::End end;
+    end.messageId = input.messageId;
+    end.generation = input.generation;
+    end.recordCount = input.recordCount;
+    memcpy(end.checksum.bytes, input.checksum, sizeof(input.checksum));
+    const flova::config::Ack ack = configurationInstaller_.end(end);
+    Serial.printf("[flova] configuration end status=%u records=%lu\n",
+                  static_cast<unsigned>(ack.status),
+                  static_cast<unsigned long>(input.recordCount));
+    return ack.accepted();
   }
 
-  void applyNegotiatedLimits(FlovaConfig& config) {
-    DynamicJsonDocument runtime(4096);
-    if (deserializeJson(runtime, runtimeJson_)) return;
-    JsonObject limits = runtime["limits"];
-    config.limits.datastreams = limits["datastreams"] | 0;
-    config.limits.hardwareInputs = limits["hardware_inputs"] | 0;
-    config.limits.hardwareOutputs = limits["hardware_outputs"] | 0;
-    config.limits.commandDedup = limits["command_dedup"] | 0;
-    config.limits.messageBytes = limits["message_bytes"] | 0;
-    config.limits.scheduleManifestBytes = limits["manifest_bytes"] | 0;
-    config.limits.scheduleRenewBeforeDays = limits["renew_before_days"] | 0;
-  }
-
-  void applyRuntimeMappings() {
-    DynamicJsonDocument runtime(4096);
-    if (deserializeJson(runtime, runtimeJson_)) return;
-    JsonArray streams = runtime["datastreams"].as<JsonArray>();
-    for (JsonObject stream : streams) {
-      JsonObject mapping = stream["hardware_mapping"];
-      if (mapping.isNull()) continue;
-      String key = stream["key"] | "";
-      String kind = mapping["kind"] | "";
-      String pinName = mapping["pin"] | "";
-      bool analogPin = pinName == "A0";
-      if (!analogPin && !pinName.startsWith("GPIO")) continue;
-      String active = mapping["active_level"] | "high";
-      uint8_t pin = analogPin ? A0 : (uint8_t)pinName.substring(4).toInt();
-      bool activeHigh = active != "low";
-      if (kind == "digital_output") {
-        addDigitalOutput(key.c_str(), pin, activeHigh, mapping["min_output_interval_ms"] | 300);
-        Serial.println("[flova] output mapped key=" + key + " pin=" + pinName + " active=" + active);
-      }
-      if (kind == "digital_input") {
-        String pull = mapping["pull"] | "none";
-        uint8_t mode = pull == "pullup" ? INPUT_PULLUP : INPUT;
-        addDigitalInput(key.c_str(), pin, activeHigh, mapping["debounce_ms"] | 50, mode);
-        Serial.println("[flova] input mapped key=" + key + " pin=" + pinName + " active=" + active + " pull=" + pull);
-      }
-      if (kind == "analog_input" && analogPin)
-        addAnalogInput(key.c_str(), pin, mapping["sample_interval_ms"] | 1000);
-      if (kind == "pwm_output" && !analogPin) {
-        double minimum = stream["min_value"] | 0.0;
-        double maximum = stream["max_value"] | 100.0;
-        double initial = stream["default_value"]["value"] | minimum;
-        addPwmOutput(key.c_str(), pin, minimum, maximum, initial);
-      }
-    }
-  }
-
-  void applyRuntimeSystem() {
-    DynamicJsonDocument runtime(4096);
-    if (deserializeJson(runtime, runtimeJson_)) return;
-    JsonObject status = runtime["system"]["status_led"];
-    String pinName = status["pin"] | "";
-    if (pinName.startsWith("GPIO")) {
-      setStatusLed((uint8_t)pinName.substring(4).toInt(), status["active_low"] | false);
-      Serial.println("[flova] status LED configured pin=" + pinName +
-                     " active=" + ((status["active_low"] | false) ? "low" : "high"));
-    }
-
-    JsonObject reset = runtime["system"]["factory_reset"];
-    String source = reset["source"] | "";
-    if (source == "gpio") {
-      String resetPin = reset["pin"] | "";
-      if (!resetPin.startsWith("GPIO")) return;
-      bool activeLow = reset["active_low"] | true;
-      setFactoryResetButton((uint8_t)resetPin.substring(4).toInt(), activeLow);
-      Serial.println("[flova] factory reset input configured pin=" + resetPin +
-                     " active=" + (activeLow ? "low" : "high"));
-      return;
-    }
-    if (source != "datastream") return;
-    String resetKey = reset["key"] | "";
-    for (JsonObject stream : runtime["datastreams"].as<JsonArray>()) {
-      JsonObject mapping = stream["hardware_mapping"];
-      if (String((const char*)(stream["key"] | "")) != resetKey ||
-          String((const char*)(mapping["kind"] | "")) != "digital_input")
-        continue;
-      String resetPin = mapping["pin"] | "";
-      if (!resetPin.startsWith("GPIO")) return;
-      String active = mapping["active_level"] | "high";
-      String pull = mapping["pull"] | "none";
-      uint8_t mode = pull == "pullup" ? INPUT_PULLUP : INPUT;
-      setFactoryResetButton((uint8_t)resetPin.substring(4).toInt(), active == "low",
-                            10000, mode);
-      Serial.println("[flova] factory reset input configured datastream=" + resetKey);
-      return;
-    }
-  }
-
-  bool runtimeRestartPending_ = false;
+  static const uint32_t kMaximumConfigurationRecords =
+      FLOVA_DATASTREAM_CAPACITY + FLOVA_SCHEDULE_CAPACITY + 8;
 
   class Storage : public ArduinoStorage {
    public:
-    void begin() { EEPROM.begin(4096); LittleFS.begin(); }
-    bool readConfiguration(String& out, bool backup) {
-      return readPath(backup ? "/device-config.backup.json" : "/device-config.json", out);
+    void begin() {
+      EEPROM.begin(4096);
+      if (!LittleFS.begin()) Serial.println("[flova] LittleFS mount failed");
     }
-    bool writeConfiguration(const String& value) {
-      const char* next = "/device-config.next.json";
-      const char* current = "/device-config.json";
-      const char* backup = "/device-config.backup.json";
-      if (!writePath(next, value)) return false;
-      String verified;
-      if (!readPath(next, verified) || verified != value) {
-        LittleFS.remove(next);
-        return false;
-      }
-      LittleFS.remove(backup);
-      if (LittleFS.exists(current) && !LittleFS.rename(current, backup)) {
-        LittleFS.remove(next);
-        return false;
-      }
-      if (LittleFS.rename(next, current)) return true;
-      if (LittleFS.exists(backup)) LittleFS.rename(backup, current);
-      return false;
-    }
-    bool getString(const char* key, String& out) override { if (scheduleKey(key)) return readFile(key, out); out = read(slot(key)); return out.length() > 0; }
-    bool setString(const char* key, const String& value) { if (scheduleKey(key)) return writeFile(key, value); write(slot(key), value); return true; }
-    bool getString(const char* key, char* out, size_t maxLen) override {
-      String value; if (!getString(key, value) || !maxLen) return false;
-      value.toCharArray(out, maxLen); return true;
-    }
-    bool setString(const char* key, const char* value) override { return setString(key, String(value)); }
-    bool remove(const char* key) override { if (scheduleKey(key)) return LittleFS.remove(path(key)); write(slot(key), ""); return true; }
-    void clear() override { for (int i = 0; i < 4096; i++) EEPROM.write(i, 0); EEPROM.commit(); LittleFS.format(); }
-   private:
-    bool scheduleKey(const char* key) { String k(key); return k.startsWith("schedule_") || k.startsWith("ota_"); }
-    String path(const char* key) { return "/" + String(key) + ".json"; }
-    bool readFile(const char* key, String& out) { File file = LittleFS.open(path(key), "r"); if (!file) return false; out = file.readString(); file.close(); return out.length() > 0; }
-    bool writeFile(const char* key, const String& value) { String target = path(key); String output = String(key) == "schedule_active" ? target + ".tmp" : target; File file = LittleFS.open(output, "w"); if (!file) return false; size_t written = file.print(value); file.close(); if (written != value.length()) return false; if (output != target) { LittleFS.remove(target); return LittleFS.rename(output, target); } return true; }
-    bool readPath(const char* path, String& out) {
+    bool read(const char* key, void* output, size_t size) const override {
+      char path[48] = {};
+      if (!makePath(key, path, sizeof(path))) return false;
       File file = LittleFS.open(path, "r");
-      if (!file || file.size() >= flova::kConfigurationJsonBytes) {
-        if (file) file.close();
+      if (!file) return false;
+      if (static_cast<size_t>(file.size()) != size) {
+        file.close();
         return false;
       }
-      out = file.readString();
-      file.close();
-      return out.length() > 0;
-    }
-    bool writePath(const char* path, const String& value) {
-      if (!value.length() || value.length() >= flova::kConfigurationJsonBytes) return false;
-      File file = LittleFS.open(path, "w");
-      if (!file) return false;
-      size_t written = file.print(value);
-      file.flush();
-      file.close();
-      return written == value.length();
-    }
-    int slot(const char* key) {
-      String k(key);
-      if (k == "command_ids") return 0;
-      if (k.startsWith("ds:")) {
-        uint16_t hash = 5381;
-        for (uint16_t i = 0; i < k.length(); ++i) hash = ((hash << 5) + hash) ^ k[i];
-        return 224 + (hash % 8) * 224;
+      size_t read = 0;
+      uint8_t* bytes = reinterpret_cast<uint8_t*>(output);
+      while (read < size) {
+        const size_t chunk = min<size_t>(64, size - read);
+        const size_t count = file.read(bytes + read, chunk);
+        if (count != chunk) break;
+        read += count;
+        optimistic_yield(1000);
       }
-      return 0;
+      const bool ok = read == size;
+      file.close();
+      optimistic_yield(1000);
+      return ok;
     }
-    int size(int) { return 224; }
-    String read(int offset) { int len = size(offset); char buf[len]; for (int i = 0; i < len - 1; i++) { buf[i] = EEPROM.read(offset + i); if (buf[i] == 0) break; } buf[len - 1] = 0; return String(buf); }
-    void write(int offset, const String& value) { int len = size(offset); for (int i = 0; i < len - 1; i++) EEPROM.write(offset + i, i < (int)value.length() ? value[i] : 0); EEPROM.commit(); }
-  };
+    bool write(const char* key, const void* value, size_t size) override {
+      char path[48] = {}, next[48] = {};
+      if (!makePath(key, path, sizeof(path)) ||
+          snprintf(next, sizeof(next), "%s.next", path) >= static_cast<int>(sizeof(next))) return false;
+      File file = LittleFS.open(next, "w");
+      if (!file) return false;
+      const uint8_t* bytes = reinterpret_cast<const uint8_t*>(value);
+      size_t written = 0;
+      while (written < size) {
+        const size_t chunk = min<size_t>(64, size - written);
+        const size_t count = file.write(bytes + written, chunk);
+        if (count != chunk) break;
+        written += count;
+        optimistic_yield(1000);
+      }
+      file.close();
+      optimistic_yield(1000);
+      if (written != size) {
+        LittleFS.remove(next);
+        return false;
+      }
+      LittleFS.remove(path);
+      optimistic_yield(1000);
+      return LittleFS.rename(next, path);
+    }
+    bool readConfig(flova::DeviceConfiguration& out) const {
+      configurationImageWorkspace_ = flova::ConfigurationImage();
+      if (!readImage("/config.active", configurationImageWorkspace_) || !flova::verifyConfigurationImage(configurationImageWorkspace_)) {
+        if (!readImage("/config.backup", configurationImageWorkspace_) || !flova::verifyConfigurationImage(configurationImageWorkspace_)) return false;
+      }
+      out = configurationImageWorkspace_.configuration;
+      return true;
+    }
+    bool writeConfig(const flova::DeviceConfiguration& config) {
+      if (!flova::configurationValid(config)) return false;
+      configurationImageWorkspace_ = flova::ConfigurationImage();
+      flova::makeConfigurationImage(config, configurationImageWorkspace_);
+      File next = LittleFS.open("/config.next", "w");
+      if (!next) return false;
+      const bool written = next.write(reinterpret_cast<const uint8_t*>(&configurationImageWorkspace_), sizeof(configurationImageWorkspace_)) == sizeof(configurationImageWorkspace_);
+      next.close();
+      if (!written) {
+        LittleFS.remove("/config.next");
+        return false;
+      }
+      LittleFS.remove("/config.backup");
+      if (LittleFS.exists("/config.active")) LittleFS.rename("/config.active", "/config.backup");
+      if (!LittleFS.rename("/config.next", "/config.active")) return false;
+      return readConfig(verified_);
+    }
+    bool getString(const char* key, String& out) override { out = readSlot(key); return out.length() > 0; }
+    bool getString(const char* key, char* out, size_t maxLen) override {
+      if (!out || !maxLen) return false;
+      String value;
+      if (!getString(key, value) || value.length() >= maxLen) return false;
+      memcpy(out, value.c_str(), value.length() + 1);
+      return true;
+    }
+    bool setString(const char* key, const char* value) override { writeSlot(key, value ? value : ""); return true; }
+    bool remove(const char* key) override {
+      char path[48] = {};
+      if (!makePath(key, path, sizeof(path))) return false;
+      if (LittleFS.exists(path)) return LittleFS.remove(path);
+      // Link configuration keys are file-backed. Never fall through to the
+      // EEPROM string slots when an old/corrupt bank is already absent.
+      if (strncmp(key, "flova_l_", 8) == 0) return true;
+      writeSlot(key, "");
+      return true;
+    }
+    void clear() override { for (size_t i = 0; i < 4096; ++i) EEPROM.write(i, 0); EEPROM.commit(); LittleFS.format(); }
+   private:
+    static bool makePath(const char* key, char* out, size_t size) {
+      return key && out && snprintf(out, size, "/%s.bin", key) < static_cast<int>(size);
+    }
 
-  void logHeap(const char* stage) {
-    Serial.println("[flova] heap " + String(stage) + " free=" + String(ESP.getFreeHeap()) +
-                   " max_block=" + String(ESP.getMaxFreeBlockSize()) +
-                   " fragmentation=" + String(ESP.getHeapFragmentation()) + "%");
-  }
+    mutable flova::DeviceConfiguration verified_ = {};
+    mutable flova::ConfigurationImage configurationImageWorkspace_ = {};
+    static bool readImage(const char* path, flova::ConfigurationImage& image) {
+      File file = LittleFS.open(path, "r");
+      if (!file) return false;
+      if (file.size() != sizeof(image)) {
+        file.close();
+        return false;
+      }
+      const bool ok = file.read(reinterpret_cast<uint8_t*>(&image), sizeof(image)) == sizeof(image);
+      file.close();
+      return ok;
+    }
+    String readSlot(const char* key) const {
+      uint16_t hash = 21661;
+      for (const char* cursor = key; cursor && *cursor; ++cursor) hash = static_cast<uint16_t>((hash * 33) ^ static_cast<uint8_t>(*cursor));
+      const int offset = (hash % 16) * 224;
+      char buffer[224] = {};
+      for (size_t i = 0; i < sizeof(buffer) - 1; ++i) {
+        buffer[i] = static_cast<char>(EEPROM.read(offset + i));
+        if (!buffer[i]) break;
+      }
+      return String(buffer);
+    }
+    void writeSlot(const char* key, const char* value) {
+      uint16_t hash = 21661;
+      for (const char* cursor = key; cursor && *cursor; ++cursor) hash = static_cast<uint16_t>((hash * 33) ^ static_cast<uint8_t>(*cursor));
+      const int offset = (hash % 16) * 224;
+      const size_t length = value ? strlen(value) : 0;
+      for (size_t i = 0; i < sizeof(char[224]) - 1; ++i) EEPROM.write(offset + i, i < length ? value[i] : 0);
+      EEPROM.commit();
+    }
+  } storage_;
 
-  ArduinoMqttTransport transport_;
-  Storage storage_;
+  FlovaLinkConfigurationStorage configurationStorage_;
+  flova::config::Installer configurationInstaller_;
+  flova::config::Record configurationRecordWorkspace_ = {};
+  FlovaLinkConfigurationRecord configurationDecodeWorkspace_ = {};
+  flova::config::GenerationManifest restoreManifestWorkspace_ = {};
+
+  BearSSL::X509List trustAnchors_{FLOVA_TLS_ROOT_CERTS};
+  ArduinoDeviceLink transport_;
   ArduinoClock clock_;
   ArduinoLogger logger_;
   ArduinoOtaInstaller otaInstaller_;
-  FlovaLegacyBootControl bootControl_;
   ESP8266WebServer server_{80};
+  flova::DeviceConfiguration config_ = {};
+  flova::DeviceConfiguration credentialWorkspace_ = {};
+  flova::ProvisioningHandoff pending_ = {};
+  flova::ProvisioningHandoffImage provisioningImageWorkspace_ = {};
   bool provisioning_ = false;
-  String lastProvisionError_;
-  String wifiSsid_, wifiPassword_, deviceId_, mqttHost_, mqttUsername_, mqttPassword_, datastreamKeys_, runtimeJson_, appliedTemplateVersionId_, configChecksum_, otaReleaseId_, otaInstallId_;
-  uint16_t mqttPort_ = 1883;
+  bool runtimeReady_ = false;
+  bool runtimePreparing_ = false;
+  bool bootstrapActive_ = false;
+  bool bootstrapPreparing_ = false;
+  bool handoffPending_ = false;
+  bool serverRoutesRegistered_ = false;
+  bool bootstrapTransportReady_ = false;
+  uint32_t bootstrapStartedAt_ = 0;
+  uint32_t handoffAcceptedAt_ = 0;
+  static const uint8_t kMaximumBootstrapAttempts = 3;
+  static const time_t kMinimumTlsEpoch = 1700000000;
+  static const uint32_t kBootstrapPreparationTimeoutMs = 30000;
+  static const uint32_t kBootstrapAttemptTimeoutMs = 30000;
+  static const uint32_t kProvisioningResponseGraceMs = 1000;
 };

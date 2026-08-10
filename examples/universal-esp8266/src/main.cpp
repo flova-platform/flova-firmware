@@ -4,7 +4,7 @@
 FlovaEsp8266 device;
 
 void setup() {
-  Serial.begin(74880);
+  Serial.begin(115200);
   delay(50);
   Serial.println();
   Serial.println("[flova] esp8266 boot");

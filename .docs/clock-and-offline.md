@@ -2,7 +2,7 @@
 
 `flova::Clock` always supplies monotonic milliseconds. A platform RTC, NTP, GPS, cellular network, or PLC clock may additionally seed UTC through `setUtc()`. Once connected, `flova::Device` requests Engine time and refreshes it every six hours. The clock receives the server epoch plus a round-trip uncertainty estimate; failed requests time out after 30 seconds and increment diagnostics.
 
-MQTT adapters map `TimeRequest` to `devices/<device_id>/time/get` and `TimeResponse` to `devices/<device_id>/time/set`. Other links carry the same structured messages through their gateway. If UTC is unavailable, offline records retain monotonic time and publish UTC as zero so Engine can use receive time without mistaking it for trusted device time.
+Device Link maps `TimeRequest` and `TimeResponse` to binary message types. Other links carry the same structured messages through their gateway. If UTC is unavailable, offline records retain monotonic time and publish UTC as zero so Engine can use receive time without mistaking it for trusted device time.
 
 Offline policies:
 

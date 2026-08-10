@@ -1,7 +1,11 @@
 # Custom board
 
-This example compiles with a normal C++11 compiler and has no Arduino, ESP, Wi-Fi, or MQTT dependency. Implement `flova::Link`, `flova::Storage`, `flova::Clock`, and `flova::Logger` using your board or PLC SDK, then construct `flova::Device`.
+This example compiles with a normal C++11 compiler and has no Arduino, ESP, or Wi-Fi dependency. Implement `flova::Link`, `flova::Storage`, `flova::Clock`, and `flova::Logger` using your board or PLC SDK, then construct `flova::Device`.
 
-The link exchanges structured bounded `flova::Message` values. An MQTT, BLE, LoRaWAN, serial, CAN, fieldbus, or gateway adapter owns its wire encoding and credential setup.
+The link exchanges structured bounded `flova::Message` values. Internet-facing
+adapters use verified WSS plus the SDK-owned `FlovaLinkCodec.h` frame and generated CDDL CBOR
+primitives. Gateway transports such
+as BLE, LoRaWAN, serial, CAN, or fieldbus may map the structured messages into
+their bounded carrier protocol.
 
 Build from the repository root with CMake or the documented direct compiler command.

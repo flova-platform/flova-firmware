@@ -1,135 +1,175 @@
 #pragma once
 
-#include <ArduinoJson.h>
+#include <stdint.h>
+#include <string.h>
 
 namespace flova {
 
-static const size_t kRuntimeJsonBytes = 2048;
-static const size_t kConfigurationJsonBytes = 4096;
-static const size_t kProvisioningResponseBytes = 16384;
+// Device credentials are local storage metadata.  The Engine configuration is
+// never serialized here: CONFIG_BEGIN/RECORD/END is decoded into one bounded
+// record and committed through the A/B installer.
+static const size_t kDeviceIdBytes = 97;
+static const size_t kLinkUrlBytes = 193;
+static const size_t kSecretTextBytes = 65;
+static const size_t kWifiSsidBytes = 33;
+static const size_t kWifiPasswordBytes = 65;
+static const size_t kTemplateIdBytes = 37;
+static const size_t kChecksumTextBytes = 65;
+static const size_t kProvisionTokenBytes = 65;
+static const size_t kProvisioningErrorBytes = 48;
+static const uint16_t kConfigurationImageVersion = 1;
 
 struct DeviceConfiguration {
-  String wifiSsid;
-  String wifiPassword;
-  String deviceId;
-  String mqttHost;
-  String mqttUsername;
-  String mqttPassword;
-  String datastreamKeys;
-  String runtimeJson;
-  String templateVersionId;
-  String checksum;
-  uint16_t mqttPort = 1883;
+  char wifiSsid[kWifiSsidBytes] = {};
+  char wifiPassword[kWifiPasswordBytes] = {};
+  char deviceId[kDeviceIdBytes] = {};
+  char linkUrl[kLinkUrlBytes] = {};
+  char linkSecret[kSecretTextBytes] = {};
+  char templateVersionId[kTemplateIdBytes] = {};
+  char checksum[kChecksumTextBytes] = {};
+  uint32_t generation = 0;
 };
 
-inline void provisioningResponseFilter(JsonDocument& filter) {
-  filter["device_id"] = true;
-  filter["deviceId"] = true;
-  filter["template_version_id"] = true;
-  filter["device_template_version_id"] = true;
-  filter["checksum"] = true;
-  filter["mqtt"]["host"] = true;
-  filter["mqtt"]["port"] = true;
-  filter["mqtt"]["username"] = true;
-  filter["mqtt"]["password"] = true;
-  filter["limits"] = true;
-  filter["firmware_system"] = true;
-  filter["system"] = true;
-  filter["datastreams"][0]["key"] = true;
-  filter["datastreams"][0]["min_value"] = true;
-  filter["datastreams"][0]["max_value"] = true;
-  filter["datastreams"][0]["default_value"] = true;
-  filter["datastreams"][0]["hardware_mapping"] = true;
+struct ProvisioningHandoff {
+  char wifiSsid[kWifiSsidBytes] = {};
+  char wifiPassword[kWifiPasswordBytes] = {};
+  char linkUrl[kLinkUrlBytes] = {};
+  char token[kProvisionTokenBytes] = {};
+  char linkSecret[kSecretTextBytes] = {};
+};
+
+struct ProvisioningHandoffImage {
+  uint16_t version;
+  ProvisioningHandoff handoff;
+  uint8_t attempts;
+  uint8_t inProgress;
+  char lastError[kProvisioningErrorBytes];
+  uint32_t checksum;
+};
+
+enum class ProvisioningBootMode : uint8_t {
+  Setup,
+  Bootstrap,
+  InterruptedBootstrap,
+  Runtime,
+};
+
+inline ProvisioningBootMode provisioningBootMode(bool hasCredentials,
+                                                  bool hasPendingHandoff,
+                                                  bool handoffInProgress) {
+  if (hasCredentials) return ProvisioningBootMode::Runtime;
+  if (!hasPendingHandoff) return ProvisioningBootMode::Setup;
+  return handoffInProgress ? ProvisioningBootMode::InterruptedBootstrap
+                           : ProvisioningBootMode::Bootstrap;
 }
 
-inline bool compactRuntime(JsonDocument& source, String& runtimeJson, String& keys) {
-  DynamicJsonDocument compact(kRuntimeJsonBytes);
-  compact["limits"] = source["limits"];
-  JsonObject system = source["firmware_system"];
-  if (system.isNull()) system = source["system"];
-  if (!system.isNull()) compact["system"] = system;
-
-  keys = "";
-  JsonArray out = compact.createNestedArray("datastreams");
-  size_t count = 0;
-  for (JsonObject stream : source["datastreams"].as<JsonArray>()) {
-    String key = stream["key"] | "";
-    if (!key.length() || key.length() > 64 || ++count > FLOVA_DATASTREAM_CAPACITY) return false;
-    if (keys.length() + key.length() + (keys.length() ? 1 : 0) > 768) return false;
-    keys += (keys.length() ? "," : "") + key;
-
-    JsonObject mapping = stream["hardware_mapping"];
-    if (mapping.isNull()) continue;
-    JsonObject row = out.createNestedObject();
-    row["key"] = key;
-    row["min_value"] = stream["min_value"];
-    row["max_value"] = stream["max_value"];
-    row["default_value"] = stream["default_value"];
-    JsonObject mapped = row.createNestedObject("hardware_mapping");
-    mapped["kind"] = mapping["kind"] | "";
-    mapped["pin"] = mapping["pin"] | "";
-    mapped["active_level"] = mapping["active_level"] | "high";
-    mapped["pull"] = mapping["pull"] | "none";
-    mapped["debounce_ms"] = mapping["debounce_ms"] | 50;
-    mapped["sample_interval_ms"] = mapping["sample_interval_ms"] | 1000;
-    mapped["min_output_interval_ms"] = mapping["min_output_interval_ms"] | 300;
-  }
-  if (!keys.length() || compact.overflowed() || measureJson(compact) >= kRuntimeJsonBytes) return false;
-  runtimeJson = "";
-  runtimeJson.reserve(measureJson(compact) + 1);
-  return serializeJson(compact, runtimeJson) > 0;
+template <size_t N>
+inline bool copyBounded(const char* value, char (&out)[N], bool required = false) {
+  const size_t length = value ? strnlen(value, N) : 0;
+  if (length >= N || (required && length == 0)) return false;
+  if (length) memcpy(out, value, length);
+  out[length] = 0;
+  return true;
 }
 
 inline bool configurationValid(const DeviceConfiguration& config) {
-  return config.wifiSsid.length() > 0 && config.wifiSsid.length() <= 32 &&
-         config.wifiPassword.length() <= 64 && config.deviceId.length() > 0 &&
-         config.deviceId.length() <= 64 && config.mqttHost.length() > 0 &&
-         config.mqttHost.length() <= 255 && config.mqttUsername.length() > 0 &&
-         config.mqttUsername.length() <= 255 && config.mqttPassword.length() > 0 &&
-         config.mqttPassword.length() <= 255 && config.datastreamKeys.length() > 0 &&
-         config.datastreamKeys.length() <= 768 && config.runtimeJson.length() > 0 &&
-         config.runtimeJson.length() < kRuntimeJsonBytes && config.mqttPort > 0;
+  return config.wifiSsid[0] && config.deviceId[0] &&
+         strncmp(config.linkUrl, "wss://", 6) == 0 && config.linkSecret[0];
 }
 
-inline bool encodeConfiguration(const DeviceConfiguration& config, String& json) {
-  if (!configurationValid(config)) return false;
-  DynamicJsonDocument document(kConfigurationJsonBytes);
-  document["version"] = 1;
-  document["wifi"]["ssid"] = config.wifiSsid;
-  document["wifi"]["password"] = config.wifiPassword;
-  document["device_id"] = config.deviceId;
-  document["mqtt"]["host"] = config.mqttHost;
-  document["mqtt"]["port"] = config.mqttPort;
-  document["mqtt"]["username"] = config.mqttUsername;
-  document["mqtt"]["password"] = config.mqttPassword;
-  document["datastream_keys"] = config.datastreamKeys;
-  document["runtime"] = config.runtimeJson;
-  document["template_version_id"] = config.templateVersionId;
-  document["checksum"] = config.checksum;
-  if (document.overflowed() || measureJson(document) >= kConfigurationJsonBytes) return false;
-  json = "";
-  json.reserve(measureJson(document) + 1);
-  return serializeJson(document, json) > 0;
+inline uint32_t provisioningChecksum(const ProvisioningHandoff& handoff) {
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&handoff);
+  uint32_t hash = 2166136261u;
+  for (size_t i = 0; i < sizeof(handoff); ++i) {
+    hash ^= bytes[i];
+    hash *= 16777619u;
+  }
+  return hash;
 }
 
-inline bool decodeConfiguration(const String& json, DeviceConfiguration& config) {
-  if (!json.length() || json.length() >= kConfigurationJsonBytes) return false;
-  DynamicJsonDocument document(kConfigurationJsonBytes);
-  if (deserializeJson(document, json) || document["version"] != 1) return false;
-  config.wifiSsid = String((const char*)(document["wifi"]["ssid"] | ""));
-  config.wifiPassword = String((const char*)(document["wifi"]["password"] | ""));
-  config.deviceId = String((const char*)(document["device_id"] | ""));
-  config.mqttHost = String((const char*)(document["mqtt"]["host"] | ""));
-  config.mqttPort = document["mqtt"]["port"] | 0;
-  config.mqttUsername = String((const char*)(document["mqtt"]["username"] | ""));
-  config.mqttPassword = String((const char*)(document["mqtt"]["password"] | ""));
-  config.datastreamKeys = String((const char*)(document["datastream_keys"] | ""));
-  config.runtimeJson = String((const char*)(document["runtime"] | ""));
-  config.templateVersionId = String((const char*)(document["template_version_id"] | ""));
-  config.checksum = String((const char*)(document["checksum"] | ""));
-  if (!configurationValid(config)) return false;
-  DynamicJsonDocument runtime(kRuntimeJsonBytes);
-  return !deserializeJson(runtime, config.runtimeJson) && runtime["datastreams"].is<JsonArray>();
+inline bool provisioningValid(const ProvisioningHandoff& handoff) {
+  return handoff.wifiSsid[0] && handoff.token[0] && handoff.linkSecret[0] &&
+         strncmp(handoff.linkUrl, "wss://", 6) == 0;
+}
+
+inline void makeProvisioningImage(const ProvisioningHandoff& handoff,
+                                   ProvisioningHandoffImage& image) {
+  image = ProvisioningHandoffImage();
+  image.version = kConfigurationImageVersion;
+  image.handoff = handoff;
+  image.checksum = provisioningChecksum(handoff);
+}
+
+inline bool verifyProvisioningImage(const ProvisioningHandoffImage& image) {
+  return image.version == kConfigurationImageVersion &&
+         provisioningValid(image.handoff) &&
+         image.checksum == provisioningChecksum(image.handoff);
+}
+
+inline void markProvisioningAttempt(ProvisioningHandoffImage& image) {
+  if (image.attempts < 255) ++image.attempts;
+  image.inProgress = 1;
+  image.lastError[0] = 0;
+}
+
+template <size_t N>
+inline void sanitizeProvisioningError(const char* input, char (&output)[N]);
+
+inline void markProvisioningFailure(ProvisioningHandoffImage& image, const char* code) {
+  image.inProgress = 0;
+  sanitizeProvisioningError(code, image.lastError);
+}
+
+template <size_t N>
+inline void sanitizeProvisioningError(const char* input, char (&output)[N]) {
+  if (!N) return;
+  size_t cursor = 0;
+  for (const char* value = input; value && *value && cursor + 1 < N; ++value) {
+    const char c = *value;
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '_' || c == '-') {
+      output[cursor++] = c;
+    } else if (cursor == 0 || output[cursor - 1] != '_') {
+      output[cursor++] = '_';
+    }
+  }
+  if (!cursor) {
+    const char fallback[] = "bootstrap_failed";
+    strncpy(output, fallback, N - 1);
+    cursor = strlen(output);
+  }
+  output[cursor] = 0;
+}
+
+// Fixed binary persistence image.  It is deliberately not a wire format and
+// is only used by board storage to stage credential metadata atomically.
+struct ConfigurationImage {
+  uint16_t version;
+  DeviceConfiguration configuration;
+  uint32_t checksum;
+};
+
+inline uint32_t configurationChecksum(const DeviceConfiguration& config) {
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&config);
+  uint32_t hash = 2166136261u;
+  for (size_t i = 0; i < sizeof(config); ++i) {
+    hash ^= bytes[i];
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+inline void makeConfigurationImage(const DeviceConfiguration& config,
+                                   ConfigurationImage& image) {
+  image.version = kConfigurationImageVersion;
+  image.configuration = config;
+  image.checksum = configurationChecksum(config);
+}
+
+inline bool verifyConfigurationImage(const ConfigurationImage& image) {
+  return image.version == kConfigurationImageVersion &&
+         configurationValid(image.configuration) &&
+         image.checksum == configurationChecksum(image.configuration);
 }
 
 }  // namespace flova

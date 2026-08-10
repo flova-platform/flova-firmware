@@ -1,43 +1,96 @@
 # Provisioning
 
-Provisioning has two separate responsibilities:
+Provisioning has two responsibilities:
 
-1. Product code obtains an Engine URL and one-time token through SoftAP, BLE, serial, Ethernet tooling, cellular bootstrap, factory injection, or a PLC engineering application.
-2. `flova::Provisioner` performs the common Engine redemption, validates the complete session, stores it, and seeds UTC.
+1. Product code obtains an Engine HTTPS base URL, one-time token, and network
+   credentials through SoftAP, BLE, serial, Ethernet tooling, cellular
+   bootstrap, factory injection, or a PLC engineering application.
+2. The board opens verified Flova Link v1 WSS, generates its 32-byte device
+   secret locally, receives deterministic-CBOR configuration records, and
+   commits them transactionally.
 
-Implement `flova::EngineClient` using the target's HTTPS client. `beginRedeem()` starts `POST /api/device/provision`; `poll()` remains non-blocking and returns a validated `ProvisioningSession`. Production builds reject non-HTTPS Engine URLs unless `FLOVA_ALLOW_INSECURE_PROVISIONING` is explicitly defined.
+There is no device-facing `POST /api/device/provision` compatibility path.
+ESP wrappers expose only local `/status` and `/provision` setup endpoints. The
+local request is bounded; ESP8266 returns
+`202 {"ok":true,"status":"accepted"}`, persists the handoff, and reboots.
+The clean bootstrap boot never starts the setup HTTP server or SoftAP; it joins
+Wi-Fi, synchronizes UTC for certificate validation without blocking the main
+loop, and uses the bounded
+`link_url` supplied by the app's compile-time deployment configuration.
 
-Generic requests send `provisioning_token`, `hardware_id`, `board_type`,
-`firmware_target`, the structured `protocol` identity, `schema_version`, and
-board capabilities. Engine returns the negotiated limits, server UTC
-milliseconds, device/template identity, MQTT credentials, topics, and
-datastream metadata. ESP transports may additionally send `chip_id` and
-`mac_address` as hardware identifiers; those fields do not define a separate
-protocol.
+Bootstrap uses the same binary WSS framing as normal operation; there is no
+preface or second bootstrap wire format. Its `bootstrap_auth` frame carries
+the one-time token, device-generated raw secret, hardware identity, firmware
+target, and board capabilities. Engine validates but does not redeem the token
+at this point.
 
-Call `Provisioner::run()` from the main loop. It writes a pending record first, commits the validated session, then removes the pending record. Failure never deliberately deletes the previous session. Never log tokens, MQTT passwords, or complete responses.
+After authentication, Engine uses the normal Link transaction:
 
-Initial provisioning resolves Engine's desired published template. The applied
-template remains unchanged until the device reports the matching version and
-checksum. ESP setup status exposes only a sanitized `last_error`; successful
-provisioning responses are never logged because they contain MQTT credentials.
+```text
+CONFIG_BEGIN -> CONFIG_RECORD* -> CONFIG_END
+```
 
-The application-level contract is Flova device provisioning, not ESP
-provisioning. The current ESP wrappers implement its local HTTP transport using
-`/status` and `/provision`; another board may expose the same endpoints without
-ESP libraries. During a request the wrappers use AP+STA mode and keep the local
-endpoint reachable. `200` means the configuration was stored, while structured
-`4xx`/`5xx` responses are definitive retryable failures. There is no early
-accepted response.
+Every transfer message is one binary WSS frame, no larger than 512 bytes
+including the 12-byte header. `CONFIG_BEGIN` declares the generation, checksum,
+record count, limits, and generation-scoped compact IDs. Each `CONFIG_RECORD`
+is a bounded CDDL CBOR record. Firmware validates it, writes it to the inactive
+generation in watchdog-safe chunks, reads it back, and acknowledges that
+sequence before accepting the next record. Bootstrap does not allocate runtime
+datastream or hardware objects while BearSSL is active.
+`CONFIG_END` validates the final count and checksum, durably marks
+the inactive generation complete, atomically promotes it, and then returns the
+final acknowledgement. Configuration is neither JSON nor a reconstructed
+whole-document in RAM. After Engine reports bootstrap committed, the board
+saves credentials and reboots; the active configuration is restored into
+runtime objects before normal authenticated Link startup.
 
-The ESP wrappers parse successful Engine responses directly from the HTTP
-stream with an ArduinoJson filter. Unrelated response metadata therefore does
-not consume the retained JSON arena. The filtered runtime is limited to 2048
-bytes and the complete versioned device configuration to 4096 bytes; overflow,
-missing required fields, and storage verification failures reject provisioning
-without replacing the last valid configuration.
+Runtime restore validates every persisted record and the complete transfer
+digest before touching mappings or GPIO. It tries the newest generation first,
+discards a corrupt bank, and falls back to the previous verified bank. Normal
+state and command traffic remains disabled until runtime publishes
+`config_reported` with the exact restored generation and checksum. A mismatch
+causes Engine to retransmit the desired generation; a completed runtime update
+is applied only after a clean reboot, so no connection can observe a mixture of
+old and new records.
 
-ESP8266 stores the configuration in LittleFS using a verified next file plus a
-last-known-good backup. ESP32 stores current and previous single-blob snapshots
-in Preferences/NVS. Boot accepts only a valid snapshot (or its backup);
-development-era per-key credential layouts are intentionally not migrated.
+The A/B storage implementation must keep the last active generation readable
+until promotion succeeds. An interruption, malformed record, checksum failure,
+or lost acknowledgement leaves it active; retrying an already-durable record or
+final acknowledgement is idempotent. Only after the final commit can Engine
+redeem the bootstrap token, rotate credentials, and report bootstrap committed.
+
+An interrupted transfer leaves the token pending and never replaces the last
+valid configuration. Transient bootstrap failures retry up to three persisted
+attempts with a clean reboot between attempts; terminal failures return to the
+setup AP and expose only sanitized
+`last_error_code` plus `can_retry` through `/status`. A reset detected during
+bootstrap is reported as `firmware_reset_during_bootstrap` and does not loop
+forever. The product app reconnects to its normal network and treats Engine's
+provisioning-status endpoint as authoritative.
+
+Once committed credentials exist, the board always boots into runtime and the
+setup AP stays disabled. Wi-Fi, NTP, TLS, and Link outages are runtime offline
+conditions handled by native Wi-Fi/SNTP recovery and bounded Link reconnect;
+they never make the device unprovisioned. Engine may report a transient attempt
+as `verifying_runtime`, while `provisioned` and `presence` remain independent
+states. Provisioning becomes complete only after the matching runtime
+`config_reported` message is durably processed.
+
+The app's compile-time Link URL is authoritative and must use `wss://`.
+Firmware has no Flova Cloud hostname fallback. Tokens, secrets, and
+configuration contents must never be logged.
+
+The supported ESP8266 target profile is verified BearSSL WSS with a
+4,096-byte RX / 512-byte TX Link allocation. Shared IRAM must be enabled and
+the adapter must fail closed when the required TLS memory profile is not
+available. Link and OTA never coexist: Link disconnects before OTA opens its
+separate verified HTTPS client with a 16 KiB RX / 512-byte TX profile.
+Certificate-chain and hostname verification are mandatory; plaintext,
+`setInsecure()`, and fingerprint-only fallbacks are prohibited.
+
+For a custom board, carry this same Link v1 WSS frame and streamed
+configuration contract. Its adapter must report provisioning complete only after
+the configuration storage transaction has succeeded, and must preserve the
+previous generation on failure.
+
+Development-era credential layouts are intentionally not migrated.

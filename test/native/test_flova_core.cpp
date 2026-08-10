@@ -21,12 +21,14 @@ class TestClock : public flova::Clock { public: uint64_t now = 1, utc = 0; uint6
 class TestLogger : public flova::Logger { public: void log(const char*) override {} };
 
 static int writes;
+static int numericWrites;
 static bool reject;
 static flova::WriteResult writeRelay(bool) { writes++; return reject ? flova::WriteResult::reject("safety_lock") : flova::WriteResult::accept(); }
+static flova::WriteResult writeSetpoint(double) { numericWrites++; return flova::WriteResult::accept(); }
 static flova::ReadResult<float> readTemperature() { return flova::ReadResult<float>::success(31.5f); }
 
 class SessionStorage : public flova::Storage { public: flova::ProvisioningSession session; bool present = false; bool read(const char* key, void* out, size_t size) override { if (!present || strcmp(key, "session") || size != sizeof(session)) return false; memcpy(out, &session, size); return true; } bool write(const char* key, const void* value, size_t size) override { if (!strcmp(key, "session") && size == sizeof(session)) { memcpy(&session, value, size); present = true; } return true; } bool remove(const char*) override { return true; } };
-class TestEngine : public flova::EngineClient { public: bool beginRedeem(const flova::ProvisioningRequest&) override { return true; } flova::ProvisioningPoll poll(flova::ProvisioningSession& out) override { out.schemaVersion = 1; flova::Value::copy(out.deviceId, "device-1"); flova::Value::copy(out.host, "mqtt.example"); flova::Value::copy(out.username, "user"); flova::Value::copy(out.password, "secret"); out.port = 8883; out.serverUtcMs = 100000; return flova::ProvisioningPoll::Complete; } };
+class TestEngine : public flova::LinkBootstrapClient { public: bool beginBootstrap(const flova::ProvisioningRequest&) override { return true; } flova::ProvisioningPoll poll(flova::ProvisioningSession& out) override { out.schemaVersion = 1; flova::Value::copy(out.deviceId, "device-1"); flova::Value::copy(out.linkUrl, "wss://link.example/api/device-link"); flova::Value::copy(out.secret, "device-secret"); out.serverUtcMs = 100000; return flova::ProvisioningPoll::Complete; } };
 class TestWallClock : public flova::WallClock { public: bool valid = false; flova::LocalTime now = {2026, 7, 15, 3, 20, 0}; bool synchronized() const override { return valid; } bool localTime(const char*, flova::LocalTime& out) const override { out = now; return true; } };
 static int scheduledRuns;
 static void scheduledWrite() { scheduledRuns++; }
@@ -34,6 +36,7 @@ static int manifestRuns, renewals;
 static flova::WriteResult applySchedule(const char*, const flova::ScheduleAction&, uint64_t) { manifestRuns++; return flova::WriteResult::accept(); }
 static void renewSchedule(uint32_t, uint64_t) { renewals++; }
 static void scheduleStatus(const char*, uint32_t, uint64_t) {}
+static bool resolveScheduleKey(uint16_t id, char* key, size_t capacity) { if (id != 9 || capacity < 8) return false; strcpy(key, "relay"); return true; }
 
 int main() {
   FlovaFactoryResetGesture resetGesture;
@@ -88,6 +91,8 @@ int main() {
   device.resourcePlan(budgets, static_cast<size_t>(flova::ResourceKind::Count));
   flova::Datastream<bool> relay = device.datastream<bool>("relay");
   flova::Datastream<float> temperature = device.datastream<float>("temperature");
+  flova::Datastream<double> setpoint = device.datastream<double>("setpoint");
+  setpoint.onWrite(writeSetpoint);
   relay.onWrite(writeRelay); temperature.mode(flova::Mode::Sample).onRead(readTemperature); assert(device.begin());
 
   assert(!temperature.hasValue() && temperature.read() == 0.0f);
@@ -107,8 +112,32 @@ int main() {
   temperature.offline(flova::OfflinePolicy::StoreHistory).retention(retention); link.online = false; temperature.report(5.0f); temperature.report(10.0f); temperature.report(20.0f); assert(device.diagnostics().droppedHistory == 1); int historical = link.stateSends; link.online = true; device.run(); assert(link.stateSends == historical + 2 && link.stateValues[historical] == 10.0 && link.stateValues[historical + 1] == 20.0);
   flova::Message time; time.kind = flova::MessageKind::TimeResponse; time.timestamp = 200000; flova::Value::copy(time.commandId, "time-1"); link.inject(time); assert(clock.utcValid());
 
+  flova::config::Unit configuredDatastream;
+  configuredDatastream.kind = flova::config::UnitKind::Datastream;
+  configuredDatastream.data.datastream.compactId = 9;
+  configuredDatastream.data.datastream.valueType = 3;
+  flova::Value::copy(configuredDatastream.data.datastream.key, "setpoint");
+  assert(device.applyConfigurationUnit(configuredDatastream));
+  flova::config::Unit safety;
+  safety.kind = flova::config::UnitKind::Safety;
+  safety.data.safety.compactId = 9;
+  safety.data.safety.policy = flova::config::SafetyPolicy::Range;
+  safety.data.safety.hasMinimum = true; safety.data.safety.minimum.kind = flova::config::ValueKind::Float64; safety.data.safety.minimum.data.float64 = 10;
+  safety.data.safety.hasMaximum = true; safety.data.safety.maximum.kind = flova::config::ValueKind::Float64; safety.data.safety.maximum.data.float64 = 20;
+  assert(device.applyConfigurationUnit(safety));
+  assert(!setpoint.write(5).accepted() && numericWrites == 0);
+  assert(setpoint.write(15).accepted() && numericWrites == 1);
+  flova::Message expired = command; expired.value = flova::Value::from(true); expired.expiresAtUtcMs = clock.utcMilliseconds() - 1; flova::Value::copy(expired.key, "relay"); flova::Value::copy(expired.commandId, "cmd-expired"); link.inject(expired); assert(link.last.kind == flova::MessageKind::Error && strcmp(link.last.reason, "command_expired") == 0);
+
   SessionStorage sessionStorage; TestEngine engine; flova::Provisioner provisioner(engine, sessionStorage, clock); flova::ProvisioningRequest request; flova::Value::copy(request.engineUrl, "https://engine.example"); flova::Value::copy(request.token, "one-time-token"); flova::Value::copy(request.hardwareId, "stm32-123"); assert(provisioner.begin(request)); provisioner.run(); flova::ProvisioningSession restored; assert(provisioner.status() == flova::ProvisioningStatus::Ready && provisioner.load(restored) && !strcmp(restored.deviceId, "device-1") && clock.utcValid());
   TestWallClock wallClock; flova::Scheduler scheduler(wallClock); assert(scheduler.daily(20, 0, "IRST-3:30", scheduledWrite)); scheduler.run(); assert(scheduledRuns == 0); wallClock.valid = true; scheduler.run(); scheduler.run(); assert(scheduledRuns == 1); wallClock.now.day++; scheduler.run(); assert(scheduledRuns == 2);
   flova::ScheduleRuntime scheduleRuntime(storage, clock); scheduleRuntime.handlers(applySchedule, renewSchedule, scheduleStatus); flova::ScheduleManifest manifest; manifest.revision = 1; manifest.generatedAt = 1000; manifest.validUntil = 1000 + 90ULL * 24 * 60 * 60 * 1000; manifest.renewBefore = manifest.validUntil - 14ULL * 24 * 60 * 60 * 1000; manifest.scheduleCount = 1; flova::Value::copy(manifest.schedules[0].id, "light-off"); flova::Value::copy(manifest.schedules[0].action.key, "relay"); manifest.schedules[0].action.value = flova::Value::from(false); manifest.schedules[0].enabled = true; manifest.schedules[0].occurrenceCount = 1; manifest.schedules[0].occurrences[0] = 2000; manifest.checksum = flova::ScheduleRuntime::checksum(manifest); assert(scheduleRuntime.install(manifest)); clock.utc = 2500 - clock.now; scheduleRuntime.run(); scheduleRuntime.run(); assert(manifestRuns == 1); clock.utc = manifest.validUntil - 10ULL * 24 * 60 * 60 * 1000 - clock.now; scheduleRuntime.run(); assert(renewals == 1);
+  flova::ScheduleChunkCompiler compiler;
+  assert(compiler.begin(2, 1000, 9000, 8000, 1));
+  flova::config::Unit scheduleUnit = {}; scheduleUnit.kind = flova::config::UnitKind::Schedule; scheduleUnit.data.schedule.id = 42; scheduleUnit.data.schedule.enabled = true; scheduleUnit.data.schedule.actionCount = 1; scheduleUnit.data.schedule.actions[0].compactId = 9; scheduleUnit.data.schedule.actions[0].value.kind = flova::config::ValueKind::Boolean; scheduleUnit.data.schedule.actions[0].value.data.boolean = false;
+  assert(compiler.addSchedule(scheduleUnit.data.schedule, resolveScheduleKey));
+  flova::config::Unit chunk = {}; chunk.kind = flova::config::UnitKind::ScheduleOccurrences; chunk.data.occurrences.scheduleId = 42; chunk.data.occurrences.chunkIndex = 0; chunk.data.occurrences.chunkCount = 2; chunk.data.occurrences.occurrenceCount = 1; chunk.data.occurrences.occurrences[0] = 3000; assert(compiler.addOccurrences(chunk.data.occurrences));
+  chunk.data.occurrences.chunkIndex = 1; chunk.data.occurrences.occurrences[0] = 4000; assert(compiler.addOccurrences(chunk.data.occurrences));
+  flova::ScheduleManifest compiled; assert(compiler.finish(compiled)); assert(compiled.schedules[0].occurrenceCount == 2 && compiled.schedules[0].actionCount == 1);
   return 0;
 }

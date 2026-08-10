@@ -18,3 +18,10 @@
 #ifndef FLOVA_HISTORY_RUNTIME_ENABLED
 #define FLOVA_HISTORY_RUNTIME_ENABLED 0
 #endif
+
+// Development diagnostics for configured hardware inputs and datastream
+// delivery. Keep this compile-time controlled so production builds can remove
+// serial output without adding runtime state or heap usage.
+#ifndef FLOVA_DATASTREAM_LOGGING
+#define FLOVA_DATASTREAM_LOGGING 1
+#endif

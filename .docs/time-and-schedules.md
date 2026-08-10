@@ -2,7 +2,7 @@
 
 A board must not advertise offline schedule slots merely because the core was
 compiled with schedule arrays. Its board profile enables
-`FLOVA_SCHEDULE_RUNTIME_ENABLED` only after MQTT manifest delivery, durable
+`FLOVA_SCHEDULE_RUNTIME_ENABLED` only after Device Link manifest delivery, durable
 manifest storage, clock synchronization, and `ScheduleRuntime::run()` are all
 wired. Otherwise Engine keeps schedules cloud-only.
 
@@ -17,23 +17,25 @@ stores that bounded cache, executes it offline through the normal datastream
 write pipeline, requests renewal with 14 days remaining, and never replays
 missed occurrences. An expired cache stops safely until reconnection.
 
-The universal ESP32 and ESP8266 targets subscribe to the retained
-`schedules/desired` compact JSON manifest. Each schedule carries a first UTC
-millisecond occurrence followed by bounded minute deltas. Revisions and UTC
-timestamps are 64-bit. The targets accept at most eight schedules, 96
-occurrences per schedule, and 3800 manifest bytes so the complete MQTT packet
-fits the 4096-byte transport buffer.
+The universal ESP32 and ESP8266 targets receive schedule metadata and ordered
+occurrence chunks as bounded integer-keyed `CONFIG_RECORD` units. Metadata and
+chunks are independently persisted through the same `CONFIG_BEGIN` /
+`CONFIG_END` transaction as every other configuration record. Each occurrence
+chunk carries at most 16 UTC millisecond values; revisions and UTC timestamps
+are 64-bit. The targets accept at most eight schedules and 128 occurrences per
+schedule, while every individual Flova Link frame remains at most 512 bytes.
 
 ESP32 stores the staging/active manifest in Preferences. ESP8266 stores it in
 LittleFS because the existing 4 KiB EEPROM layout is reserved for credentials,
 runtime configuration, and datastream snapshots. Installation validates the
-whole manifest before replacing the active copy. Progress is persisted before
-the hardware write; occurrences missed while powered down are advanced without
-replay. All due writes use the existing datastream handler and safety path.
-The ESP8266 restore path keeps manifests in heap-backed strings and parses into
+the bounded compiler validates chunk order and completeness before installing
+the active manifest. Progress is persisted before the hardware write;
+occurrences missed while powered down are advanced without replay. All due
+writes use the existing datastream handler and safety path.
+The ESP8266 restore path keeps manifests in bounded fixed-size values and parses directly into
 the authoritative bounded schedule array; manifest-sized buffers and duplicate
 schedule arrays must never be placed on its constrained stack. A corrupt or
-oversized retained manifest is discarded as a replaceable cache so MQTT boot can
+oversized retained manifest is discarded as a replaceable cache so Device Link startup can
 continue and Engine can deliver a fresh copy.
 
 Developer-local schedules use `flova::Scheduler` with a board-supplied

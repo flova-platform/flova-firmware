@@ -1,0 +1,5 @@
+cbor2==5.6.5
+PyYAML==6.0.2
+# 2024.11.6 has no Python 3.14 wheel and falls back to a source build.
+# Keep this pinned to the Python 3.14-compatible wheel used by the generator.
+regex==2026.7.19

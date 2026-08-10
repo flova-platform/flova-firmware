@@ -6,28 +6,60 @@ The repository currently uses PlatformIO compile contracts because both public w
 cmake -S . -B /tmp/flova-core-build
 cmake --build /tmp/flova-core-build
 ctest --test-dir /tmp/flova-core-build --output-on-failure
+scripts/lint_flova_link_cddl.sh
+scripts/check_flova_link_hot_path.sh
 pio run -e universal-esp32 -e universal-esp8266
+scripts/check_esp8266_stack_usage.py
 pio run -e datastream-api-esp32 -e datastream-api-esp8266
 pio test -e test-esp32 -e test-esp8266 --without-uploading --without-testing
+pio test -e test-bootstrap-esp8266 --without-uploading --without-testing
 git diff --check
 ```
 
-The native C++11 suite executes cache-only reads, refresh/report behavior, rejection preserving state, cloud/local handler convergence, acknowledgements, stale revision suppression, and KeepLatest reconnect coalescing. It also compiles the complete custom-board example without Arduino. The board examples compile the typed APIs on ESP32 and ESP8266; `--without-uploading` verifies Unity test binaries, while connected boards execute them.
+The native C++11 suite executes cache-only reads, refresh/report behavior,
+rejection preserving state, cloud/local handler convergence, acknowledgements,
+stale revision suppression, and KeepLatest reconnect coalescing. It also covers
+fixed frame boundaries and the streamed configuration installer's ordering,
+checksum, read-back, A/B promotion, interruption, and lost-final-ACK behavior.
+The board examples compile the typed APIs on ESP32 and ESP8266;
+`--without-uploading` verifies Unity test binaries, while connected boards
+execute them.
 
-Before a release, test one physical ESP32 and ESP8266 for provisioning, MQTT reconnect, an accepted remote relay write, a rejected unsafe write, offline local state followed by reconnect, duplicate command delivery, factory reset, and persistent cache restoration. Record flash and RAM output from PlatformIO for both universal targets.
+`scripts/lint_flova_link_cddl.sh` rejects an unbounded, tagged, recursive, or
+generic CDDL contract and requires the depth-four profile declaration.
+`scripts/check_flova_link_hot_path.sh` scans the explicit Link/configuration
+paths and rejects ArduinoJson, runtime JSON, heap allocation, dynamic
+containers, generic CBOR trees, TLV, and legacy value decoders. Its allowlist
+has one exact-file/line format and is only for reviewed scaffolding outside the
+Link/configuration path; it must not preserve a legacy codec. Both checks must
+pass before claiming Link v1 conformance.
 
-Provisioning validation must include an Engine response larger than 4096 bytes,
-a reboot from the stored snapshot, and recovery after corrupting the current
-snapshot while leaving its backup intact. Confirm that serial diagnostics report
-response size and heap state without printing MQTT credentials or response
-payloads.
+The universal ESP8266 build emits compiler stack-usage records.
+`scripts/check_esp8266_stack_usage.py` rejects regressions in boot restore,
+provisioning, state batching, and OTA frames before they can consume the 4 KiB
+continuation stack on hardware.
+
+Before a release, test one physical ESP32 and ESP8266 for provisioning, WSS reconnect, an accepted remote relay write, a rejected unsafe write, offline local state followed by reconnect, duplicate command delivery, factory reset, and persistent cache restoration. Record flash and RAM output from PlatformIO for both universal targets.
+
+Provisioning validation must include a multi-record configuration transaction,
+an interrupted transaction followed by retry, a duplicate record/final ACK,
+a reboot from the active generation, and recovery after corrupting the inactive
+generation. Confirm that serial diagnostics report only bounded status and heap
+state, never device credentials or complete payloads.
 
 For schedules, also verify capability heartbeat values, retained manifest
 installation, `schedules/reported`, execution while disconnected, reboot
 restoration without replaying missed occurrences, renewal publication, and
 safe expiry on both physical targets.
-On ESP8266, install a near-limit retained manifest and reboot without erasing
-flash. Confirm MQTT connects without a watchdog reset and record the free heap,
-largest free block, and fragmentation diagnostics around MQTT allocation.
+On ESP8266, install a near-limit schedule/configuration record and reboot
+without erasing flash. Confirm WSS connects without a watchdog reset and record
+free heap, largest free block, and fragmentation before and after TLS setup.
+Keep WSS connected through network interruptions, deliver a 512-byte frame,
+reject a 513-byte frame, then begin OTA. Confirm Link releases its TLS workload
+before HTTPS begins, no Link/configuration hot-path operation allocates after
+transport setup, and failed reconnects do not leak memory. Release builds must
+use the 4,096/512 Link and 16,384/512 OTA profiles with the 16 KiB cache,
+48 KiB IRAM shared-second-heap option. Diagnostics must show DRAM and IRAM; a
+build without the required second heap must fail closed before connecting.
 
 Native host execution is recommended follow-up work. It requires extracting Arduino `String` behind a native-compatible value boundary; do that as a focused change rather than adding a production fake.

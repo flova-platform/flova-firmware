@@ -1,65 +1,111 @@
-# Cloud protocol v1
+# Flova Link v1 device protocol
 
-The wire protocol is identified by a structured envelope instead of a product
-name embedded in a version string:
+Public Flova APIs use JSON over HTTPS. Device Link is separate: verified binary
+`wss://`, deterministic CBOR payloads, and no JSON, MQTT topics, Base64
+envelopes, Phoenix Channels, or human-readable JSON property names on the
+device wire.
 
-```json
-{
-  "protocol": { "name": "flova", "version": 1 },
-  "schema_version": 1
-}
+`protocol/flova-link-v1.cddl` is the single canonical machine-readable
+wire-contract. Firmware and Engine derive their representations from it and
+share deterministic-CBOR conformance vectors. Handwritten payload layouts and
+generic value codecs are not an alternative protocol definition.
+
+## Frame and transport
+
+Each WebSocket **binary** message contains exactly one complete frame. Text
+messages, WebSocket compression, fragmented/reassembled application frames,
+and multiple frames in one message are rejected.
+
+```text
++---------------+---------------+----------------+----------------+
+| message_type  | flags         | payload_length | message_id     |
+| uint8         | uint8         | uint16         | uint64         |
++---------------+---------------+----------------+----------------+
+| deterministic CBOR payload                                      |
++-----------------------------------------------------------------+
 ```
 
-MQTT topics live under `flova/v1/devices/<device-id>/`. Devices publish
-`heartbeat`, `state`, `command-results`, `config/reported`,
-`schedules/reported`, `schedules/renew`, `ota/reported`, and `time/request`;
-they subscribe to `commands`, `config/desired`, `schedules/desired`,
-`ota/desired`, and `time/response`. Broker ACLs restrict every device to its
-own topic prefix and direction. OTA offers contain metadata and SHA-256 only;
-binary artifacts are downloaded directly over HTTP(S).
+The outer header is always 12 bytes. A complete frame is at most 512 bytes,
+leaving a strict 500-byte CBOR payload maximum. Oversized WebSocket messages
+and a header/payload-length mismatch are rejected before CBOR decoding. The
+outer header alone supports routing, authentication and connection-generation
+checks, rate limits, flow control, ACK correlation, and basic frame validation.
+`message_id` stays stable for a durable retry, including after reconnect.
 
-The heartbeat advertises physical board capacities. Engine combines those
-capacities with deployment policy and sends the negotiated operational limits
-in configuration. A capacity is an implementation fact (for example, storage
-available in a particular board build), not a product plan limit. Firmware
-never silently substitutes a product-level maximum.
+## Restricted deterministic CBOR
 
-`firmware_system.status_led` is an optional deployment setting with a `GPIO<n>`
-pin and `active_low` polarity. When present, universal ESP firmware keeps the
-indicator solid while MQTT is connected and blinks it during reconnects; when
-absent, firmware does not claim a status pin or use a board-specific default.
+The CDDL profile accepts only declared unsigned/signed integers, booleans,
+float32, explicitly required float64, bounded UTF-8 strings, bounded byte
+strings, and definite-length bounded arrays/maps. Maximum nesting is four.
+Indefinite values, tags, bignums, duplicate keys, arbitrary value trees,
+unknown structures, invalid narrowing, malformed required UTF-8, trailing
+bytes, and all values beyond their CDDL bounds are rejected without persistent
+state changes. Unknown optional fields are accepted only when the active CDDL
+type explicitly permits them, then skipped without allocation.
 
-`firmware_system.factory_reset` is also optional and is consumed only by the
-universal ESP32/ESP8266 wrappers. It either references a mapped digital-input
-datastream or reserves a dedicated `GPIO<n>` input with an `active_low`
-polarity. Reset is accepted only during the first 60 seconds after boot after
-three taps, a continuous 10-second hold, and a confirming release. A missing
-setting reserves no reset pin.
+Serialization is deterministic: shortest valid integer/length forms, definite
+lengths, canonical map-key order, and the exact CDDL-selected float width.
+Equivalent firmware and Engine values therefore encode to identical bytes.
+Hot-path telemetry/state, heartbeats, ACKs, command results, and time/flow
+messages use fixed-schema CBOR arrays. Extensible configuration/control records
+use ascending integer-keyed maps.
 
-Engine persists the last capability report and exposes the negotiated schedule
-slots plus exact compiled-manifest byte usage to clients. Until a board reports
-capabilities, schedules remain cloud-only and the UI must not claim offline
-availability. Disabled schedules do not consume an active manifest slot.
+## Compact identities and configuration
 
-Commands are processed only inside the device loop, deduplicated by command
-ID, validated against the datastream contract, and acknowledged after the
-hardware handler accepts or rejects them. A cloud-originated write emits one
-`command-results` report containing the applied value, correlation ID, and
-acknowledged desired version; it does not also emit a duplicate `state`
-message. Engine retries the retained desired state until that version is
-acknowledged. Device-originated observations continue to use `state`, whose
-ingestion acknowledgement clears the bounded KeepLatest snapshot. Offline
-state uses the negotiated, bounded keep-latest or history policy.
+`CONFIG_BEGIN` assigns compact datastream integer IDs scoped to a configuration
+generation. Subsequent telemetry, state, commands, and command results carry
+that ID and generation rather than repeatedly transmitting a datastream UUID.
+Frames for an unknown or stale generation are rejected.
 
-`state` accepts either one `key`/`value` reading or an atomic `readings` array.
-A batch has one stable envelope `message_id`, at most 32 logical readings, and
-must fit the negotiated message-size limit. Engine acknowledges the envelope
-only after every reading is validated and committed; firmware retries the
-exact envelope until then.
+Bootstrap and normal updates use the same transactional sequence:
 
-Schedule manifests are renewable caches of Engine-owned schedules. Engine
-compiles IANA timezone rules into a rolling UTC horizon. The default server
-policy is 90 days and is refreshed daily, after edits, on reconnect, and when
-the device reports a low horizon. Firmware uses the manifest's `renew_before`
-value; it does not own the 90-day or renewal policy. An expired manifest stops
-executing safely, and missed occurrences are never replayed.
+```text
+CONFIG_BEGIN -> CONFIG_RECORD* -> CONFIG_END
+```
+
+`CONFIG_BEGIN` declares generation, schema version, checksum, record count,
+limits, and ID mappings. A `CONFIG_RECORD` holds one bounded CDDL unit such as
+a datastream with nested hardware mapping, a system record, schedule metadata,
+an ordered schedule-occurrence chunk, or a safety policy. Firmware decodes one
+fixed record, validates it, immediately writes it
+to inactive A/B storage, verifies that write, and sends its bounded ACK before
+accepting another record. `CONFIG_END` verifies count/checksum and atomically
+promotes the generation. Nested configuration is preserved semantically, but a
+complete configuration is never rebuilt in RAM. More records use more transfer
+time and flash, not more working memory.
+
+SoftAP may hand off Wi-Fi/bootstrap inputs. The board persists the handoff and
+reboots before Wi-Fi/TLS bootstrap, so setup HTTP and BearSSL never coexist.
+Engine bootstrap uses this same verified WSS CBOR record exchange. Credentials become
+authoritative only after the staged generation is verified and committed; final
+provisioning confirmation is idempotent across a lost ACK, including replay of
+an already committed generation. Engine presence telemetry is best effort and
+cannot delay or suppress `bootstrap_committed`. There is no separate
+HTTPS/JSON provisioning configuration format.
+
+## Reliability, TLS, and memory
+
+CBOR changes representation, not delivery semantics. Newest-connection-wins,
+connection-generation fencing, authentication deadlines, full-jitter reconnect,
+flow control, permanent rejection, command correlation, and command-ID
+deduplication remain invariants. A command with a non-zero UTC expiry is
+rejected before its handler when time is invalid or the deadline has passed.
+Best-effort telemetry can be shed; durable
+messages retain their ID across retry/reconnect and receive an application ACK
+only after the required Engine persistence. Commands run only in the device
+loop and report an applied value or rejection without duplicate state reports.
+
+Certificate-chain and hostname validation are mandatory: no plaintext,
+`setInsecure()`, fingerprint-only validation, or downgrade. Official ESP8266
+Link WSS uses the Cloudflare-compatible BearSSL **4,096-byte RX / 512-byte TX**
+profile and shared IRAM. OTA destroys/releases Link first, then streams
+over separate verified HTTPS using **16,384-byte RX / 512-byte TX**; OTA
+artifacts never accumulate in RAM.
+
+The ESP8266 Link codec and configuration transaction use fixed frame, zcbor,
+decoded-record, and persistence workspaces. Runtime objects are restored before
+normal Link startup and are not allocated while bootstrap records are being
+persisted. Peer-provided lengths never choose allocation sizes.
+
+This document defines the locked v1 target contract. A deployment may claim
+conformance only after its vectors, fuzz, memory, and hardware tests pass.

@@ -1,0 +1,9 @@
+# Exact, reviewed exceptions for scripts/check_flova_link_contract.sh.
+#
+# Format: repository-relative-path:line:rule-id
+#
+# An exception is only valid for code outside the Flova Link/configuration hot
+# path (for example, a bounded local SoftAP form parser).  Do not use this
+# file to exempt a codec, transport, configuration record, A/B storage, or
+# reconnect-path allocation.  Every entry needs a nearby source-code comment
+# explaining why it is outside that path and should be removed when possible.

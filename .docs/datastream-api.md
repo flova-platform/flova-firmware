@@ -36,7 +36,7 @@ temperature.publishEvery(5000);
 Single-reading publication remains the default. Applications with several
 readings due together may opt in once per device with
 `flova.enableStateBatching(32, 100)`. Batches never exceed 32 readings or the
-negotiated MQTT message-size limit; event-mode datastreams bypass batching.
+negotiated Device Link frame-size limit; event-mode datastreams bypass batching.
 
 ## Modes
 

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "FlovaBuildConfig.h"
+#include "FlovaConfigurationRuntime.h"
 #include "FlovaResources.h"
 
 namespace flova {
@@ -70,8 +71,9 @@ struct Message {
   uint32_t revision;
   uint64_t timestamp;
   uint64_t monotonic;
+  uint64_t expiresAtUtcMs;
   Origin origin;
-  Message() : kind(MessageKind::StateUpdate), revision(0), timestamp(0), monotonic(0), origin(Origin::Unknown) { key[0] = commandId[0] = correlationId[0] = reason[0] = 0; }
+  Message() : kind(MessageKind::StateUpdate), revision(0), timestamp(0), monotonic(0), expiresAtUtcMs(0), origin(Origin::Unknown) { key[0] = commandId[0] = correlationId[0] = reason[0] = 0; }
 };
 
 typedef void (*MessageReceiver)(void* context, const Message& message);
@@ -154,6 +156,36 @@ class Device {
 
   template <typename T> Datastream<T> datastream(const char* key);
 
+  // Link adapters call this with one schema-decoded bounded unit. The public
+  // datastream API remains typed and never exposes the wire representation.
+  bool applyConfigurationUnit(const config::Unit& unit) {
+    if (unit.kind == config::UnitKind::Datastream) {
+      ValueType type;
+      if (unit.data.datastream.valueType == 0) type = ValueType::Boolean;
+      else if (unit.data.datastream.valueType == 2) type = ValueType::Float;
+      else if (unit.data.datastream.valueType == 3) type = ValueType::Double;
+      else if (unit.data.datastream.valueType == 4) type = ValueType::Text;
+      else return false;
+      State* current = state(unit.data.datastream.key, type);
+      if (!current) return false;
+      current->compactId = unit.data.datastream.compactId;
+      return true;
+    }
+    if (unit.kind == config::UnitKind::Safety) {
+      State* current = 0;
+      for (size_t i = 0; i < count_; ++i) if (states_[i].compactId == unit.data.safety.compactId) { current = &states_[i]; break; }
+      if (!current) return false;
+      current->safetyPolicy = static_cast<uint8_t>(unit.data.safety.policy);
+      current->hasSafetyMinimum = unit.data.safety.hasMinimum && toValue(unit.data.safety.minimum, current->safetyMinimum);
+      current->hasSafetyMaximum = unit.data.safety.hasMaximum && toValue(unit.data.safety.maximum, current->safetyMaximum);
+      return current->safetyPolicy == 0 || current->safetyPolicy == 4 ||
+             ((current->safetyPolicy == 1 || current->safetyPolicy == 2 || current->safetyPolicy == 3) &&
+              (!unit.data.safety.hasMinimum || current->hasSafetyMinimum) &&
+              (!unit.data.safety.hasMaximum || current->hasSafetyMaximum));
+    }
+    return true;
+  }
+
  private:
   friend class Datastream<bool>;
   friend class Datastream<float>;
@@ -172,6 +204,12 @@ class Device {
     bool dirty;
     uint32_t revision;
     uint32_t lastCloudRevision;
+    uint16_t compactId;
+    uint8_t safetyPolicy;
+    bool hasSafetyMinimum;
+    bool hasSafetyMaximum;
+    Value safetyMinimum;
+    Value safetyMaximum;
     uint64_t updatedAt;
     uint64_t lastHistoryAt;
     HistoryRetentionPolicy history;
@@ -183,7 +221,7 @@ class Device {
     ReadResult<float> (*readFloat)();
     ReadResult<double> (*readDouble)();
     ReadResult<const char*> (*readText)();
-    State() : hasValue(false), mode(Mode::State), offline(OfflinePolicy::KeepLatest), persistence(PersistencePolicy::None), origin(Origin::Unknown), quality(Quality::Stale), dirty(false), revision(0), lastCloudRevision(0), updatedAt(0), lastHistoryAt(0), writeBool(0), writeFloat(0), writeDouble(0), writeText(0), readBool(0), readFloat(0), readDouble(0), readText(0) { key[0] = 0; }
+    State() : hasValue(false), mode(Mode::State), offline(OfflinePolicy::KeepLatest), persistence(PersistencePolicy::None), origin(Origin::Unknown), quality(Quality::Stale), dirty(false), revision(0), lastCloudRevision(0), compactId(0), safetyPolicy(0), hasSafetyMinimum(false), hasSafetyMaximum(false), updatedAt(0), lastHistoryAt(0), writeBool(0), writeFloat(0), writeDouble(0), writeText(0), readBool(0), readFloat(0), readDouble(0), readText(0) { key[0] = 0; }
   };
   struct Persisted { uint32_t magic; char key[kMaxText]; Value value; uint32_t revision; };
   struct HistoryRecord { char key[kMaxText]; Value value; uint64_t timestamp; uint64_t monotonic; uint64_t expiresAt; Origin origin; uint32_t revision; };
@@ -205,6 +243,7 @@ class Device {
     if (message.kind != MessageKind::WriteRequest) return;
     State* current = find(message.key, message.value.type);
     if (!current) return acknowledge(message, WriteResult::reject("unknown_datastream"), 0);
+    if (message.expiresAtUtcMs && (!clock_.utcValid() || clock_.utcMilliseconds() >= message.expiresAtUtcMs)) return acknowledge(message, WriteResult::reject(clock_.utcValid() ? "command_expired" : "utc_time_required"), current);
     if (seen(message.commandId)) { diagnostics_.duplicateCommands++; return acknowledge(message, WriteResult::noChange(), current); }
     bool stale = message.revision && message.revision <= current->lastCloudRevision;
     WriteResult result = stale ? WriteResult::noChange() : apply(*current, message.value, message.origin);
@@ -226,6 +265,7 @@ class Device {
   WriteResult apply(State& state, const Value& value, Origin origin) {
     if ((state.mode == Mode::Sample || state.mode == Mode::Event)) return WriteResult::reject("not_writable");
     if (!link_.connected() && state.offline == OfflinePolicy::Reject) return WriteResult::reject("offline_delivery_required");
+    if (!safe(state, value)) return WriteResult::reject(state.safetyPolicy == 1 || state.safetyPolicy == 3 ? "safety_minimum" : "safety_maximum");
     if (state.hasValue && state.value == value) return WriteResult::noChange();
     WriteResult result = invoke(state, value);
     if (result.accepted()) update(state, value, origin);
@@ -243,6 +283,29 @@ class Device {
     if (v.type == ValueType::Double && s.writeDouble) return s.writeDouble(v.scalar.number);
     if (v.type == ValueType::Text && s.writeText) return s.writeText(v.text);
     return WriteResult::failure("write_handler_missing");
+  }
+
+  static bool toValue(const config::Value& source, Value& target) {
+    if (source.kind == config::ValueKind::Boolean) { target = Value::from(source.data.boolean); return true; }
+    if (source.kind == config::ValueKind::Float32) { target = Value::from(source.data.float32); return true; }
+    if (source.kind == config::ValueKind::Float64) { target = Value::from(source.data.float64); return true; }
+    if (source.kind == config::ValueKind::Text) { target = Value::from(source.data.text); return true; }
+    return false;
+  }
+
+  static bool safe(const State& state, const Value& value) {
+    if (!state.safetyPolicy || state.safetyPolicy == 4 || value.type == ValueType::Text) return true;
+    if (value.type == ValueType::Boolean) return false;
+    const double actual = value.type == ValueType::Float ? value.scalar.floating : value.scalar.number;
+    if ((state.safetyPolicy == 1 || state.safetyPolicy == 3) && state.hasSafetyMinimum) {
+      const double minimum = state.safetyMinimum.type == ValueType::Float ? state.safetyMinimum.scalar.floating : state.safetyMinimum.scalar.number;
+      if (actual < minimum) return false;
+    }
+    if ((state.safetyPolicy == 2 || state.safetyPolicy == 3) && state.hasSafetyMaximum) {
+      const double maximum = state.safetyMaximum.type == ValueType::Float ? state.safetyMaximum.scalar.floating : state.safetyMaximum.scalar.number;
+      if (actual > maximum) return false;
+    }
+    return true;
   }
 
   void setWrite(State* s, WriteResult (*h)(bool)) { if (s) s->writeBool = h; }

@@ -1,30 +1,54 @@
 #pragma once
 
 #include <Arduino.h>
-#include <Crypto.h>
-#include <SHA256.h>
 #include <FlovaOta.h>
+#include <FlovaTlsRoots.h>
+#include <FlovaTlsProfile.h>
 
 #if defined(ESP8266)
+#include <bearssl/bearssl_hash.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecureBearSSL.h>
 #include <Updater.h>
 #else
+#include <mbedtls/sha256.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <Update.h>
 #endif
 
 class ArduinoOtaInstaller : public FlovaOtaInstaller {
  public:
+#if defined(ESP8266)
+  void setTrustAnchors(BearSSL::X509List& trustAnchors) {
+    trustAnchors_ = &trustAnchors;
+  }
+#endif
+
   FlovaOtaResult install(const FlovaOtaOffer& offer) override {
     HTTPClient http;
 #if defined(ESP8266)
     BearSSL::WiFiClientSecure client;
-    client.setInsecure();  // Integrity is checked against SHA-256 received over authenticated MQTT.
-    if (!http.begin(client, offer.artifactUrl)) return FlovaOtaResult::DownloadFailed;
+    flova::TlsHeapStats heap;
+    const flova::TlsResourceStatus resources =
+        flova::tlsResourceStatus(flova::TlsUse::Ota, &heap);
+    flova::logTlsHeap("before OTA", heap);
+    if (!trustAnchors_ || resources != flova::TlsResourceStatus::Ready) {
+      if (resources != flova::TlsResourceStatus::Ready) {
+        Serial.print(F("[flova] OTA rejected reason="));
+        Serial.println(flova::tlsResourceError(resources));
+      }
+      return FlovaOtaResult::ResourceUnavailable;
+    }
+    flova::configureOtaTls(client);
+    client.setTrustAnchors(trustAnchors_);
 #else
-    if (!http.begin(offer.artifactUrl)) return FlovaOtaResult::DownloadFailed;
+    WiFiClientSecure client;
+    client.setCACert(FLOVA_TLS_ROOT_CERTS);
 #endif
+    if (!offer.artifactUrl.startsWith("https://") || !http.begin(client, offer.artifactUrl))
+      return FlovaOtaResult::DownloadFailed;
+    http.setTimeout(flova::kHttpsTimeoutMs);
     int status = http.GET();
     if (status != HTTP_CODE_OK || (uint32_t)http.getSize() != offer.sizeBytes) {
       http.end();
@@ -35,32 +59,54 @@ class ArduinoOtaInstaller : public FlovaOtaInstaller {
       return FlovaOtaResult::FlashFailed;
     }
 
-    SHA256 hash;
-    hash.reset();
+#if defined(ESP8266)
+    br_sha256_context hash;
+    br_sha256_init(&hash);
+#else
+    mbedtls_sha256_context hash;
+    mbedtls_sha256_init(&hash);
+    if (mbedtls_sha256_starts_ret(&hash, 0) != 0) {
+      mbedtls_sha256_free(&hash);
+      abortUpdate();
+      http.end();
+      return FlovaOtaResult::HashMismatch;
+    }
+#endif
     WiFiClient* stream = http.getStreamPtr();
-    uint8_t buffer[512];
     uint32_t written = 0;
     while (http.connected() && written < offer.sizeBytes) {
       size_t available = stream->available();
       if (!available) { delay(1); continue; }
-      size_t count = stream->readBytes(buffer, min(available, sizeof(buffer)));
-      if (!count || Update.write(buffer, count) != count) {
+      size_t count = stream->readBytes(
+          transferBuffer_, min(available, sizeof(transferBuffer_)));
+      if (!count || Update.write(transferBuffer_, count) != count) {
         abortUpdate();
         http.end();
         return FlovaOtaResult::FlashFailed;
       }
-      hash.update(buffer, count);
+#if defined(ESP8266)
+      br_sha256_update(&hash, transferBuffer_, count);
+#else
+      mbedtls_sha256_update_ret(&hash, transferBuffer_, count);
+#endif
       written += count;
     }
     http.end();
 
     uint8_t digest[32];
-    hash.finalize(digest, sizeof(digest));
+#if defined(ESP8266)
+    br_sha256_out(&hash, digest);
+#else
+    mbedtls_sha256_finish_ret(&hash, digest);
+    mbedtls_sha256_free(&hash);
+#endif
     if (written != offer.sizeBytes || hex(digest, sizeof(digest)) != offer.sha256) {
       abortUpdate();
       return FlovaOtaResult::HashMismatch;
     }
-    return Update.end(true) ? FlovaOtaResult::Installed : FlovaOtaResult::FlashFailed;
+    FlovaOtaResult result =
+        Update.end(true) ? FlovaOtaResult::Installed : FlovaOtaResult::FlashFailed;
+    return result;
   }
 
  private:
@@ -78,4 +124,8 @@ class ArduinoOtaInstaller : public FlovaOtaInstaller {
     for (size_t i = 0; i < length; ++i) { result += digits[bytes[i] >> 4]; result += digits[bytes[i] & 15]; }
     return result;
   }
+#if defined(ESP8266)
+  BearSSL::X509List* trustAnchors_ = nullptr;
+#endif
+  uint8_t transferBuffer_[512] = {};
 };

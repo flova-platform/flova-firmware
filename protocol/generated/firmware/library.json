@@ -1,0 +1,11 @@
+{
+  "name": "flova-link-cbor-generated",
+  "version": "1.0.0",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include"
+  },
+  "dependencies": {
+    "zcbor": "0.9.1"
+  }
+}
