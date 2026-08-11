@@ -327,15 +327,42 @@ static void verifyRejection() {
 }
 
 static void verifyReconnectCycles() {
+  FakeClient client;
+  client.includeProtocol = false;
+  FlovaWs websocket(client);
   for (size_t cycle = 0; cycle < 10000; ++cycle) {
-    FakeClient client;
-    client.includeProtocol = false;
-    FlovaWs websocket(client);
+    client.socket = true;
+    client.writtenLength = 0;
+    client.incomingLength = 0;
+    client.incomingOffset = 0;
+    client.responseAdded = false;
     assert(websocket.handshake("engine.example", "/"));
     websocket.close();
     client.socket = false;
     assert(!websocket.connected());
   }
+}
+
+static void verifyPeerCloseReconnect() {
+  FakeClient client;
+  client.includeProtocol = false;
+  FlovaWs websocket(client);
+  assert(websocket.handshake("engine.example", "/"));
+
+  const uint8_t closeFrame[] = {0x88, 0x02, 0x03, 0xE8};
+  client.feed(closeFrame, sizeof(closeFrame));
+  uint8_t output[8] = {};
+  assert(websocket.read(output, sizeof(output)) < 0);
+  assert(!websocket.connected());
+  websocket.close();
+
+  client.socket = true;
+  client.writtenLength = 0;
+  client.incomingLength = 0;
+  client.incomingOffset = 0;
+  client.responseAdded = false;
+  assert(websocket.handshake("engine.example", "/"));
+  assert(websocket.connected());
 }
 
 static void verifyCoalescedWrite() {
@@ -377,6 +404,7 @@ int main() {
   verifyHandshakeAndFrames();
   verifyRejection();
   verifyReconnectCycles();
+  verifyPeerCloseReconnect();
   verifyCoalescedWrite();
   return 0;
 }

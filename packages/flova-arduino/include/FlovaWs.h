@@ -311,10 +311,11 @@ class FlovaWs {
         state_ = State::Closed;
         return;
       }
-      state_ = State::Closing;
-    } else if (state_ == State::Handshaking) {
-      state_ = State::Closed;
     }
+    // The owner tears down the borrowed transport immediately after close().
+    // There is therefore no read loop that can complete a peer close handshake;
+    // leave the parser reusable for the next connection attempt.
+    state_ = State::Closed;
   }
 
   bool connected() const { return state_ == State::Open && transport_.connected(); }
