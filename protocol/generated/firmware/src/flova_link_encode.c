@@ -26,9 +26,13 @@
 } while(0)
 
 static bool encode_repeated_ota_desired_ota_target(zcbor_state_t *state, const struct ota_desired_ota_target *input);
+static bool encode_repeated_datastream_binding_keys_tstr1_48(zcbor_state_t *state, const struct zcbor_string *input);
+static bool encode_datastream_binding_keys(zcbor_state_t *state, const struct datastream_binding_keys *input);
 static bool encode_typed_value_fields(zcbor_state_t *state, const struct typed_value_fields_r *input);
 static bool encode_correlation_id(zcbor_state_t *state, const struct correlation_id_r *input);
 static bool encode_capabilities(zcbor_state_t *state, const struct capabilities *input);
+static bool encode_repeated_datastream_bound_ids_compact_id_m(zcbor_state_t *state, const uint64_t *input);
+static bool encode_datastream_bound_ids(zcbor_state_t *state, const struct datastream_bound_ids *input);
 static bool encode_command_result_ok(zcbor_state_t *state, const struct command_result_ok *input);
 static bool encode_command_result_error(zcbor_state_t *state, const struct command_result_error *input);
 static bool encode_repeated_config_begin_config_command_id(zcbor_state_t *state, const struct config_begin_config_command_id *input);
@@ -83,6 +87,8 @@ static bool encode_config_reported(zcbor_state_t *state, const struct config_rep
 static bool encode_command_result(zcbor_state_t *state, const struct command_result_r *input);
 static bool encode_state(zcbor_state_t *state, const struct state *input);
 static bool encode_heartbeat(zcbor_state_t *state, const struct heartbeat *input);
+static bool encode_datastream_bound(zcbor_state_t *state, const struct datastream_bound *input);
+static bool encode_datastream_bind(zcbor_state_t *state, const struct datastream_bind *input);
 static bool encode_bootstrap_error(zcbor_state_t *state, const struct zcbor_string *input);
 static bool encode_bootstrap_committed(zcbor_state_t *state, const struct bootstrap_committed *input);
 static bool encode_bootstrap_auth(zcbor_state_t *state, const struct bootstrap_auth *input);
@@ -102,6 +108,30 @@ static bool encode_repeated_ota_desired_ota_target(
 	&& ((((*input).ota_desired_ota_target.len >= 1)
 	&& ((*input).ota_desired_ota_target.len <= 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_tstr_encode(state, (&(*input).ota_desired_ota_target)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_datastream_binding_keys_tstr1_48(
+		zcbor_state_t *state, const struct zcbor_string *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((((*input).len >= 1)
+	&& ((*input).len <= 48)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_tstr_encode(state, (&(*input))))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_datastream_binding_keys(
+		zcbor_state_t *state, const struct datastream_binding_keys *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_encode(state, 64) && ((zcbor_multi_encode_minmax(1, 64, &(*input).datastream_binding_keys_tstr1_48_count, (zcbor_encoder_t *)encode_repeated_datastream_binding_keys_tstr1_48, state, (*&(*input).datastream_binding_keys_tstr1_48), sizeof(struct zcbor_string))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 64))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -173,6 +203,29 @@ static bool encode_capabilities(
 	&& (zcbor_uint64_encode(state, (&(*input).capabilities_history_bytes))))
 	&& (((zcbor_uint64_put(state, (7))))
 	&& (zcbor_uint64_put(state, (512))))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_map_end_encode(state, 8))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_datastream_bound_ids_compact_id_m(
+		zcbor_state_t *state, const uint64_t *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((((((((*input) <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input))))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_datastream_bound_ids(
+		zcbor_state_t *state, const struct datastream_bound_ids *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_encode(state, 64) && ((zcbor_multi_encode_minmax(1, 64, &(*input).datastream_bound_ids_compact_id_m_count, (zcbor_encoder_t *)encode_repeated_datastream_bound_ids_compact_id_m, state, (*&(*input).datastream_bound_ids_compact_id_m), sizeof(uint64_t))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 64))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -1043,6 +1096,32 @@ static bool encode_heartbeat(
 	return res;
 }
 
+static bool encode_datastream_bound(
+		zcbor_state_t *state, const struct datastream_bound *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_encode(state, 2) && (((((((((((*input).datastream_bound_bound_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).datastream_bound_bound_generation))))
+	&& ((encode_datastream_bound_ids(state, (&(*input).datastream_bound_bound_ids))))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 2))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_datastream_bind(
+		zcbor_state_t *state, const struct datastream_bind *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_encode(state, 2) && (((((((((((*input).datastream_bind_binding_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).datastream_bind_binding_generation))))
+	&& ((encode_datastream_binding_keys(state, (&(*input).datastream_bind_binding_keys))))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 2))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool encode_bootstrap_error(
 		zcbor_state_t *state, const struct zcbor_string *input)
 {
@@ -1258,6 +1337,30 @@ int cbor_encode_bootstrap_error(
 
 	return zcbor_entry_function(payload, payload_len, (void *)input, payload_len_out, states,
 		(zcbor_decoder_t *)encode_bootstrap_error, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_encode_datastream_bind(
+		uint8_t *payload, size_t payload_len,
+		const struct datastream_bind *input,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[4];
+
+	return zcbor_entry_function(payload, payload_len, (void *)input, payload_len_out, states,
+		(zcbor_decoder_t *)encode_datastream_bind, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_encode_datastream_bound(
+		uint8_t *payload, size_t payload_len,
+		const struct datastream_bound *input,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[4];
+
+	return zcbor_entry_function(payload, payload_len, (void *)input, payload_len_out, states,
+		(zcbor_decoder_t *)encode_datastream_bound, sizeof(states) / sizeof(zcbor_state_t), 1);
 }
 
 

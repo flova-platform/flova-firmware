@@ -36,7 +36,7 @@ typed-value-fields =
   (value-text-type: 4, value-text: short-text)
 typed-value = [typed-value-fields]
 
-; 0x01..0x08 authentication and bootstrap.
+; 0x01..0x0a authentication, bootstrap, and datastream binding.
 auth = [auth-device-id: uuid, auth-secret: secret]
 auth-ok = [auth-server-utc-ms: uint64, auth-heartbeat-ms: uint32, auth-frame-bytes: 512, auth-connection-generation: uint32]
 auth-error = [auth-error-code: error-code]
@@ -72,6 +72,13 @@ capability-history-bytes = uint16
 
 bootstrap-committed = [committed-device-id: uuid, committed-generation: generation, committed-server-utc-ms: uint64]
 bootstrap-error = [bootstrap-error-code: error-code]
+
+; 0x09..0x0a authenticated declaration binding. The response is positional:
+; each ID corresponds to the key at the same array index in datastream-bind.
+datastream-bind = [binding-generation: generation, binding-keys: datastream-binding-keys]
+datastream-binding-keys = [1*64 (tstr .size (1..48))]
+datastream-bound = [bound-generation: generation, bound-ids: datastream-bound-ids]
+datastream-bound-ids = [1*64 compact-id]
 
 ; 0x10..0x18 device-to-Engine hot-path messages.
 heartbeat = [heartbeat-generation: generation, heartbeat-uptime-ms: uint64, heartbeat-status: uint8, heartbeat-firmware-version: tstr .size (1..32)]

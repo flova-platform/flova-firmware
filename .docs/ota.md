@@ -6,7 +6,10 @@ Firmware binaries are built outside Engine and uploaded as immutable `.bin` rele
 
 Build the non-transactional universal artifacts with `pio run -e universal-esp32 -e universal-esp8266` and compile the release version with `-DFLOVA_FIRMWARE_VERSION=\"1.2.3\"`. OTA does not add a device setting or provisioning secret.
 
-Transactional recovery is opt-in. ESP32 developers can use `universal-esp32-ab-4m` or `universal-esp32-ab-8m`, or copy that environment's partition file and build flags into their board profile. The default environment never replaces the developer's partition table and reports `otaStrategy=none`.
+The universal ESP32 and ESP8266 profiles use the board platform's standard OTA
+layout and report non-transactional OTA capability. Flova configuration records
+still use a separate A/B storage transaction; that storage generation is not a
+firmware-image slot.
 
 The offer includes `version`, `firmware_target`, `sha256`, `size_bytes`, and `artifact_url`. Devices verify the artifact server's public certificate and compute SHA-256 while streaming into the platform updater. A mismatch aborts before the new boot image is activated; there is no OTA-specific key to provision.
 
@@ -30,6 +33,9 @@ reporting `failed`; a missing or insufficient TLS memory profile reports
 
 Ordinary OTA only needs `FlovaOtaInstaller::install()` from `FlovaOta.h`. Transactional recovery additionally implements `FlovaBootControl` from `FlovaBootControl.h` and attaches it with `setBootControl()`. The adapter owns transport, flash slots, candidate confirmation, and rollback mechanics. The shared SDK owns offer parsing, target checks, lifecycle reports, reboot identity, and the health deadline.
 
-Every transactional layout has a stable `bootLayoutVersion`; Engine only installs a release on a device with the same layout and enough `maxImageBytes`. Flova supplies `esp32-4m-ab-v1` (1.875 MiB slots) and `esp32-8m-ab-v1` (3.875 MiB slots). The adapter disables transactional claims at runtime if its inactive slot is smaller than the selected preset.
+Custom boards that provide health-gated firmware rollback may implement
+`FlovaBootControl` and advertise their own stable `bootLayoutVersion` and
+`maxImageBytes`. The standard Flova ESP32/ESP8266 builds do not provide that
+transactional firmware-image contract.
 
 The default ESP32 profile uses the board's platform-managed OTA layout but immediately confirms a pending image, so Flova's health-gated rollback is not active. A single maximum-size ESP32 application partition cannot support native OTA because flash cannot rewrite the running image. ESP8266 also reports `otaStrategy=none`; stock eboot stages and copies the image without automatic rollback. Non-transactional devices require explicit risk acknowledgement in Console.

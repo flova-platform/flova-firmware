@@ -1,7 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
-static const uint16_t FLOVA_FACTORY_RESET_COMPACT_ID = 65535;
+#include "FlovaDatastreamId.h"
+
+static const DatastreamId FLOVA_FACTORY_RESET_COMPACT_ID = 65535;
 
 struct FlovaCapabilities {
   uint16_t datastreamSlots = 0;

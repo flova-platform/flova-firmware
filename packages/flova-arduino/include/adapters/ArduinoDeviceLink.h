@@ -1,11 +1,11 @@
 #pragma once
 
 #include <Arduino.h>
-#include <WebSocketsClient.h>
 
 #include <FlovaLinkCbor.h>
 #include <FlovaLinkCodec.h>
 #include <FlovaConfigurationInstaller.h>
+#include <FlovaWs.h>
 #include <FlovaTlsProfile.h>
 #include <FlovaTlsRoots.h>
 #include <FlovaTransport.h>
@@ -24,27 +24,32 @@ extern "C" {
 // The adapter is the only Arduino-facing Device Link codec. It owns a small
 // deferred receive queue and one transmit frame; application code sees typed SDK
 // records and never sees CBOR, JSON, or a serialized configuration document.
+// Network bytes are copied into the fixed queue; board code drains it from
+// loop(), where application hardware is allowed to run.
 class ArduinoDeviceLink : public FlovaTransport {
  public:
+#if defined(ESP8266)
+  typedef BearSSL::WiFiClientSecure LinkTlsClient;
+#elif defined(ESP32)
+  typedef WiFiClientSecure LinkTlsClient;
+#endif
+
   static const size_t kFrameBytes = flova::link::kMaximumFrameBytes;
   static const size_t kPayloadBytes = flova::link::kMaximumPayloadBytes;
+  static const size_t kTransmitWorkspaceBytes =
+      kFrameBytes + FlovaWs::kMaximumOutgoingHeaderBytes;
   // Authentication and CONFIG_BEGIN can arrive in the same network turn.
   // Two slots cover that burst without taking another TLS-sized buffer from
   // the ESP8266 heap.
   static const uint8_t kPendingFrameSlots = 2;
   static const size_t kUrlBytes = 193;
-  static const uint8_t kMaximumDatastreamMappings = FLOVA_DATASTREAM_CAPACITY;
+  static const uint8_t kMaximumDatastreamBindings = FLOVA_MAX_ACTIVE_DATASTREAMS;
 
   static_assert(kFrameBytes == 512, "Flova Link v1 frame budget changed");
   static_assert(sizeof(struct config_record) <= 384,
                 "generated CONFIG_RECORD decode workspace exceeded its budget");
 
-  struct DatastreamMapping {
-    uint32_t generation = 0;
-    uint16_t id = 0;
-    char key[FLOVA_TEXT_CAPACITY] = {};
-  };
-
+  ArduinoDeviceLink() : websocket_(tls_) {}
   ~ArduinoDeviceLink() override { disconnect(); }
 
 #if defined(ESP8266)
@@ -58,22 +63,16 @@ class ArduinoDeviceLink : public FlovaTransport {
     return parseUrl();
   }
 
-  bool configureDatastream(uint32_t generation, uint16_t id, const char* key) {
-    if (!key || !*key || strlen(key) >= sizeof(mappings_[0].key)) return false;
-    for (uint8_t i = 0; i < mappingCount_; ++i) {
-      if (strcmp(mappings_[i].key, key) == 0) {
-        mappings_[i].generation = generation;
-        mappings_[i].id = id;
-        return true;
-      }
+  bool setDatastreamKeys(const char* const* keys, uint8_t count) override {
+    if (count > kMaximumDatastreamBindings || (count && !keys)) return false;
+    for (uint8_t i = 0; i < count; ++i) {
+      if (!keys[i] || !*keys[i] || strlen(keys[i]) > FLOVA_MAX_DATASTREAM_KEY_LENGTH) return false;
+      for (uint8_t prior = 0; prior < i; ++prior)
+        if (strcmp(keys[prior], keys[i]) == 0) return false;
+      bindingKeys_[i] = keys[i];
     }
-    if (mappingCount_ >= kMaximumDatastreamMappings)
-      return false;
-    DatastreamMapping& mapping = mappings_[mappingCount_++];
-    mapping.generation = generation;
-    mapping.id = id;
-    strncpy(mapping.key, key, sizeof(mapping.key) - 1);
-    mapping.key[sizeof(mapping.key) - 1] = 0;
+    bindingCount_ = count;
+    bindingPending_ = false;
     return true;
   }
 
@@ -97,48 +96,50 @@ class ArduinoDeviceLink : public FlovaTransport {
     output.hasTypedUnit = readConfigurationUnit(output.typedUnit, value.config_record_record_body);
     if (output.recordType == 0) {
       const datastream_record& datastream = value.config_record_record_body.config_record_body_datastream_record_m;
-      output.datastreamId = static_cast<uint16_t>(datastream.datastream_record_datastream_compact_id);
+      output.datastreamId = static_cast<DatastreamId>(datastream.datastream_record_datastream_compact_id);
       copyText(output.datastreamKey, datastream.datastream_record_datastream_key);
     }
     return output.hasTypedUnit;
   }
 
+  bool decodeStoredConfigurationUnit(const uint8_t* payload, size_t length,
+                                     flova::config::Unit& output) {
+    if (!payload || length > kPayloadBytes) return false;
+    memset(&configurationDecodeWorkspace_, 0, sizeof(configurationDecodeWorkspace_));
+    struct config_record& value = configurationDecodeWorkspace_;
+    if (flova::link::decodeCanonical(payload, length, value, cbor_decode_config_record,
+                                     cbor_encode_config_record, tx_, kPayloadBytes) != flova::link::CborResult::Complete)
+      return false;
+    return readConfigurationUnit(output, value.config_record_record_body);
+  }
+
   bool begin() override {
-    if (!parseUrl()) return false;
-    websocketStarted_ = true;
-    websocket_.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
-      handleWebSocketEvent(type, payload, length);
-    });
-    // Board glue owns bounded retries; the client must attempt immediately.
-    websocket_.setReconnectInterval(0);
-    websocket_.enableHeartbeat(30000, 5000, 2);
-    return true;
+    return parseUrl();
   }
 
   bool connected() override {
-    return active_ && websocket_.isConnected() && (authenticated_ || bootstrap_);
+    return active_ && websocket_.connected() &&
+           (bootstrap_ || (authenticated_ && !bindingPending_));
   }
 
   bool connect(const char* deviceId, const char* secret) override {
     if (!parseUuid(deviceId, deviceId_) || !decodeSecret(secret, secret_) || !parseUrl()) return false;
-    websocket_.disconnect();
+    disconnect();
     connectionAttemptFailed_ = false;
 #if defined(ESP8266)
-    if (!trustAnchors_ || flova::tlsResourceStatus(flova::TlsUse::Link) != flova::TlsResourceStatus::Ready)
+    flova::TlsHeapStats heap;
+    const flova::TlsResourceStatus resources = flova::tlsResourceStatus(flova::TlsUse::Link, &heap);
+    flova::logTlsHeap("before Link", heap);
+    if (!trustAnchors_ || resources != flova::TlsResourceStatus::Ready) {
+      Serial.printf("[flova] Link rejected reason=%s\n",
+                    trustAnchors_ ? flova::tlsResourceError(resources) : "trust_anchors_unavailable");
       return false;
-    flova::logTlsHeap("before Link");
+    }
 #endif
-    active_ = true;
-    authenticated_ = false;
-#if defined(ESP8266)
-    websocket_.beginSslWithCA(host_, port_, path_, trustAnchors_, "");
-#else
-    websocket_.beginSslWithCA(host_, port_, path_, static_cast<const char*>(FLOVA_TLS_ROOT_CERTS), "");
-#endif
+    if (!openConnection(false)) return false;
     const uint32_t deadline = millis() + 10000;
     while (static_cast<int32_t>(deadline - millis()) > 0) {
-      pumpWebSocket();
-      dispatchPendingFrame();
+      loop();
       if (connected()) return true;
       if (connectionAttemptFailed_) break;
       delay(1);
@@ -156,55 +157,24 @@ class ArduinoDeviceLink : public FlovaTransport {
         !copyBounded(hardwareId, bootstrapHardwareId_, sizeof(bootstrapHardwareId_)) ||
         !copyBounded(firmwareTarget, bootstrapFirmwareTarget_, sizeof(bootstrapFirmwareTarget_)) ||
         !parseUrl()) return false;
-    websocket_.disconnect();
+    disconnect();
     connectionAttemptFailed_ = false;
 #if defined(ESP8266)
-    if (!trustAnchors_ || flova::tlsResourceStatus(flova::TlsUse::Link) != flova::TlsResourceStatus::Ready)
+    flova::TlsHeapStats heap;
+    const flova::TlsResourceStatus resources = flova::tlsResourceStatus(flova::TlsUse::Link, &heap);
+    flova::logTlsHeap("before Link bootstrap", heap);
+    if (!trustAnchors_ || resources != flova::TlsResourceStatus::Ready) {
+      Serial.printf("[flova] Link bootstrap rejected reason=%s\n",
+                    trustAnchors_ ? flova::tlsResourceError(resources) : "trust_anchors_unavailable");
       return false;
-    flova::logTlsHeap("before Link bootstrap");
-#endif
-    bootstrap_ = true;
-    active_ = true;
-    authenticated_ = false;
-#if defined(ESP8266)
-    websocket_.beginSslWithCA(host_, port_, path_, trustAnchors_, "");
-#else
-    websocket_.beginSslWithCA(host_, port_, path_, static_cast<const char*>(FLOVA_TLS_ROOT_CERTS), "");
-#endif
-    return true;
-  }
-
-  bool datastreamIdForKey(const char* key, uint16_t& id) const override {
-    if (!key) return false;
-    for (uint8_t i = 0; i < mappingCount_; ++i) {
-      if (strcmp(mappings_[i].key, key) == 0) {
-        id = mappings_[i].id;
-        return true;
-      }
     }
-    return false;
-  }
-
-  bool datastreamKeyForId(uint32_t generation, uint16_t id, char* out,
-                          size_t outSize) const override {
-    if (!out || !outSize) return false;
-    for (uint8_t i = 0; i < mappingCount_; ++i) {
-      const DatastreamMapping& mapping = mappings_[i];
-      if (mapping.generation == generation && mapping.id == id) {
-        const size_t length = strlen(mapping.key);
-        if (length >= outSize) return false;
-        memcpy(out, mapping.key, length + 1);
-        return true;
-      }
-    }
-    return false;
+#endif
+    return openConnection(true);
   }
 
   void setConfigurationGeneration(uint32_t generation) override {
     configurationGeneration_ = generation;
   }
-
-  void clearConfigurationMappings() { mappingCount_ = 0; }
 
   bool publishState(const FlovaLinkStateBatch& message) override {
     if (!connected() || !message.count || message.count > FLOVA_LINK_MAX_STATE_READINGS) return false;
@@ -324,15 +294,23 @@ class ArduinoDeviceLink : public FlovaTransport {
   void setCallback(FlovaMessageCallback callback) override { callback_ = callback; }
   void loop() override {
     if (!active_) return;
+#if defined(ESP8266)
+    pumpTransmit();
+    for (uint8_t i = 0; i < kPendingFrameSlots && active_; ++i) {
+      pumpWebSocket();
+      if (!txLength_) dispatchPendingFrame();
+      pumpTransmit();
+    }
+#else
     pumpWebSocket();
     dispatchPendingFrame();
+#endif
   }
 
   void dispatchPendingFrame() {
-    // WebSocketsClient invokes its event handler on the network callback
-    // stack. Decode and dispatch only after that callback has returned. Keep
-    // a few frames because the Engine may answer authentication and queue the
-    // first configuration frame in the same WebSocket turn.
+    // Decode and dispatch only from the board-owned loop. Keep a few frames
+    // because the Engine may answer authentication and queue the first
+    // configuration frame in the same network turn.
     if (!pendingFrameCount_ || !active_) return;
     const uint8_t slot = pendingFrameHead_;
     const size_t frameLength = pendingFrameLengths_[slot];
@@ -345,6 +323,13 @@ class ArduinoDeviceLink : public FlovaTransport {
       disconnect();
       return;
     }
+#if FLOVA_LINK_PERFORMANCE_LOGGING
+    Serial.printf("[flova] Link frame received type=0x%02x id=%llu bytes=%u queue_ms=%lu\n",
+                  static_cast<unsigned>(frame.messageType),
+                  static_cast<unsigned long long>(frame.messageId),
+                  static_cast<unsigned>(frameLength),
+                  static_cast<unsigned long>(millis() - pendingFrameQueuedAtMs_[slot]));
+#endif
     handleFrame(frame);
     // Configuration decoding uses generated CBOR structs that are too large
     // for the ESP8266 callback stack. Dispatch only after handleFrame() has
@@ -372,15 +357,23 @@ class ArduinoDeviceLink : public FlovaTransport {
   void disconnect() override {
     if (disconnecting_) return;
     disconnecting_ = true;
-    const bool hadConnection = active_ || authenticated_ || bootstrap_ || pendingFrameCount_ != 0;
+    const bool hadConnection = active_ || authenticated_ || bootstrap_ ||
+                               pendingFrameCount_ != 0 || tls_.connected();
     active_ = false;
     authenticated_ = false;
+    bindingPending_ = false;
     bootstrap_ = false;
     pendingFrameCount_ = 0;
     pendingFrameHead_ = 0;
     pendingFrameTail_ = 0;
+    pendingFrameLength_ = 0;
+#if defined(ESP8266)
+    txLength_ = 0;
+    txOffset_ = 0;
+#endif
     pendingCallback_ = false;
-    if (websocketStarted_) websocket_.disconnect();
+    websocket_.close();
+    tls_.stop();
 #if defined(ESP8266)
     if (hadConnection) flova::logTlsHeap("after Link disconnect");
 #endif
@@ -390,22 +383,158 @@ class ArduinoDeviceLink : public FlovaTransport {
  private:
   typedef int (*Encoder)(uint8_t*, size_t, const void*, size_t*);
 
-  void pumpWebSocket() {
+  bool openConnection(bool bootstrap) {
 #if defined(ESP8266)
-    // BearSSL allocates its X.509/TLS control blocks during this call. Keep
-    // those allocations in the already-enabled IRAM heap so restored runtime
-    // state and the network stack do not compete for a fragmented DRAM block.
-    HeapSelectIram tlsHeap;
+    flova::configureLinkTls(tls_, *trustAnchors_, time(nullptr));
+    {
+      // BearSSL allocates its TLS control blocks during connect. Keep that
+      // allocation in the configured IRAM heap rather than fragmented DRAM.
+      HeapSelectIram tlsHeap;
+      if (!tls_.connect(host_, port_)) {
+        flova::logLinkTlsFailure(tls_);
+        tls_.stop();
+        connectionAttemptFailed_ = true;
+        return false;
+      }
+    }
+#else
+    flova::configureLinkTls(tls_);
+    if (!tls_.connect(host_, port_)) {
+      Serial.printf("[flova] Link TLS connect failed host=%s port=%u\n",
+                    host_, static_cast<unsigned>(port_));
+      tls_.stop();
+      connectionAttemptFailed_ = true;
+      return false;
+    }
 #endif
-    websocket_.loop();
+    // The ESP8266 wrapper forwards this to its real private TCP context via
+    // the guarded framework patch used by Link builds.
+    tls_.setNoDelay(true);
+    if (!websocket_.handshake(host_, port_, path_)) {
+      Serial.printf("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
+                    static_cast<unsigned>(websocket_.error()),
+                    FlovaWs::handshakeFailureName(websocket_.handshakeFailure()),
+                    static_cast<unsigned>(websocket_.handshakeStatus()));
+      tls_.stop();
+      connectionAttemptFailed_ = true;
+      return false;
+    }
+    active_ = true;
+    bootstrap_ = bootstrap;
+    authenticated_ = false;
+#if defined(ESP8266)
+    flova::logTlsHeap("after Link WSS");
+#endif
+    if (bootstrap_ ? !sendBootstrapAuthentication() : !sendAuthentication()) {
+      connectionAttemptFailed_ = true;
+      disconnect();
+      return false;
+    }
+    return true;
   }
+
+  void pumpWebSocket() {
+    if (pendingFrameCount_ >= kPendingFrameSlots) {
+      connectionAttemptFailed_ = true;
+      disconnect();
+      return;
+    }
+    const uint8_t slot = pendingFrameTail_;
+    const size_t capacity = kFrameBytes - pendingFrameLength_;
+    const int length = websocket_.read(pendingFrames_[slot] + pendingFrameLength_, capacity);
+    if (length < 0) {
+      connectionAttemptFailed_ = true;
+      Serial.printf("[flova] Link websocket error code=%u\n",
+                    static_cast<unsigned>(websocket_.error()));
+      disconnect();
+      return;
+    }
+    pendingFrameLength_ += static_cast<size_t>(length);
+    if (websocket_.messageComplete()) {
+      if (!pendingFrameLength_ || pendingFrameLength_ > kFrameBytes) {
+        connectionAttemptFailed_ = true;
+        disconnect();
+        return;
+      }
+      pendingFrameLengths_[slot] = pendingFrameLength_;
+#if FLOVA_LINK_PERFORMANCE_LOGGING
+      pendingFrameQueuedAtMs_[slot] = millis();
+#endif
+      pendingFrameTail_ = static_cast<uint8_t>((pendingFrameTail_ + 1) % kPendingFrameSlots);
+      ++pendingFrameCount_;
+      pendingFrameLength_ = 0;
+    }
+  }
+
+#if defined(ESP8266)
+  void pumpTransmit() {
+    if (!active_) return;
+    if (!tls_.pollNonBlocking()) {
+      connectionAttemptFailed_ = true;
+      disconnect();
+      return;
+    }
+    if (!txLength_) return;
+    const int accepted = tls_.writeNonBlocking(tx_ + txOffset_, txLength_ - txOffset_);
+    if (accepted < 0) {
+      connectionAttemptFailed_ = true;
+      disconnect();
+      return;
+    }
+    txOffset_ += static_cast<size_t>(accepted);
+    if (txOffset_ != txLength_) return;
+#if FLOVA_LINK_PERFORMANCE_LOGGING
+    Serial.printf("[flova] Link TX drained bytes=%u queue_ms=%lu\n",
+                  static_cast<unsigned>(txLength_),
+                  static_cast<unsigned long>(millis() - txQueuedAtMs_));
+#endif
+    txLength_ = 0;
+    txOffset_ = 0;
+  }
+#endif
 
   template <typename T>
   bool sendEncoded(uint8_t type, uint64_t messageId, const T& value, int (*encoder)(uint8_t*, size_t, const T*, size_t*)) {
+#if FLOVA_LINK_PERFORMANCE_LOGGING
+    const uint32_t startedAt = millis();
+#endif
     size_t payloadLength = 0;
-    if (flova::link::encodeCanonical(tx_ + flova::link::kHeaderBytes, kPayloadBytes, value, encoder, payloadLength) != flova::link::CborResult::Complete ||
-        !flova::link::encodeFrameHeader(tx_, sizeof(tx_), type, 0, messageId, payloadLength)) return false;
-    return websocket_.sendBIN(tx_, flova::link::kHeaderBytes + payloadLength);
+    uint8_t* frame = tx_ + FlovaWs::kMaximumOutgoingHeaderBytes;
+#if defined(ESP8266)
+    if (txLength_) return false;
+#endif
+    if (flova::link::encodeCanonical(frame + flova::link::kHeaderBytes, kPayloadBytes, value, encoder, payloadLength) != flova::link::CborResult::Complete ||
+        !flova::link::encodeFrameHeader(frame, kFrameBytes, type, 0, messageId, payloadLength)) return false;
+#if FLOVA_LINK_PERFORMANCE_LOGGING
+    const uint32_t encodedAt = millis();
+#endif
+#if defined(ESP8266)
+    size_t wireLength = 0;
+    if (!websocket_.prepareBinary(frame, flova::link::kHeaderBytes + payloadLength,
+                                  tx_, sizeof(tx_), wireLength))
+      return false;
+    txLength_ = wireLength;
+    txOffset_ = 0;
+#if FLOVA_LINK_PERFORMANCE_LOGGING
+    txQueuedAtMs_ = millis();
+#endif
+    pumpTransmit();
+    const bool sent = active_;
+#else
+    const bool sent = websocket_.sendBinaryCoalesced(
+        frame, flova::link::kHeaderBytes + payloadLength, tx_, sizeof(tx_));
+#endif
+#if FLOVA_LINK_PERFORMANCE_LOGGING
+    Serial.printf("[flova] Link send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu writes=%u wire_bytes=%u accepted=%u\n",
+                  static_cast<unsigned>(type),
+                  static_cast<unsigned long long>(messageId),
+                  static_cast<unsigned>(flova::link::kHeaderBytes + payloadLength),
+                  static_cast<unsigned long>(encodedAt - startedAt),
+                  static_cast<unsigned long>(websocket_.lastSendDurationMs()),
+                  static_cast<unsigned>(websocket_.lastSendWriteCalls()),
+                  static_cast<unsigned>(websocket_.lastSendWireBytes()), sent ? 1U : 0U);
+#endif
+    return sent;
   }
 
   bool sendAuthentication() {
@@ -415,6 +544,20 @@ class ArduinoDeviceLink : public FlovaTransport {
     value.auth_secret.value = secret_;
     value.auth_secret.len = sizeof(secret_);
     return sendEncoded(0x01, 0, value, cbor_encode_auth);
+  }
+
+  bool sendDatastreamBinding() {
+    struct datastream_bind value = {};
+    value.datastream_bind_binding_generation = configurationGeneration_;
+    value.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48_count = bindingCount_;
+    for (uint8_t i = 0; i < bindingCount_; ++i) {
+      const size_t length = strlen(bindingKeys_[i]);
+      if (!length || length > FLOVA_MAX_DATASTREAM_KEY_LENGTH) return false;
+      value.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48[i].value =
+          reinterpret_cast<const uint8_t*>(bindingKeys_[i]);
+      value.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48[i].len = length;
+    }
+    return sendEncoded(0x09, 0, value, cbor_encode_datastream_bind);
   }
 
   bool sendBootstrapAuthentication() {
@@ -436,63 +579,13 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x06, 0, value, cbor_encode_bootstrap_auth);
   }
 
-  void handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
-    if (type == WStype_CONNECTED) {
-#if defined(ESP8266)
-      flova::logTlsHeap("after Link WSS");
-#endif
-      if (bootstrap_ ? !sendBootstrapAuthentication() : !sendAuthentication()) disconnect();
-      return;
-    }
-    if (type == WStype_ERROR) {
-      if (active_) {
-        connectionAttemptFailed_ = true;
-        Serial.printf(
-            "[flova] Link websocket error host=%s port=%u path=%s detail=%.*s\n",
-            host_, static_cast<unsigned>(port_), path_, static_cast<int>(length),
-            payload ? reinterpret_cast<const char*>(payload) : "unknown");
-        disconnect();
-      }
-      return;
-    }
-    if (type == WStype_DISCONNECTED) {
-      if (active_) {
-        connectionAttemptFailed_ = true;
-        Serial.printf(
-            "[flova] Link disconnected host=%s port=%u path=%s reason=%.*s\n",
-            host_, static_cast<unsigned>(port_), path_, static_cast<int>(length),
-            payload ? reinterpret_cast<const char*>(payload) : "unknown");
-        disconnect();
-      }
-      return;
-    }
-    if (type == WStype_TEXT) {
-      Serial.println("[flova] Link rejected unexpected text frame");
-      disconnect();
-      return;
-    }
-    if (type != WStype_BIN) return;
-
-    if (!payload || length > kFrameBytes || pendingFrameCount_ >= kPendingFrameSlots) {
-      if (bootstrap_) {
-        copyBounded("frame_overrun", bootstrapError_, sizeof(bootstrapError_));
-        bootstrapErrorPending_ = true;
-      }
-      Serial.printf("[flova] Link frame rejected=frame_queue_full length=%u queued=%u\n",
-                    static_cast<unsigned>(length), static_cast<unsigned>(pendingFrameCount_));
-      return disconnect();
-    }
-    memcpy(pendingFrames_[pendingFrameTail_], payload, length);
-    pendingFrameLengths_[pendingFrameTail_] = length;
-    pendingFrameTail_ = static_cast<uint8_t>((pendingFrameTail_ + 1) % kPendingFrameSlots);
-    ++pendingFrameCount_;
-  }
-
   void handleFrame(const flova::link::FrameView& frame) {
     if (frame.messageType == 0x02) {
       struct auth_ok value = {};
       if (decode(frame, value, cbor_decode_auth_ok, cbor_encode_auth_ok)) {
         authenticated_ = true;
+        bindingPending_ = bindingCount_ != 0;
+        if (bindingPending_ && !sendDatastreamBinding()) disconnect();
 #if defined(ESP8266)
         flova::logTlsHeap("after Link auth");
 #endif
@@ -502,6 +595,7 @@ class ArduinoDeviceLink : public FlovaTransport {
       }
       return;
     }
+    if (frame.messageType == 0x0a && authenticated_) return handleDatastreamBound(frame);
     if (frame.messageType == 0x03) {
       zcbor_string reason = {};
       if (decode(frame, reason, cbor_decode_auth_error, cbor_encode_auth_error)) {
@@ -598,12 +692,36 @@ class ArduinoDeviceLink : public FlovaTransport {
     inbound_.type = FlovaLinkMessageType::Command;
     inbound_.messageId = frame.messageId;
     inbound_.body.command.configurationGeneration = static_cast<uint32_t>(value.command_generation);
-    inbound_.body.command.datastreamId = static_cast<uint16_t>(value.command_compact_id);
+    inbound_.body.command.datastreamId = static_cast<DatastreamId>(value.command_compact_id);
     inbound_.body.command.desiredVersion = static_cast<uint32_t>(value.command_desired_version);
     inbound_.body.command.expiresAtUtcMs = value.command_expires_at_utc_ms;
     copyId(inbound_.body.command.commandId, value.command_id);
     if (!readCorrelation(inbound_.body.command.correlationId, value.command_correlation_id) ||
         !readTypedValue(inbound_.body.command.value, value.command_typed_value_fields_m)) return disconnect();
+    pendingCallback_ = true;
+  }
+
+  void handleDatastreamBound(const flova::link::FrameView& frame) {
+    struct datastream_bound value = {};
+    if (!decode(frame, value, cbor_decode_datastream_bound, cbor_encode_datastream_bound) ||
+        value.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m_count != bindingCount_ ||
+        value.datastream_bound_bound_generation > UINT32_MAX)
+      return disconnect();
+    inbound_ = FlovaLinkInboundMessage();
+    inbound_.type = FlovaLinkMessageType::DatastreamBound;
+    inbound_.messageId = frame.messageId;
+    inbound_.body.datastreamBound.generation = static_cast<uint32_t>(value.datastream_bound_bound_generation);
+    inbound_.body.datastreamBound.count = static_cast<uint8_t>(
+        value.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m_count);
+    for (uint8_t i = 0; i < inbound_.body.datastreamBound.count; ++i) {
+      const DatastreamId id = static_cast<DatastreamId>(
+          value.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m[i]);
+      if (!flovaValidDatastreamId(id)) return disconnect();
+      for (uint8_t prior = 0; prior < i; ++prior)
+        if (inbound_.body.datastreamBound.ids[prior] == id) return disconnect();
+      inbound_.body.datastreamBound.ids[i] = id;
+    }
+    bindingPending_ = false;
     pendingCallback_ = true;
   }
 
@@ -665,7 +783,7 @@ class ArduinoDeviceLink : public FlovaTransport {
         const struct datastream_record& datastream =
             value.config_record_record_body.config_record_body_datastream_record_m;
         inbound_.body.configuration.datastreamId =
-            static_cast<uint16_t>(datastream.datastream_record_datastream_compact_id);
+            static_cast<DatastreamId>(datastream.datastream_record_datastream_compact_id);
         copyText(inbound_.body.configuration.datastreamKey,
                  datastream.datastream_record_datastream_key);
       }
@@ -775,11 +893,12 @@ class ArduinoDeviceLink : public FlovaTransport {
       case config_record_body_r::config_record_body_datastream_record_m_c: {
         const datastream_record& source = input.config_record_body_datastream_record_m;
         out.kind = flova::config::UnitKind::Datastream;
-        if (source.datastream_record_datastream_compact_id > UINT16_MAX ||
+        if (source.datastream_record_datastream_compact_id == 0 ||
+            source.datastream_record_datastream_compact_id > UINT16_MAX ||
             source.datastream_record_datastream_value_type > 4 ||
             !copyUuidText(out.data.datastream.uuid, source.datastream_record_datastream_uuid) ||
             source.datastream_record_datastream_key.len >= FLOVA_TEXT_CAPACITY) return false;
-        out.data.datastream.compactId = static_cast<uint16_t>(source.datastream_record_datastream_compact_id);
+        out.data.datastream.id = static_cast<DatastreamId>(source.datastream_record_datastream_compact_id);
         out.data.datastream.valueType = static_cast<uint8_t>(source.datastream_record_datastream_value_type);
         copyText(out.data.datastream.key, source.datastream_record_datastream_key);
         if (source.datastream_record_datastream_minimum_present) {
@@ -837,10 +956,10 @@ class ArduinoDeviceLink : public FlovaTransport {
         out.data.schedule.actionCount = static_cast<uint8_t>(source.schedule_record_schedule_actions_schedule_action_m_count);
         for (uint8_t i = 0; i < out.data.schedule.actionCount; ++i) {
           const schedule_action& action = source.schedule_record_schedule_actions_schedule_action_m[i];
-          if (action.schedule_action_action_offset_ms > UINT32_MAX || action.schedule_action_action_compact_id > UINT16_MAX ||
+          if (action.schedule_action_action_offset_ms > UINT32_MAX || action.schedule_action_action_compact_id == 0 || action.schedule_action_action_compact_id > UINT16_MAX ||
               !readConfigurationValue(out.data.schedule.actions[i].value, action.schedule_action_typed_value_fields_m)) return false;
           out.data.schedule.actions[i].offsetMs = static_cast<uint32_t>(action.schedule_action_action_offset_ms);
-          out.data.schedule.actions[i].compactId = static_cast<uint16_t>(action.schedule_action_action_compact_id);
+          out.data.schedule.actions[i].datastreamId = static_cast<DatastreamId>(action.schedule_action_action_compact_id);
         }
         return true;
       }
@@ -864,9 +983,9 @@ class ArduinoDeviceLink : public FlovaTransport {
       }
       case config_record_body_r::config_record_body_safety_record_m_c: {
         const safety_record& source = input.config_record_body_safety_record_m;
-        if (source.safety_record_safety_compact_id > UINT16_MAX || source.safety_record_safety_policy > 4) return false;
+        if (source.safety_record_safety_compact_id == 0 || source.safety_record_safety_compact_id > UINT16_MAX || source.safety_record_safety_policy > 4) return false;
         out.kind = flova::config::UnitKind::Safety;
-        out.data.safety.compactId = static_cast<uint16_t>(source.safety_record_safety_compact_id);
+        out.data.safety.datastreamId = static_cast<DatastreamId>(source.safety_record_safety_compact_id);
         out.data.safety.policy = static_cast<flova::config::SafetyPolicy>(source.safety_record_safety_policy);
         if (source.safety_record_safety_minimum_present) {
           if (!readConfigurationValue(out.data.safety.minimum, source.safety_record_safety_minimum.safety_record_safety_minimum)) return false;
@@ -1031,10 +1150,28 @@ class ArduinoDeviceLink : public FlovaTransport {
     const char* colon = static_cast<const char*>(memchr(authority, ':', authorityLength));
     const size_t hostLength = colon ? static_cast<size_t>(colon - authority) : authorityLength;
     if (!hostLength || hostLength >= sizeof(host_)) return false;
+    for (size_t i = 0; i < hostLength; ++i) {
+      const uint8_t character = static_cast<uint8_t>(authority[i]);
+      if (character < 0x21 || character == 0x7F || authority[i] == '/' ||
+          authority[i] == '?' || authority[i] == '#' || authority[i] == '@')
+        return false;
+    }
+    if (colon && static_cast<size_t>(colon - authority) + 1 >= authorityLength) return false;
+    if (colon && memchr(colon + 1, ':', authorityLength - hostLength - 1)) return false;
     memcpy(host_, authority, hostLength);
     host_[hostLength] = 0;
-    port_ = colon ? static_cast<uint16_t>(atoi(colon + 1)) : 443;
-    if (!port_) return false;
+    if (colon) {
+      uint32_t parsedPort = 0;
+      for (const char* cursor = colon + 1; cursor < authority + authorityLength; ++cursor) {
+        if (*cursor < '0' || *cursor > '9') return false;
+        parsedPort = parsedPort * 10 + static_cast<uint32_t>(*cursor - '0');
+        if (parsedPort > 65535) return false;
+      }
+      if (!parsedPort) return false;
+      port_ = static_cast<uint16_t>(parsedPort);
+    } else {
+      port_ = 443;
+    }
     if (slash) {
       if (strlen(slash) >= sizeof(path_)) return false;
       strcpy(path_, slash);
@@ -1051,7 +1188,8 @@ class ArduinoDeviceLink : public FlovaTransport {
   bool active_ = false;
   bool authenticated_ = false;
   bool bootstrap_ = false;
-  WebSocketsClient websocket_;
+  LinkTlsClient tls_;
+  FlovaWs websocket_;
   uint8_t deviceId_[16] = {};
   uint8_t secret_[32] = {};
   uint8_t bootstrapToken_[64] = {};
@@ -1060,20 +1198,31 @@ class ArduinoDeviceLink : public FlovaTransport {
   char bootstrapError_[FLOVA_TEXT_CAPACITY] = {};
   char bootstrapHardwareId_[97] = {};
   char bootstrapFirmwareTarget_[65] = {};
-  uint8_t tx_[kFrameBytes] = {};
-  DatastreamMapping mappings_[kMaximumDatastreamMappings] = {};
-  uint8_t mappingCount_ = 0;
+  uint8_t tx_[kTransmitWorkspaceBytes] = {};
+#if defined(ESP8266)
+  size_t txLength_ = 0;
+  size_t txOffset_ = 0;
+#if FLOVA_LINK_PERFORMANCE_LOGGING
+  uint32_t txQueuedAtMs_ = 0;
+#endif
+#endif
+  const char* bindingKeys_[kMaximumDatastreamBindings] = {};
+  uint8_t bindingCount_ = 0;
+  bool bindingPending_ = false;
   uint32_t configurationGeneration_ = 0;
   FlovaMessageCallback callback_ = nullptr;
-  bool websocketStarted_ = false;
   bool disconnecting_ = false;
   bool connectionAttemptFailed_ = false;
   bool bootstrapErrorPending_ = false;
   uint8_t pendingFrames_[kPendingFrameSlots][kFrameBytes] = {};
   size_t pendingFrameLengths_[kPendingFrameSlots] = {};
+#if FLOVA_LINK_PERFORMANCE_LOGGING
+  uint32_t pendingFrameQueuedAtMs_[kPendingFrameSlots] = {};
+#endif
   uint8_t pendingFrameHead_ = 0;
   uint8_t pendingFrameTail_ = 0;
   uint8_t pendingFrameCount_ = 0;
+  size_t pendingFrameLength_ = 0;
   bool pendingCallback_ = false;
   FlovaLinkInboundMessage inbound_ = {};
   struct config_record configurationDecodeWorkspace_ = {};

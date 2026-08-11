@@ -1,6 +1,11 @@
 # Custom boards and industrial targets
 
-`FlovaCore.h` is a header-only C++11 runtime with no Arduino, ESP, Wi-Fi, WebSocket, exception, or RTTI dependency. It can run on an STM32 HAL/FreeRTOS application, another MCU SDK, an industrial Linux controller, or a PLC runtime that supports C++ integration.
+`FlovaCore.h` is the canonical header-only C++11 runtime with no Arduino, ESP, Wi-Fi, WebSocket, exception, or RTTI dependency. It can run on an STM32 HAL/FreeRTOS application, another MCU SDK, an industrial Linux controller, or a PLC runtime that supports C++ integration.
+
+Do not start a new board port from `FlovaDevice.h` or `FlovaTransport.h`; those
+are the temporary Arduino-runtime compatibility surface used by the existing
+ESP applications. New board code should include `FlovaCore.h` and compose the
+portable `flova::Device` with its own services.
 
 Implement four bounded services:
 
@@ -8,6 +13,12 @@ Implement four bounded services:
 - `flova::Storage`: reads and writes fixed-size records using NVS, EEPROM, flash, a file, or PLC retained memory.
 - `flova::Clock`: supplies monotonic milliseconds.
 - `flova::Logger`: maps SDK diagnostics to the target's bounded logger.
+
+The board application owns the concrete device object and calls
+`device.run()` from its main loop. A Link implementation must copy or queue
+bounded inbound records from its transport callback and let `run()` apply
+hardware writes; it must not call GPIO or other hardware directly from a
+socket callback.
 
 Custom board profiles define the `FLOVA_*_CAPACITY` build values from real RAM,
 persistent storage, and transport constraints. The SDK advertises those values;

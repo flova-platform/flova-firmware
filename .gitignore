@@ -1,5 +1,32 @@
+# PlatformIO and native build output
 .pio/
 build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+cmake_install.cmake
+compile_commands.json
+install_manifest.txt
+
+# Firmware artifacts produced outside PlatformIO
+*.bin
+*.elf
+*.hex
+*.map
+*.uf2
+
+# Python tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editors and operating-system metadata
 .vscode/
-*.log
+.idea/
+*.swp
+*.swo
 .DS_Store
+
+# Local logs
+*.log

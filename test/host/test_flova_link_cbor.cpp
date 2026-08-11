@@ -27,9 +27,10 @@ void verifyEmpty(const uint8_t* payload, size_t payloadLength,
   do {                                                                               \
     struct schema decoded = {};                                                      \
     uint8_t scratch[flova::link::kMaximumPayloadBytes] = {};                        \
-    assert(flova::link::decodeCanonical(                                             \
-               frame.payload, frame.payloadLength, decoded, decode, encode, scratch, \
-               sizeof(scratch)) == CborResult::Complete);                           \
+    const CborResult result = flova::link::decodeCanonical(                          \
+        frame.payload, frame.payloadLength, decoded, decode, encode, scratch,         \
+        sizeof(scratch));                                                             \
+    assert(result == CborResult::Complete);                                          \
   } while (false)
 
 void verifyVector(const FlovaLinkVector& vector) {
@@ -49,6 +50,8 @@ void verifyVector(const FlovaLinkVector& vector) {
     case 0x06: VERIFY_SCHEMA(bootstrap_auth, cbor_decode_bootstrap_auth, cbor_encode_bootstrap_auth); break;
     case 0x07: VERIFY_SCHEMA(bootstrap_committed, cbor_decode_bootstrap_committed, cbor_encode_bootstrap_committed); break;
     case 0x08: VERIFY_SCHEMA(zcbor_string, cbor_decode_bootstrap_error, cbor_encode_bootstrap_error); break;
+    case 0x09: VERIFY_SCHEMA(datastream_bind, cbor_decode_datastream_bind, cbor_encode_datastream_bind); break;
+    case 0x0a: VERIFY_SCHEMA(datastream_bound, cbor_decode_datastream_bound, cbor_encode_datastream_bound); break;
     case 0x10: VERIFY_SCHEMA(heartbeat, cbor_decode_heartbeat, cbor_encode_heartbeat); break;
     case 0x11: VERIFY_SCHEMA(state, cbor_decode_state, cbor_encode_state); break;
     case 0x12: VERIFY_SCHEMA(command_result_r, cbor_decode_command_result, cbor_encode_command_result); break;
@@ -92,7 +95,7 @@ void testFrameBounds() {
   assert(!flova::link::encodeFrameHeader(maximum, sizeof(maximum), 0x10, 0, 1,
                                          flova::link::kMaximumPayloadBytes + 1));
   assert(!flova::link::encodeFrameHeader(maximum, sizeof(maximum), 0x10, 1, 1, 1));
-  assert(!flova::link::encodeFrameHeader(maximum, sizeof(maximum), 0x09, 0, 1, 1));
+  assert(!flova::link::encodeFrameHeader(maximum, sizeof(maximum), 0x0f, 0, 1, 1));
   assert(flova::link::decodeWebSocketBinaryMessage(maximum, sizeof(maximum) - 1, frame) ==
          FrameResult::Invalid);
 
@@ -106,7 +109,7 @@ void testFrameBounds() {
   assert(flova::link::decodeWebSocketBinaryMessage(twoFrames, 13, frame) ==
          FrameResult::Invalid);
   twoFrames[1] = 0;
-  twoFrames[0] = 0x09;
+  twoFrames[0] = 0x0f;
   assert(flova::link::decodeWebSocketBinaryMessage(twoFrames, 13, frame) ==
          FrameResult::Invalid);
 }

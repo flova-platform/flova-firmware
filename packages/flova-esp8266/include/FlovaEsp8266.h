@@ -1,6 +1,6 @@
 #pragma once
 
-#include <EEPROM.h>
+#include <new>
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 #include <LittleFS.h>
@@ -21,7 +21,8 @@ extern "C" {
 #define FLOVA_FIRMWARE_VERSION "0.1.0"
 #endif
 
-// ESP8266 uses fixed credential images plus the existing bounded state slots.
+// ESP8266 board glue owns SoftAP/bootstrap, TLS resource handoff, and board
+// storage. It uses fixed credential images plus the existing bounded state slots.
 // Engine configuration is never represented as JSON or retained as one RAM
 // object; the verified WSS transaction supplies one schema-defined record at a
 // time to the board installer.
@@ -29,28 +30,30 @@ class FlovaEsp8266 : public FlovaDevice {
  public:
   FlovaEsp8266()
       : FlovaDevice(transport_, storage_, clock_, logger_),
+        imageWorkspace_(),
+        storage_(imageWorkspace_.configuration()),
         configurationStorage_(storage_, kMaximumConfigurationRecords),
         configurationInstaller_(configurationStorage_, kMaximumConfigurationRecords) {
-    transport_.setTrustAnchors(trustAnchors_);
-    otaInstaller_.setTrustAnchors(trustAnchors_);
   }
 
   bool begin() {
     storage_.begin();
     if (const rst_info* reset = system_get_rst_info()) {
       Serial.printf(
-          "[flova] reset reason=%u exccause=%u epc1=0x%08lx depc=0x%08lx excvaddr=0x%08lx\n",
+          "[flova] reset reason=%u(%s) exccause=%u epc1=0x%08lx depc=0x%08lx excvaddr=0x%08lx\n",
           static_cast<unsigned>(reset->reason),
+          resetReasonName(reset->reason),
           static_cast<unsigned>(reset->exccause),
           static_cast<unsigned long>(reset->epc1),
           static_cast<unsigned long>(reset->depc),
           static_cast<unsigned long>(reset->excvaddr));
     }
     const bool hasCredentials = loadCredentials();
-    const bool hasPendingHandoff = loadPendingImage(provisioningImageWorkspace_);
+    imageWorkspace_.useProvisioning();
+    const bool hasPendingHandoff = loadPendingImage(imageWorkspace_.provisioning());
     const flova::ProvisioningBootMode mode =
         flova::provisioningBootMode(hasCredentials, hasPendingHandoff,
-                                    provisioningImageWorkspace_.inProgress);
+                                    imageWorkspace_.provisioning().inProgress);
     if (mode == flova::ProvisioningBootMode::InterruptedBootstrap) {
       storage_.setString("prov_error", "firmware_reset_during_bootstrap");
       storage_.remove("prov_pending");
@@ -58,7 +61,7 @@ class FlovaEsp8266 : public FlovaDevice {
       return true;
     }
     if (mode == flova::ProvisioningBootMode::Bootstrap) {
-      startBootstrap(provisioningImageWorkspace_.handoff);
+      startBootstrap(imageWorkspace_.provisioning().handoff);
       return true;
     }
     if (mode == flova::ProvisioningBootMode::Setup) {
@@ -83,6 +86,15 @@ class FlovaEsp8266 : public FlovaDevice {
     }
     if (provisioning_) {
       server_.handleClient();
+      const uint8_t stationCount = WiFi.softAPgetStationNum();
+      if (stationCount != apStationCount_) {
+        apStationCount_ = stationCount;
+        Serial.printf("[flova] setup AP stations=%u heap=%u max_block=%u frag=%u%%\n",
+                      static_cast<unsigned>(stationCount),
+                      static_cast<unsigned>(ESP.getFreeHeap()),
+                      static_cast<unsigned>(ESP.getMaxFreeBlockSize()),
+                      static_cast<unsigned>(ESP.getHeapFragmentation()));
+      }
       // ESP8266WebServer writes the response after the handler returns. Do
       // not tear down the SoftAP from inside handleProvision(), or the phone
       // receives a connection failure instead of the 202 acceptance.
@@ -177,9 +189,9 @@ class FlovaEsp8266 : public FlovaDevice {
   }
 
   void onRuntimeRestoreBegin() override {
-    String marker;
-    const bool interrupted = storage_.getString("prov_error", marker) &&
-                             marker == "runtime_restore_in_progress";
+    char marker[48] = {};
+    const bool interrupted = storage_.getString("prov_error", marker, sizeof(marker)) &&
+                             strcmp(marker, "runtime_restore_in_progress") == 0;
     if (interrupted) {
       Serial.println("[flova] interrupted runtime restore; quarantining newest generation");
       configurationStorage_.discardNewestGeneration();
@@ -196,18 +208,21 @@ class FlovaEsp8266 : public FlovaDevice {
   }
 
   void onBootstrapCommitted(const FlovaLinkBootstrapCommitted& committed) override {
-    flova::DeviceConfiguration& final = credentialWorkspace_;
+    imageWorkspace_.useConfiguration();
+    flova::DeviceConfiguration& final = config_;
     final = flova::DeviceConfiguration();
     if (!uuidText(committed.deviceId, final.deviceId, sizeof(final.deviceId)) ||
         !flova::copyBounded(pending_.wifiSsid, final.wifiSsid) ||
         !flova::copyBounded(pending_.wifiPassword, final.wifiPassword) ||
         !flova::copyBounded(pending_.linkUrl, final.linkUrl) ||
         !flova::copyBounded(pending_.linkSecret, final.linkSecret)) {
+      imageWorkspace_.useProvisioning();
       failBootstrap("credential_storage_failed");
       return;
     }
     final.generation = committed.generation;
     if (!storage_.writeConfig(final)) {
+      imageWorkspace_.useProvisioning();
       failBootstrap("credential_storage_failed");
       return;
     }
@@ -222,10 +237,24 @@ class FlovaEsp8266 : public FlovaDevice {
   }
 
  private:
+  static const char* resetReasonName(uint8_t reason) {
+    switch (reason) {
+      case 2: return "exception";
+      case 3: return "soft_watchdog";
+      case 4: return "software_restart";
+      case 6: return "external_manual";
+      default: return "other";
+    }
+  }
+
   void finishRuntimeStart() {
     runtimePreparing_ = false;
     Serial.printf("[flova] TLS clock synchronized epoch=%lu\n",
                   static_cast<unsigned long>(time(nullptr)));
+    if (!ensureTrustAnchors()) {
+      Serial.println("[flova] TLS trust anchors unavailable; staying offline");
+      return;
+    }
     if (!transport_.configure(config_.linkUrl)) {
       Serial.println("[flova] runtime Link URL invalid; staying offline");
       return;
@@ -261,13 +290,12 @@ class FlovaEsp8266 : public FlovaDevice {
         restoreManifestWorkspace_.recordCount > kMaximumConfigurationRecords) return false;
     flova::config::Digest digest;
     for (uint32_t sequence = 0; sequence < restoreManifestWorkspace_.recordCount; ++sequence) {
-      configurationRecordWorkspace_ = flova::config::Record();
       Serial.printf("[flova] runtime restore validate record=%lu\n",
                     static_cast<unsigned long>(sequence));
-      if (!configurationStorage_.readRecord(generation, sequence, configurationRecordWorkspace_) ||
-          configurationRecordWorkspace_.generation != generation ||
-          configurationRecordWorkspace_.sequence != sequence) return false;
-      digest.addRecord(configurationRecordWorkspace_);
+      if (!configurationInstaller_.loadWorkspace(generation, sequence)) return false;
+      const flova::config::Record& record = configurationInstaller_.workspace();
+      if (record.generation != generation || record.sequence != sequence) return false;
+      digest.addRecord(record);
       optimistic_yield(1000);
     }
     flova::config::Checksum actual;
@@ -277,22 +305,15 @@ class FlovaEsp8266 : public FlovaDevice {
 
   bool applyConfigurationGeneration(uint32_t generation) {
     setConfigurationApplyingGeneration(generation);
-    transport_.clearConfigurationMappings();
+    flova::config::Unit unit = {};
     for (uint32_t sequence = 0; sequence < restoreManifestWorkspace_.recordCount; ++sequence) {
-      configurationRecordWorkspace_ = flova::config::Record();
-      configurationDecodeWorkspace_ = FlovaLinkConfigurationRecord();
       Serial.printf("[flova] runtime restore decode record=%lu\n",
                     static_cast<unsigned long>(sequence));
-      if (!configurationStorage_.readRecord(generation, sequence, configurationRecordWorkspace_) ||
-          !transport_.decodeStoredConfigurationRecord(configurationRecordWorkspace_.body,
-                                                       configurationRecordWorkspace_.length,
-                                                       configurationDecodeWorkspace_) ||
-          configurationDecodeWorkspace_.generation != generation ||
-          configurationDecodeWorkspace_.sequence != sequence ||
-          (configurationDecodeWorkspace_.recordType == 0 &&
-           !transport_.configureDatastream(generation, configurationDecodeWorkspace_.datastreamId,
-                                           configurationDecodeWorkspace_.datastreamKey)) ||
-          !applyConfigurationUnit(configurationDecodeWorkspace_.typedUnit)) return false;
+      if (!configurationInstaller_.loadWorkspace(generation, sequence)) return false;
+      const flova::config::Record& record = configurationInstaller_.workspace();
+      if (!transport_.decodeStoredConfigurationUnit(record.body, record.length, unit) ||
+          record.generation != generation || record.sequence != sequence ||
+          !applyConfigurationUnit(unit)) return false;
       Serial.printf("[flova] runtime restore applied record=%lu\n",
                     static_cast<unsigned long>(sequence));
       optimistic_yield(1000);
@@ -300,9 +321,8 @@ class FlovaEsp8266 : public FlovaDevice {
     return true;
   }
   bool loadCredentials() {
-    credentialWorkspace_ = flova::DeviceConfiguration();
-    if (!storage_.readConfig(credentialWorkspace_)) return false;
-    config_ = credentialWorkspace_;
+    config_ = flova::DeviceConfiguration();
+    if (!storage_.readConfig(config_)) return false;
     return flova::configurationValid(config_);
   }
 
@@ -313,10 +333,30 @@ class FlovaEsp8266 : public FlovaDevice {
     bootstrapPreparing_ = false;
     bootstrapTransportReady_ = false;
     handoffPending_ = false;
+    WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_AP);
+    const IPAddress apIp(192, 168, 4, 1);
+    const IPAddress apSubnet(255, 255, 255, 0);
+    const bool apConfigOk = WiFi.softAPConfig(apIp, apIp, apSubnet);
     char ssid[32] = {};
     snprintf(ssid, sizeof(ssid), "Flova-Setup-%06lx", static_cast<unsigned long>(ESP.getChipId()));
-    WiFi.softAP(ssid);
+    const bool apStarted = WiFi.softAP(ssid, nullptr, 1, false, 4);
+    const IPAddress activeApIp = WiFi.softAPIP();
+    apStationCount_ = 0;
+    Serial.printf("[flova] setup AP config=%u start=%u ip=%u.%u.%u.%u heap=%u max_block=%u frag=%u%%\n",
+                  apConfigOk ? 1U : 0U,
+                  apStarted ? 1U : 0U,
+                  activeApIp[0], activeApIp[1], activeApIp[2], activeApIp[3],
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMaxFreeBlockSize()),
+                  static_cast<unsigned>(ESP.getHeapFragmentation()));
+    if (!apConfigOk || !apStarted) {
+      Serial.println("[flova] setup AP failed; restarting");
+      provisioning_ = false;
+      delay(100);
+      ESP.restart();
+      return;
+    }
     if (!serverRoutesRegistered_) {
       server_.on("/status", HTTP_GET, [this]() {
         Serial.println("[flova] GET /status");
@@ -344,9 +384,9 @@ class FlovaEsp8266 : public FlovaDevice {
       server_.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
       return;
     }
-    provisioningImageWorkspace_ = flova::ProvisioningHandoffImage();
-    flova::makeProvisioningImage(pending_, provisioningImageWorkspace_);
-    if (!storage_.write("prov_pending", &provisioningImageWorkspace_, sizeof(provisioningImageWorkspace_))) {
+    imageWorkspace_.provisioning() = flova::ProvisioningHandoffImage();
+    flova::makeProvisioningImage(pending_, imageWorkspace_.provisioning());
+    if (!storage_.write("prov_pending", &imageWorkspace_.provisioning(), sizeof(imageWorkspace_.provisioning()))) {
       server_.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
       return;
     }
@@ -364,12 +404,12 @@ class FlovaEsp8266 : public FlovaDevice {
   }
 
   void startBootstrap(const flova::ProvisioningHandoff& handoff) {
-    if (!loadPendingImage(provisioningImageWorkspace_)) {
+    if (!loadPendingImage(imageWorkspace_.provisioning())) {
       storage_.setString("prov_error", "invalid_handoff");
       startProvisioningAp();
       return;
     }
-    if (provisioningImageWorkspace_.attempts >= kMaximumBootstrapAttempts) {
+    if (imageWorkspace_.provisioning().attempts >= kMaximumBootstrapAttempts) {
       Serial.println("[flova] bootstrap stopped; returning to setup AP");
       storage_.remove("prov_pending");
       storage_.setString("prov_error", "bootstrap_attempts_exhausted");
@@ -377,8 +417,8 @@ class FlovaEsp8266 : public FlovaDevice {
       return;
     }
     pending_ = handoff;
-    flova::markProvisioningAttempt(provisioningImageWorkspace_);
-    if (!storage_.write("prov_pending", &provisioningImageWorkspace_, sizeof(provisioningImageWorkspace_))) {
+    flova::markProvisioningAttempt(imageWorkspace_.provisioning());
+    if (!storage_.write("prov_pending", &imageWorkspace_.provisioning(), sizeof(imageWorkspace_.provisioning()))) {
       storage_.setString("prov_error", "storage_failed");
       storage_.remove("prov_pending");
       startProvisioningAp();
@@ -402,6 +442,11 @@ class FlovaEsp8266 : public FlovaDevice {
 
   void finishBootstrapStart() {
     bootstrapPreparing_ = false;
+    if (!ensureTrustAnchors()) {
+      Serial.println("[flova] bootstrap TLS trust anchors unavailable");
+      failBootstrap("tls_memory_unavailable");
+      return;
+    }
     FlovaConfig deviceConfig;
     deviceConfig.linkSecret = pending_.linkSecret;
     deviceConfig.firmwareVersion = FLOVA_FIRMWARE_VERSION;
@@ -438,12 +483,12 @@ class FlovaEsp8266 : public FlovaDevice {
     char safeError[flova::kProvisioningErrorBytes] = {};
     flova::sanitizeProvisioningError(errorCode, safeError);
     storage_.setString("prov_error", safeError);
-    if (loadPendingImage(provisioningImageWorkspace_)) {
-      flova::markProvisioningFailure(provisioningImageWorkspace_, safeError);
-      storage_.write("prov_pending", &provisioningImageWorkspace_, sizeof(provisioningImageWorkspace_));
+    if (loadPendingImage(imageWorkspace_.provisioning())) {
+      flova::markProvisioningFailure(imageWorkspace_.provisioning(), safeError);
+      storage_.write("prov_pending", &imageWorkspace_.provisioning(), sizeof(imageWorkspace_.provisioning()));
     }
-    if (terminal || !loadPendingImage(provisioningImageWorkspace_) ||
-        provisioningImageWorkspace_.attempts >= kMaximumBootstrapAttempts) {
+    if (terminal || !loadPendingImage(imageWorkspace_.provisioning()) ||
+        imageWorkspace_.provisioning().attempts >= kMaximumBootstrapAttempts) {
       if (terminal) Serial.println("[flova] bootstrap stopped; returning to setup AP");
       else Serial.println("[flova] bootstrap attempts exhausted");
       storage_.remove("prov_pending");
@@ -452,6 +497,20 @@ class FlovaEsp8266 : public FlovaDevice {
     // HTTP server and BearSSL are never alive in the same boot lifecycle.
     delay(100);
     ESP.restart();
+  }
+
+  bool ensureTrustAnchors() {
+    if (trustAnchors_) return true;
+    BearSSL::X509List* anchors =
+        new (std::nothrow) BearSSL::X509List(FLOVA_TLS_ROOT_CERTS);
+    if (!anchors || !anchors->getCount()) {
+      delete anchors;
+      return false;
+    }
+    trustAnchors_ = anchors;
+    transport_.setTrustAnchors(*trustAnchors_);
+    otaInstaller_.setTrustAnchors(*trustAnchors_);
+    return true;
   }
 
   static bool uuidText(const FlovaLinkId& id, char* output, size_t capacity) {
@@ -483,7 +542,7 @@ class FlovaEsp8266 : public FlovaDevice {
       return ack.accepted();
     }
     if (input.phase == FlovaLinkConfigurationPhase::Record) {
-      flova::config::Record& record = configurationRecordWorkspace_;
+      flova::config::Record& record = configurationInstaller_.workspace();
       record = flova::config::Record();
       record.messageId = input.messageId;
       record.generation = input.generation;
@@ -517,10 +576,34 @@ class FlovaEsp8266 : public FlovaDevice {
   static const uint32_t kMaximumConfigurationRecords =
       FLOVA_DATASTREAM_CAPACITY + FLOVA_SCHEDULE_CAPACITY + 8;
 
+  union ImageWorkspace {
+    flova::ConfigurationImage configurationImage;
+    ImageWorkspace() : configurationImage() {}
+    ~ImageWorkspace() {}
+
+    flova::ConfigurationImage& configuration() {
+      return configurationImage;
+    }
+    flova::ProvisioningHandoffImage& provisioning() {
+      return provisioningImage;
+    }
+    void useConfiguration() {
+      provisioningImage.~ProvisioningHandoffImage();
+      new (&configurationImage) flova::ConfigurationImage();
+    }
+    void useProvisioning() {
+      configurationImage.~ConfigurationImage();
+      new (&provisioningImage) flova::ProvisioningHandoffImage();
+    }
+    flova::ProvisioningHandoffImage provisioningImage;
+  };
+
   class Storage : public ArduinoStorage {
    public:
+    explicit Storage(flova::ConfigurationImage& workspace)
+        : configurationImageWorkspace_(workspace) {}
+
     void begin() {
-      EEPROM.begin(4096);
       if (!LittleFS.begin()) Serial.println("[flova] LittleFS mount failed");
     }
     bool read(const char* key, void* output, size_t size) const override {
@@ -594,35 +677,66 @@ class FlovaEsp8266 : public FlovaDevice {
       LittleFS.remove("/config.backup");
       if (LittleFS.exists("/config.active")) LittleFS.rename("/config.active", "/config.backup");
       if (!LittleFS.rename("/config.next", "/config.active")) return false;
-      return readConfig(verified_);
+      flova::DeviceConfiguration verified = {};
+      return readConfig(verified);
     }
-    bool getString(const char* key, String& out) override { out = readSlot(key); return out.length() > 0; }
-    bool getString(const char* key, char* out, size_t maxLen) override {
-      if (!out || !maxLen) return false;
-      String value;
-      if (!getString(key, value) || value.length() >= maxLen) return false;
-      memcpy(out, value.c_str(), value.length() + 1);
+    bool getString(const char* key, String& out) override {
+      char value[kStringBytes] = {};
+      if (!getString(key, value, sizeof(value))) {
+        out = "";
+        return false;
+      }
+      out = value;
       return true;
     }
-    bool setString(const char* key, const char* value) override { writeSlot(key, value ? value : ""); return true; }
+    bool getString(const char* key, char* out, size_t maxLen) override {
+      if (!out || !maxLen) return false;
+      char path[48] = {};
+      if (!makePath(key, path, sizeof(path))) return false;
+      File file = LittleFS.open(path, "r");
+      if (!file) return false;
+      const size_t length = static_cast<size_t>(file.size());
+      if (!length || length >= maxLen || length >= kStringBytes) {
+        file.close();
+        return false;
+      }
+      size_t read = 0;
+      while (read < length) {
+        const size_t chunk = min<size_t>(64, length - read);
+        const size_t count = file.read(reinterpret_cast<uint8_t*>(out) + read, chunk);
+        if (count != chunk) break;
+        read += count;
+        optimistic_yield(1000);
+      }
+      file.close();
+      if (read != length) {
+        out[0] = '\0';
+        return false;
+      }
+      out[length] = '\0';
+      return true;
+    }
+    bool setString(const char* key, const char* value) override {
+      if (!value) value = "";
+      size_t length = 0;
+      while (value[length] && length < kStringBytes) ++length;
+      if (length >= kStringBytes) return false;
+      return write(key, value, length);
+    }
     bool remove(const char* key) override {
       char path[48] = {};
       if (!makePath(key, path, sizeof(path))) return false;
-      if (LittleFS.exists(path)) return LittleFS.remove(path);
-      // Link configuration keys are file-backed. Never fall through to the
-      // EEPROM string slots when an old/corrupt bank is already absent.
-      if (strncmp(key, "flova_l_", 8) == 0) return true;
-      writeSlot(key, "");
-      return true;
+      return !LittleFS.exists(path) || LittleFS.remove(path);
     }
-    void clear() override { for (size_t i = 0; i < 4096; ++i) EEPROM.write(i, 0); EEPROM.commit(); LittleFS.format(); }
+    void clear() override { LittleFS.format(); }
    private:
+    enum { kStringBytes = 224 };
+
     static bool makePath(const char* key, char* out, size_t size) {
       return key && out && snprintf(out, size, "/%s.bin", key) < static_cast<int>(size);
     }
 
-    mutable flova::DeviceConfiguration verified_ = {};
-    mutable flova::ConfigurationImage configurationImageWorkspace_ = {};
+    flova::ConfigurationImage& configurationImageWorkspace_;
     static bool readImage(const char* path, flova::ConfigurationImage& image) {
       File file = LittleFS.open(path, "r");
       if (!file) return false;
@@ -634,44 +748,25 @@ class FlovaEsp8266 : public FlovaDevice {
       file.close();
       return ok;
     }
-    String readSlot(const char* key) const {
-      uint16_t hash = 21661;
-      for (const char* cursor = key; cursor && *cursor; ++cursor) hash = static_cast<uint16_t>((hash * 33) ^ static_cast<uint8_t>(*cursor));
-      const int offset = (hash % 16) * 224;
-      char buffer[224] = {};
-      for (size_t i = 0; i < sizeof(buffer) - 1; ++i) {
-        buffer[i] = static_cast<char>(EEPROM.read(offset + i));
-        if (!buffer[i]) break;
-      }
-      return String(buffer);
-    }
-    void writeSlot(const char* key, const char* value) {
-      uint16_t hash = 21661;
-      for (const char* cursor = key; cursor && *cursor; ++cursor) hash = static_cast<uint16_t>((hash * 33) ^ static_cast<uint8_t>(*cursor));
-      const int offset = (hash % 16) * 224;
-      const size_t length = value ? strlen(value) : 0;
-      for (size_t i = 0; i < sizeof(char[224]) - 1; ++i) EEPROM.write(offset + i, i < length ? value[i] : 0);
-      EEPROM.commit();
-    }
-  } storage_;
+  };
+
+  ImageWorkspace imageWorkspace_ = {};
+  Storage storage_;
 
   FlovaLinkConfigurationStorage configurationStorage_;
   flova::config::Installer configurationInstaller_;
-  flova::config::Record configurationRecordWorkspace_ = {};
-  FlovaLinkConfigurationRecord configurationDecodeWorkspace_ = {};
   flova::config::GenerationManifest restoreManifestWorkspace_ = {};
 
-  BearSSL::X509List trustAnchors_{FLOVA_TLS_ROOT_CERTS};
+  BearSSL::X509List* trustAnchors_ = nullptr;
   ArduinoDeviceLink transport_;
   ArduinoClock clock_;
   ArduinoLogger logger_;
   ArduinoOtaInstaller otaInstaller_;
   ESP8266WebServer server_{80};
   flova::DeviceConfiguration config_ = {};
-  flova::DeviceConfiguration credentialWorkspace_ = {};
   flova::ProvisioningHandoff pending_ = {};
-  flova::ProvisioningHandoffImage provisioningImageWorkspace_ = {};
   bool provisioning_ = false;
+  uint8_t apStationCount_ = 0;
   bool runtimeReady_ = false;
   bool runtimePreparing_ = false;
   bool bootstrapActive_ = false;

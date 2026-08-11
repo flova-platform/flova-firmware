@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "FlovaBuildConfig.h"
+#include "FlovaDatastreamId.h"
 
 // This is the shared, serialized-format-free configuration contract.  Link
 // adapters fill exactly one Unit at a time; SDKs and board glue consume it
@@ -49,7 +50,7 @@ struct HardwareMapping {
 };
 
 struct Datastream {
-  uint16_t compactId;
+  DatastreamId id;
   uint8_t valueType;
   char uuid[37];
   char key[kConfigurationTextBytes];
@@ -78,7 +79,7 @@ struct System {
 
 struct ScheduleAction {
   uint32_t offsetMs;
-  uint16_t compactId;
+  DatastreamId datastreamId;
   Value value;
 };
 
@@ -100,7 +101,7 @@ struct ScheduleOccurrences {
 };
 
 struct Safety {
-  uint16_t compactId;
+  DatastreamId datastreamId;
   SafetyPolicy policy;
   bool hasMinimum;
   bool hasMaximum;

@@ -25,37 +25,34 @@ template <typename T> class FlovaDevice::Datastream {
  public:
   typedef FlovaWriteResult (*WriteHandler)(T);
   typedef FlovaReadResult<T> (*ReadHandler)();
-  Datastream(FlovaDevice& device, const char* key) : device_(device), key_(key) {}
-  T read() const { String value; return device_.readCached(key_.c_str(), value) ? FlovaDomainValueAdapter<T>::decode(value) : T{}; }
-  bool hasValue() const { return device_.hasValue(key_.c_str()); }
+  Datastream(FlovaDevice& device, FlovaDevice::DatastreamState* state) : device_(device), state_(state) {}
+  T read() const { return state_ && state_->hasValue ? FlovaDomainValueAdapter<T>::decode(state_->value) : T{}; }
+  bool hasValue() const { return state_ && state_->hasValue; }
   FlovaDatastreamSnapshot<T> snapshot() const {
-    FlovaDatastreamSnapshot<T> out; String value; uint32_t revision = 0;
-    out.hasValue = device_.readCached(key_.c_str(), value, &revision); out.value = out.hasValue ? FlovaDomainValueAdapter<T>::decode(value) : T{}; out.revision = revision;
-    device_.readSnapshotMetadata(key_.c_str(), out.updatedAt, out.origin, out.quality, out.dirty, out.revision); out.stale = out.quality == FlovaValueQuality::Stale; return out;
+    FlovaDatastreamSnapshot<T> out; out.hasValue = hasValue(); out.value = out.hasValue ? FlovaDomainValueAdapter<T>::decode(state_->value) : T{};
+    if (state_) { out.updatedAt = state_->updatedAt; out.origin = state_->origin; out.quality = state_->quality; out.dirty = state_->dirty; out.revision = state_->revision; }
+    out.stale = out.quality == FlovaValueQuality::Stale; return out;
   }
-  FlovaWriteResult write(const T& value) { return device_.applyWrite(key_.c_str(), FlovaDomainValueAdapter<T>::encode(value), FlovaDomainValueAdapter<T>::type); }
-  FlovaWriteResult report(const T& value) { return device_.reportValue(key_.c_str(), FlovaDomainValueAdapter<T>::encode(value), FlovaDomainValueAdapter<T>::type); }
+  FlovaWriteResult write(const T& value) { return state_ ? device_.applyWriteState(*state_, FlovaDomainValueAdapter<T>::encode(value), FlovaDomainValueAdapter<T>::type, FlovaValueOrigin::LocalLogic) : FlovaWriteResult::reject("datastream_unresolved"); }
+  FlovaWriteResult report(const T& value) { return state_ ? device_.reportValueState(*state_, FlovaDomainValueAdapter<T>::encode(value), FlovaDomainValueAdapter<T>::type, FlovaValueOrigin::SensorRead) : FlovaWriteResult::reject("datastream_unresolved"); }
   FlovaReadResult<T> refresh() {
     if (!readHandler_) return FlovaReadResult<T>::error("read_handler_missing");
-    FlovaReadResult<T> result = readHandler_(); if (!result.ok) return result;
-    FlovaWriteResult reported = device_.reportValue(key_.c_str(), FlovaDomainValueAdapter<T>::encode(result.value), FlovaDomainValueAdapter<T>::type);
+    FlovaReadResult<T> result = readHandler_(); if (!result.ok || !state_) return result;
+    FlovaWriteResult reported = device_.reportValueState(*state_, FlovaDomainValueAdapter<T>::encode(result.value), FlovaDomainValueAdapter<T>::type, FlovaValueOrigin::SensorRead);
     return reported.accepted() ? result : FlovaReadResult<T>::error(reported.reasonCode);
   }
-  Datastream& onWrite(WriteHandler handler) { writeHandler_ = handler; device_.registerTypedWrite(key_.c_str(), reinterpret_cast<void*>(handler), FlovaDomainValueAdapter<T>::type); return *this; }
-  Datastream& onRead(ReadHandler handler) { readHandler_ = handler; device_.registerTypedRead(key_.c_str(), reinterpret_cast<void*>(handler), FlovaDomainValueAdapter<T>::type); return *this; }
-  Datastream& mode(FlovaDatastreamMode value) { mode_ = value; sync(); return *this; }
-  Datastream& offline(FlovaOfflinePolicy value) { offline_ = value; sync(); return *this; }
-  Datastream& persist(FlovaPersistencePolicy value) { persistence_ = value; sync(); return *this; }
-  Datastream& restore(FlovaRestorePolicy value) { restore_ = value; sync(); return *this; }
-  Datastream& publishEvery(uint32_t milliseconds) { device_.configurePublishInterval(key_.c_str(), milliseconds); return *this; }
+  Datastream& onWrite(WriteHandler handler) { writeHandler_ = handler; if (state_) state_->writeHandler = reinterpret_cast<void*>(handler); return *this; }
+  Datastream& onRead(ReadHandler handler) { readHandler_ = handler; if (state_) state_->readHandler = reinterpret_cast<void*>(handler); return *this; }
+  Datastream& mode(FlovaDatastreamMode value) { if (state_) state_->mode = value; return *this; }
+  Datastream& offline(FlovaOfflinePolicy value) { if (state_) state_->offline = value; return *this; }
+  Datastream& persist(FlovaPersistencePolicy value) { if (state_) state_->persistence = value; return *this; }
+  Datastream& restore(FlovaRestorePolicy value) { if (state_) state_->restore = value; return *this; }
+  Datastream& publishEvery(uint32_t milliseconds) { if (state_) state_->minimumPublishIntervalMs = milliseconds; return *this; }
  private:
-  void sync() { device_.configureDatastream(key_.c_str(), mode_, offline_, persistence_, restore_); }
-  FlovaDevice& device_; String key_; WriteHandler writeHandler_ = nullptr; ReadHandler readHandler_ = nullptr;
-  FlovaDatastreamMode mode_ = FlovaDatastreamMode::State; FlovaOfflinePolicy offline_ = FlovaOfflinePolicy::KeepLatest;
-  FlovaPersistencePolicy persistence_ = FlovaPersistencePolicy::None; FlovaRestorePolicy restore_ = FlovaRestorePolicy::DoNotRestore;
+  FlovaDevice& device_; FlovaDevice::DatastreamState* state_; WriteHandler writeHandler_ = nullptr; ReadHandler readHandler_ = nullptr;
 };
 
 template <typename T> FlovaDevice::Datastream<T> FlovaDevice::datastream(const char* key) {
-  DatastreamState* state = stateFor(key, FlovaDomainValueAdapter<T>::type, true); if (state && !state->hasValue) state->type = FlovaDomainValueAdapter<T>::type;
-  return Datastream<T>(*this, key);
+  DatastreamState* state = stateForKey(key, FlovaDomainValueAdapter<T>::type, true); if (state && !state->hasValue) state->type = FlovaDomainValueAdapter<T>::type;
+  return Datastream<T>(*this, state);
 }

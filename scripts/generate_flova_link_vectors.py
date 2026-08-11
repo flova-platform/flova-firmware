@@ -71,6 +71,8 @@ VECTORS = [
     (0x06, "bootstrap_auth", {0: b"t" * 32, 1: SECRET, 2: "esp-aabbcc", 3: "universal-esp8266", 4: CAPS}),
     (0x07, "bootstrap_committed", [UUID1, 7, 1_800_000_000_000]),
     (0x08, "bootstrap_error", ["invalid_provision_token"]),
+    (0x09, "datastream_bind", [7, ["temperature", "humidity", "relay"]]),
+    (0x0A, "datastream_bound", [7, [17, 18, 19]]),
     (0x10, "heartbeat", [7, 123_456, 1, "1.0.0"]),
     (0x11, "state", [7, [[1, 0, True, 9], [2, 2, F32(21.5), 10]]]),
     (0x12, "command_result", [7, UUID1, 1, 0, 0, True, 9, b""]),

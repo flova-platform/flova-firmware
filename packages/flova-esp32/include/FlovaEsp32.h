@@ -3,11 +3,9 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
-#include <esp_ota_ops.h>
 #include <time.h>
 #include <FlovaArduino.h>
 #include <FlovaConfiguration.h>
-#include <FlovaEsp32BootControl.h>
 #include <FlovaLinkCodec.h>
 #include <FlovaLinkConfigurationStorage.h>
 #include <FlovaProvisioningHandoff.h>
@@ -17,8 +15,9 @@
 #define FLOVA_FIRMWARE_VERSION "0.1.0"
 #endif
 
-// ESP32 board glue keeps only credential metadata and the active generation
-// number in RAM.  Link configuration records are handled one at a time by
+// ESP32 board glue owns provisioning, board storage, and boot lifecycle. It
+// keeps only credential metadata and the active generation number in RAM.
+// Link configuration records are handled one at a time by
 // the typed transport/installer; no JSON runtime snapshot is reconstructed.
 class FlovaEsp32 : public FlovaDevice {
  public:
@@ -234,9 +233,6 @@ class FlovaEsp32 : public FlovaDevice {
           !transport_.decodeStoredConfigurationRecord(configurationRecordWorkspace_.body,
                                                        configurationRecordWorkspace_.length,
                                                        configurationDecodeWorkspace_) ||
-          (configurationDecodeWorkspace_.recordType == 0 &&
-           !transport_.configureDatastream(generation, configurationDecodeWorkspace_.datastreamId,
-                                           configurationDecodeWorkspace_.datastreamKey)) ||
           !applyConfigurationUnit(configurationDecodeWorkspace_.typedUnit)) return false;
     }
     return true;

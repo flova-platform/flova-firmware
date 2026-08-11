@@ -26,9 +26,13 @@
 } while(0)
 
 static bool decode_repeated_ota_desired_ota_target(zcbor_state_t *state, struct ota_desired_ota_target *result);
+static bool decode_repeated_datastream_binding_keys_tstr1_48(zcbor_state_t *state, struct zcbor_string *result);
+static bool decode_datastream_binding_keys(zcbor_state_t *state, struct datastream_binding_keys *result);
 static bool decode_typed_value_fields(zcbor_state_t *state, struct typed_value_fields_r *result);
 static bool decode_correlation_id(zcbor_state_t *state, struct correlation_id_r *result);
 static bool decode_capabilities(zcbor_state_t *state, struct capabilities *result);
+static bool decode_repeated_datastream_bound_ids_compact_id_m(zcbor_state_t *state, uint64_t *result);
+static bool decode_datastream_bound_ids(zcbor_state_t *state, struct datastream_bound_ids *result);
 static bool decode_command_result_ok(zcbor_state_t *state, struct command_result_ok *result);
 static bool decode_command_result_error(zcbor_state_t *state, struct command_result_error *result);
 static bool decode_repeated_config_begin_config_command_id(zcbor_state_t *state, struct config_begin_config_command_id *result);
@@ -83,6 +87,8 @@ static bool decode_config_reported(zcbor_state_t *state, struct config_reported 
 static bool decode_command_result(zcbor_state_t *state, struct command_result_r *result);
 static bool decode_state(zcbor_state_t *state, struct state *result);
 static bool decode_heartbeat(zcbor_state_t *state, struct heartbeat *result);
+static bool decode_datastream_bound(zcbor_state_t *state, struct datastream_bound *result);
+static bool decode_datastream_bind(zcbor_state_t *state, struct datastream_bind *result);
 static bool decode_bootstrap_error(zcbor_state_t *state, struct zcbor_string *result);
 static bool decode_bootstrap_committed(zcbor_state_t *state, struct bootstrap_committed *result);
 static bool decode_bootstrap_auth(zcbor_state_t *state, struct bootstrap_auth *result);
@@ -102,6 +108,37 @@ static bool decode_repeated_ota_desired_ota_target(
 	&& (zcbor_tstr_decode(state, (&(*result).ota_desired_ota_target)))
 	&& ((((*result).ota_desired_ota_target.len >= 1)
 	&& ((*result).ota_desired_ota_target.len <= 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_datastream_binding_keys_tstr1_48(
+		zcbor_state_t *state, struct zcbor_string *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_tstr_decode(state, (&(*result))))
+	&& ((((*result).len >= 1)
+	&& ((*result).len <= 48)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_datastream_binding_keys(
+		zcbor_state_t *state, struct datastream_binding_keys *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((zcbor_multi_decode(1, 64, &(*result).datastream_binding_keys_tstr1_48_count, (zcbor_decoder_t *)decode_repeated_datastream_binding_keys_tstr1_48, state, (*&(*result).datastream_binding_keys_tstr1_48), sizeof(struct zcbor_string))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	if (false) {
+		/* For testing that the types of the arguments are correct.
+		 * A compiler error here means a bug in zcbor.
+		 */
+		decode_repeated_datastream_binding_keys_tstr1_48(state, (*&(*result).datastream_binding_keys_tstr1_48));
+	}
 
 	log_result(state, res, __func__);
 	return res;
@@ -172,6 +209,36 @@ static bool decode_capabilities(
 	&& ((((((((*result).capabilities_history_bytes <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
 	&& (((zcbor_uint64_expect(state, (7))))
 	&& (zcbor_uint64_expect(state, (512))))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_map_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_datastream_bound_ids_compact_id_m(
+		zcbor_state_t *state, uint64_t *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_uint64_decode(state, (&(*result))))
+	&& ((((((((*result) <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_datastream_bound_ids(
+		zcbor_state_t *state, struct datastream_bound_ids *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((zcbor_multi_decode(1, 64, &(*result).datastream_bound_ids_compact_id_m_count, (zcbor_decoder_t *)decode_repeated_datastream_bound_ids_compact_id_m, state, (*&(*result).datastream_bound_ids_compact_id_m), sizeof(uint64_t))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	if (false) {
+		/* For testing that the types of the arguments are correct.
+		 * A compiler error here means a bug in zcbor.
+		 */
+		decode_repeated_datastream_bound_ids_compact_id_m(state, (*&(*result).datastream_bound_ids_compact_id_m));
+	}
 
 	log_result(state, res, __func__);
 	return res;
@@ -1117,6 +1184,32 @@ static bool decode_heartbeat(
 	return res;
 }
 
+static bool decode_datastream_bound(
+		zcbor_state_t *state, struct datastream_bound *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).datastream_bound_bound_generation)))
+	&& ((((((((*result).datastream_bound_bound_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((decode_datastream_bound_ids(state, (&(*result).datastream_bound_bound_ids))))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_datastream_bind(
+		zcbor_state_t *state, struct datastream_bind *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((((zcbor_uint64_decode(state, (&(*result).datastream_bind_binding_generation)))
+	&& ((((((((*result).datastream_bind_binding_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& ((decode_datastream_binding_keys(state, (&(*result).datastream_bind_binding_keys))))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_bootstrap_error(
 		zcbor_state_t *state, struct zcbor_string *result)
 {
@@ -1332,6 +1425,30 @@ int cbor_decode_bootstrap_error(
 
 	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
 		(zcbor_decoder_t *)decode_bootstrap_error, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_decode_datastream_bind(
+		const uint8_t *payload, size_t payload_len,
+		struct datastream_bind *result,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[4];
+
+	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
+		(zcbor_decoder_t *)decode_datastream_bind, sizeof(states) / sizeof(zcbor_state_t), 1);
+}
+
+
+int cbor_decode_datastream_bound(
+		const uint8_t *payload, size_t payload_len,
+		struct datastream_bound *result,
+		size_t *payload_len_out)
+{
+	zcbor_state_t states[4];
+
+	return zcbor_entry_function(payload, payload_len, (void *)result, payload_len_out, states,
+		(zcbor_decoder_t *)decode_datastream_bound, sizeof(states) / sizeof(zcbor_state_t), 1);
 }
 
 

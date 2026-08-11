@@ -13,7 +13,7 @@ python3 "$generator" code \
   --cddl "$schema" \
   --entry-types \
   auth auth-ok auth-error ping pong bootstrap-auth bootstrap-committed \
-  bootstrap-error heartbeat state command-result config-reported \
+  bootstrap-error datastream-bind datastream-bound heartbeat state command-result config-reported \
   ota-reported schedule-reported schedule-renew time-request config-ack \
   command ingestion-ack config-desired ota-desired schedule-desired \
   time-response flow-control message-rejected config-begin config-record \

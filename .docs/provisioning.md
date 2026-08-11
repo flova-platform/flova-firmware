@@ -81,7 +81,7 @@ Firmware has no Flova Cloud hostname fallback. Tokens, secrets, and
 configuration contents must never be logged.
 
 The supported ESP8266 target profile is verified BearSSL WSS with a
-4,096-byte RX / 512-byte TX Link allocation. Shared IRAM must be enabled and
+2,048-byte RX / 512-byte TX Link allocation. Shared IRAM must be enabled and
 the adapter must fail closed when the required TLS memory profile is not
 available. Link and OTA never coexist: Link disconnects before OTA opens its
 separate verified HTTPS client with a 16 KiB RX / 512-byte TX profile.

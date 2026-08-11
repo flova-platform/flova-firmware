@@ -11,9 +11,9 @@ static const size_t kMaxOccurrencesPerSchedule = FLOVA_SCHEDULE_OCCURRENCE_CAPAC
 static const uint64_t kRenewRetryMs = 6ULL * 60 * 60 * 1000;
 
 struct ScheduleAction {
-  char key[kMaxText];
+  DatastreamId datastreamId;
   Value value;
-  ScheduleAction() { key[0] = 0; }
+  ScheduleAction() : datastreamId(FLOVA_INVALID_DATASTREAM_ID) {}
 };
 
 struct CompiledSchedule {
@@ -123,7 +123,7 @@ class ScheduleRuntime {
       const uint8_t actionCount = schedule.actionCount ? schedule.actionCount : 1;
       for (uint8_t action = 0; action < actionCount; ++action) {
         const ScheduleAction& item = schedule.actionCount ? schedule.actions[action] : schedule.action;
-        mixText(hash, item.key); mix(hash, static_cast<uint32_t>(item.value.type)); mixValue(hash, item.value);
+        mix(hash, item.datastreamId); mix(hash, static_cast<uint32_t>(item.value.type)); mixValue(hash, item.value);
       }
       mix(hash, schedule.occurrenceCount);
       for (size_t j = 0; j < schedule.occurrenceCount; ++j) mix64(hash, schedule.occurrences[j]);
@@ -139,7 +139,7 @@ class ScheduleRuntime {
       if (value.schedules[i].occurrenceCount > kMaxOccurrencesPerSchedule ||
           value.schedules[i].actionCount > flova::config::kConfigurationScheduleActions ||
           !value.schedules[i].id[0] ||
-          !(value.schedules[i].actionCount ? value.schedules[i].actions[0].key[0] : value.schedules[i].action.key[0])) return false;
+          !(value.schedules[i].actionCount ? flovaValidDatastreamId(value.schedules[i].actions[0].datastreamId) : flovaValidDatastreamId(value.schedules[i].action.datastreamId))) return false;
     return true;
   }
 
@@ -177,8 +177,6 @@ class ScheduleRuntime {
   bool expiredReported_;
 };
 
-typedef bool (*ScheduleKeyResolver)(uint16_t compactId, char* key, size_t capacity);
-
 // Compiles CONFIG_RECORD schedule metadata plus ordered occurrence chunks into
 // the existing fixed ScheduleManifest. It never retains more than the bounded
 // schedule runtime model and rejects duplicates, gaps, and over-capacity input.
@@ -200,8 +198,8 @@ class ScheduleChunkCompiler {
     return true;
   }
 
-  bool addSchedule(const config::Schedule& source, ScheduleKeyResolver resolver) {
-    if (!started_ || source.actionCount == 0 || source.actionCount > flova::config::kConfigurationScheduleActions || !resolver) return false;
+  bool addSchedule(const config::Schedule& source) {
+    if (!started_ || source.actionCount == 0 || source.actionCount > flova::config::kConfigurationScheduleActions) return false;
     size_t slot = kMaxSchedules;
     for (size_t i = 0; i < scheduleCount_; ++i) if (manifest_.schedules[i].id[0] && strtoul(manifest_.schedules[i].id, 0, 10) == source.id) { slot = i; break; }
     if (slot == kMaxSchedules) for (size_t i = 0; i < scheduleCount_; ++i) if (!manifest_.schedules[i].id[0]) { slot = i; break; }
@@ -217,7 +215,8 @@ class ScheduleChunkCompiler {
       target.actions[i].value = source.actions[i].value.kind == config::ValueKind::Boolean ? Value::from(source.actions[i].value.data.boolean) :
                                   source.actions[i].value.kind == config::ValueKind::Float32 ? Value::from(source.actions[i].value.data.float32) :
                                   source.actions[i].value.kind == config::ValueKind::Float64 ? Value::from(source.actions[i].value.data.float64) : Value::from(source.actions[i].value.data.text);
-      if (!resolver(source.actions[i].compactId, target.actions[i].key, sizeof(target.actions[i].key))) return false;
+      if (!flovaValidDatastreamId(source.actions[i].datastreamId)) return false;
+      target.actions[i].datastreamId = source.actions[i].datastreamId;
     }
     target.action = target.actions[0];
     return true;

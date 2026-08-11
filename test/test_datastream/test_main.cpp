@@ -9,28 +9,33 @@ class TestTransport : public FlovaTransport {
   bool online = true;
   uint16_t relayId = 1;
   uint16_t temperatureId = 2;
-  uint32_t generation = 7;
+  uint32_t generation = 0;
   uint16_t statePublishes = 0;
   uint16_t commandResultPublishes = 0;
   uint16_t configurationReportPublishes = 0;
+  uint8_t bindingCount = 0;
   FlovaLinkStateBatch lastState = {};
   FlovaLinkCommandResult lastCommandResult = {};
   FlovaLinkConfigurationReport lastConfigurationReport = {};
 
   bool begin() override { return true; }
   bool connected() override { return online; }
-  bool connect(const char*, const char*) override { online = true; return true; }
-  bool datastreamIdForKey(const char* key, uint16_t& id) const override {
-    if (key && strcmp(key, "relay") == 0) { id = relayId; return true; }
-    if (key && strcmp(key, "temperature") == 0) { id = temperatureId; return true; }
-    return false;
+  bool connect(const char*, const char*) override {
+    online = true;
+    if (callback_ && bindingCount) {
+      FlovaLinkInboundMessage bound = {};
+      bound.type = FlovaLinkMessageType::DatastreamBound;
+      bound.body.datastreamBound.generation = generation;
+      bound.body.datastreamBound.count = bindingCount;
+      for (uint8_t i = 0; i < bindingCount; ++i) bound.body.datastreamBound.ids[i] = i + 1;
+      callback_(bound);
+    }
+    return true;
   }
-  bool datastreamKeyForId(uint32_t requestedGeneration, uint16_t id, char* out,
-                          size_t outSize) const override {
-    if (requestedGeneration != generation || !out || !outSize) return false;
-    const char* key = id == relayId ? "relay" : id == temperatureId ? "temperature" : nullptr;
-    if (!key || strlen(key) >= outSize) return false;
-    strcpy(out, key);
+  bool setDatastreamKeys(const char* const* keys, uint8_t count) override {
+    if (count > FLOVA_MAX_ACTIVE_DATASTREAMS) return false;
+    bindingCount = count;
+    for (uint8_t i = 0; i < count; ++i) if (!keys[i] || !*keys[i]) return false;
     return true;
   }
   void setConfigurationGeneration(uint32_t value) override { generation = value; }
@@ -119,12 +124,46 @@ static FlovaDevice::Datastream<bool> relay = device.datastream<bool>("relay");
 static FlovaDevice::Datastream<float> temperature = device.datastream<float>("temperature");
 static uint8_t writes = 0;
 
+static void test_dirty_state_retry_waits_for_own_publish() {
+  TestTransport retryTransport;
+  TestStorage retryStorage;
+  TestClock retryClock;
+  TestLogger retryLogger;
+  FlovaDevice retryDevice(retryTransport, retryStorage, retryClock, retryLogger);
+  FlovaDevice::Datastream<bool> retryState = retryDevice.datastream<bool>("retry");
+  FlovaConfig retryConfig;
+  retryConfig.deviceId = "00000000-0000-0000-0000-000000000002";
+  retryConfig.linkSecret = "test-secret";
+  retryConfig.heartbeatIntervalMs = 0xffffffff;
+  retryDevice.configure(retryConfig);
+  TEST_ASSERT_TRUE(retryDevice.begin());
+
+  TEST_ASSERT_TRUE(retryState.report(true).accepted());
+  TEST_ASSERT_EQUAL_UINT16(1, retryTransport.statePublishes);
+
+  retryClock.now = 1000;
+  retryDevice.loop();
+  retryDevice.loop();
+  TEST_ASSERT_EQUAL_UINT16(1, retryTransport.statePublishes);
+
+  retryClock.now = 6000;
+  retryDevice.loop();
+  TEST_ASSERT_EQUAL_UINT16(1, retryTransport.statePublishes);
+  retryDevice.loop();
+  TEST_ASSERT_EQUAL_UINT16(2, retryTransport.statePublishes);
+}
+
 static FlovaWriteResult relayWrite(bool value) {
   ++writes;
   return value ? FlovaWriteResult::accept() : FlovaWriteResult::reject("safety_lock");
 }
 
 void setUp() {
+  static bool started = false;
+  if (!started) {
+    TEST_ASSERT_TRUE(device.begin());
+    started = true;
+  }
   transport.online = true;
   transport.statePublishes = 0;
   transport.commandResultPublishes = 0;
@@ -272,6 +311,7 @@ void setup() {
   RUN_TEST(test_committed_credentials_always_select_runtime);
 #else
   RUN_TEST(test_typed_state_uses_compact_mapping);
+  RUN_TEST(test_dirty_state_retry_waits_for_own_publish);
   RUN_TEST(test_rejected_hardware_write_does_not_change_state);
   RUN_TEST(test_typed_command_routes_by_generation_and_id);
   RUN_TEST(test_oversized_frame_is_rejected_before_payload_decode);

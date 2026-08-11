@@ -79,6 +79,16 @@ struct bootstrap_committed {
 	uint64_t bootstrap_committed_committed_server_utc_ms;
 };
 
+struct datastream_binding_keys {
+	struct zcbor_string datastream_binding_keys_tstr1_48[64];
+	size_t datastream_binding_keys_tstr1_48_count;
+};
+
+struct datastream_bind {
+	uint64_t datastream_bind_binding_generation;
+	struct datastream_binding_keys datastream_bind_binding_keys;
+};
+
 struct heartbeat {
 	uint64_t heartbeat_generation;
 	uint64_t heartbeat_uptime_ms;
@@ -200,6 +210,16 @@ struct bootstrap_auth {
 	struct zcbor_string bootstrap_auth_hardware_id;
 	struct zcbor_string bootstrap_auth_firmware_target;
 	struct capabilities bootstrap_auth_bootstrap_capabilities;
+};
+
+struct datastream_bound_ids {
+	uint64_t datastream_bound_ids_compact_id_m[64];
+	size_t datastream_bound_ids_compact_id_m_count;
+};
+
+struct datastream_bound {
+	uint64_t datastream_bound_bound_generation;
+	struct datastream_bound_ids datastream_bound_bound_ids;
 };
 
 struct command_result_ok {

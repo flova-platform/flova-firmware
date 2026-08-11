@@ -1,5 +1,7 @@
 #pragma once
 
+#include <time.h>
+
 #ifndef FLOVA_HTTPS_TIMEOUT_MS
 #define FLOVA_HTTPS_TIMEOUT_MS 15000
 #endif
@@ -19,7 +21,7 @@ static const unsigned long kHttpsTimeoutMs = FLOVA_HTTPS_TIMEOUT_MS;
 #endif
 
 #ifndef FLOVA_ESP8266_LINK_TLS_RX_BYTES
-#define FLOVA_ESP8266_LINK_TLS_RX_BYTES 4096
+#define FLOVA_ESP8266_LINK_TLS_RX_BYTES 2048
 #endif
 
 #ifndef FLOVA_ESP8266_TLS_TX_BYTES
@@ -125,6 +127,37 @@ inline const char* tlsResourceError(TlsResourceStatus status) {
 inline void configureOtaTls(BearSSL::WiFiClientSecure& client) {
   client.setBufferSizes(FLOVA_ESP8266_OTA_TLS_RX_BYTES,
                         FLOVA_ESP8266_TLS_TX_BYTES);
+}
+
+inline void configureLinkTls(BearSSL::WiFiClientSecure& client,
+                             BearSSL::X509List& trustAnchors,
+                             time_t now) {
+  client.setTimeout(kHttpsTimeoutMs);
+  client.setBufferSizes(FLOVA_ESP8266_LINK_TLS_RX_BYTES,
+                        FLOVA_ESP8266_TLS_TX_BYTES);
+  client.setTrustAnchors(&trustAnchors);
+  if (now >= 1700000000) client.setX509Time(now);
+}
+
+inline void logLinkTlsFailure(BearSSL::WiFiClientSecure& client) {
+  char detail[96] = {};
+  const int code = client.getLastSSLError(detail, sizeof(detail));
+  Serial.printf("[flova] Link TLS connect failed code=%d detail=%.*s\n",
+                code, 80, detail);
+}
+
+}  // namespace flova
+#endif
+
+#if defined(ESP32)
+#include <WiFiClientSecure.h>
+#include <FlovaTlsRoots.h>
+
+namespace flova {
+
+inline void configureLinkTls(WiFiClientSecure& client) {
+  client.setCACert(FLOVA_TLS_ROOT_CERTS);
+  client.setTimeout(kHttpsTimeoutMs);
 }
 
 }  // namespace flova

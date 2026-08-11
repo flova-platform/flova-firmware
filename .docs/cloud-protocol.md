@@ -97,10 +97,14 @@ loop and report an applied value or rejection without duplicate state reports.
 
 Certificate-chain and hostname validation are mandatory: no plaintext,
 `setInsecure()`, fingerprint-only validation, or downgrade. Official ESP8266
-Link WSS uses the Cloudflare-compatible BearSSL **4,096-byte RX / 512-byte TX**
+Link WSS uses the Cloudflare-compatible BearSSL **2,048-byte RX / 512-byte TX**
 profile and shared IRAM. OTA destroys/releases Link first, then streams
 over separate verified HTTPS using **16,384-byte RX / 512-byte TX**; OTA
 artifacts never accumulate in RAM.
+
+ESP8266 runtime Link writes are cooperative: one complete masked WebSocket
+frame remains in the adapter's fixed TX workspace while BearSSL and lwIP accept
+bounded chunks. The device loop never waits for a peer TCP acknowledgement.
 
 The ESP8266 Link codec and configuration transaction use fixed frame, zcbor,
 decoded-record, and persistence workspaces. Runtime objects are restored before

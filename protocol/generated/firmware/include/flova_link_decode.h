@@ -70,6 +70,18 @@ int cbor_decode_bootstrap_error(
 		size_t *payload_len_out);
 
 
+int cbor_decode_datastream_bind(
+		const uint8_t *payload, size_t payload_len,
+		struct datastream_bind *result,
+		size_t *payload_len_out);
+
+
+int cbor_decode_datastream_bound(
+		const uint8_t *payload, size_t payload_len,
+		struct datastream_bound *result,
+		size_t *payload_len_out);
+
+
 int cbor_decode_heartbeat(
 		const uint8_t *payload, size_t payload_len,
 		struct heartbeat *result,

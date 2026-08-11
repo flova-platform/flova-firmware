@@ -7,6 +7,8 @@ type,name,direction,payload_type,reliability
 0x06,bootstrap_auth,device_to_engine,bootstrap-auth,session
 0x07,bootstrap_committed,engine_to_device,bootstrap-committed,durable
 0x08,bootstrap_error,engine_to_device,bootstrap-error,session
+0x09,datastream_bind,device_to_engine,datastream-bind,session
+0x0a,datastream_bound,engine_to_device,datastream-bound,session
 0x10,heartbeat,device_to_engine,heartbeat,best_effort
 0x11,state,device_to_engine,state,durable
 0x12,command_result,device_to_engine,command-result,durable

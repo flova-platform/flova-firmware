@@ -425,6 +425,13 @@ class Installer {
 
   size_t workspaceBytes() const { return sizeof(workspace_); }
 
+  // Board restore code may reuse the installer's single bounded record
+  // workspace instead of allocating a second 448-byte record buffer.
+  Record& workspace() { return workspace_; }
+  bool loadWorkspace(uint32_t generation, uint32_t sequence) {
+    return storage_.readRecord(generation, sequence, workspace_);
+  }
+
  private:
   enum class Phase : uint8_t { Idle, Receiving, Finalized, Committed };
 

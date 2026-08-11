@@ -10,6 +10,9 @@
 #include "FlovaOta.h"
 #include "FlovaBootControl.h"
 
+// Temporary Arduino-runtime compatibility surface. New board ports must use
+// FlovaCore.h and flova::Device; keep changes here limited to compatibility
+// while the ESP applications migrate to the standalone core.
 class FlovaDevice {
  public:
   FlovaDevice(FlovaTransport& transport, FlovaStorage& storage, FlovaClock& clock, FlovaLogger& logger)
@@ -81,7 +84,8 @@ class FlovaDevice {
 
  private:
   struct DatastreamState {
-    String key;
+    const char* key = nullptr;
+    DatastreamRuntime runtime = {FLOVA_INVALID_DATASTREAM_ID, 0, 0};
     String value;
     FlovaValueType type = FlovaValueType::String;
     FlovaDatastreamMode mode = FlovaDatastreamMode::State;
@@ -103,7 +107,7 @@ class FlovaDevice {
     void* readHandler = nullptr;
   };
   struct DigitalOutput {
-    String key;
+    uint8_t stateIndex = 0;
     uint8_t pin = 255;
     bool activeHigh = true;
     bool value = false;
@@ -111,12 +115,13 @@ class FlovaDevice {
     bool pendingValue = false;
     FlovaLinkId pendingCommandId = {};
     FlovaLinkId pendingCorrelationId = {};
+    FlovaValueOrigin pendingOrigin = FlovaValueOrigin::Unknown;
     uint32_t minOutputIntervalMs = 300;
     uint32_t lastAppliedMs = 0;
     uint32_t lastAppliedDesiredVersion = 0;
   };
   struct DigitalInput {
-    String key;
+    uint8_t stateIndex = 0;
     uint8_t pin = 255;
     bool activeHigh = true;
     uint32_t debounceMs = 50;
@@ -125,20 +130,20 @@ class FlovaDevice {
     uint32_t changedAt = 0;
   };
   struct AnalogInput {
-    String key;
+    uint8_t stateIndex = 0;
     uint8_t pin = 255;
     uint32_t sampleIntervalMs = 1000;
     uint32_t lastSampleMs = 0;
     bool sampled = false;
   };
   struct PwmOutput {
-    String key;
+    uint8_t stateIndex = 0;
     uint8_t pin = 255;
     double minimum = 0;
     double maximum = 100;
   };
   struct PendingBatchReading {
-    uint8_t stateIndex = 0;
+    DatastreamId datastreamId = FLOVA_INVALID_DATASTREAM_ID;
     uint32_t revision = 0;
     char value[FLOVA_TEXT_CAPACITY] = {};
   };
@@ -149,9 +154,12 @@ class FlovaDevice {
   bool publishHeartbeat();
   bool publishConfigurationState();
   bool reconnect();
-  bool datastreamAllowed(const char* key) const;
-  DatastreamState* stateFor(const char* key, FlovaValueType type, bool create);
-  const DatastreamState* stateFor(const char* key) const;
+  DatastreamState* stateForKey(const char* key, FlovaValueType type, bool create);
+  const DatastreamState* stateForKey(const char* key) const;
+  DatastreamState* stateForId(DatastreamId id);
+  const DatastreamState* stateForId(DatastreamId id) const;
+  bool prepareDatastreamBinding();
+  bool applyDatastreamBinding(const FlovaLinkInboundMessage& message);
   bool valueMatchesType(const String& value, FlovaValueType type) const;
   void updateState(DatastreamState& state, const String& value, FlovaValueOrigin origin, bool dirty);
   void persistState(const DatastreamState& state);
@@ -163,9 +171,16 @@ class FlovaDevice {
   void flushDirtyStates();
   FlovaWriteResult invokeWriteHandler(DatastreamState& state, const String& value,
                                       const FlovaLinkId& commandId = FlovaLinkId(),
-                                      const FlovaLinkId& correlationId = FlovaLinkId());
-  bool handleMappedWrite(const FlovaLinkId& commandId, const FlovaLinkId& correlationId, const String& key,
-                         const String& value, uint32_t desiredVersion);
+                                      const FlovaLinkId& correlationId = FlovaLinkId(),
+                                      FlovaValueOrigin origin = FlovaValueOrigin::Unknown,
+                                      uint32_t desiredVersion = 0,
+                                      bool* deferred = nullptr);
+  FlovaWriteResult applyWriteState(DatastreamState& state, const String& value, FlovaValueType type,
+                                   FlovaValueOrigin origin, const FlovaLinkId& commandId = FlovaLinkId(),
+                                   const FlovaLinkId& correlationId = FlovaLinkId(),
+                                   uint32_t desiredVersion = 0, bool acknowledgeCloud = false);
+  FlovaWriteResult reportValueState(DatastreamState& state, const String& value, FlovaValueType type,
+                                    FlovaValueOrigin origin);
   void handleConfiguration(const FlovaLinkConfigurationRecord& record);
   void handleOtaOffer(const FlovaLinkOtaOffer& offer);
   void processPendingOta();
@@ -180,7 +195,7 @@ class FlovaDevice {
   bool commandSeen(const FlovaLinkId& commandId) const;
   void rememberCommand(const FlovaLinkId& commandId);
   void acknowledgeDuplicateCommand(const FlovaLinkId& commandId, const FlovaLinkId& correlationId,
-                                   const String& key, const String& value);
+                                   DatastreamId id, const String& value);
   void requestTimeSync();
   void handleTimeSync(const FlovaLinkTimeResponse& response);
   void handleIngestionAck(const FlovaLinkAcknowledgement& acknowledgement);
@@ -190,9 +205,25 @@ class FlovaDevice {
   void runSchedules();
   void reportScheduleStatus(const char* status);
   void requestScheduleRenewal();
-  bool applyHardwareMapping(const char* key, const flova::config::HardwareMapping& mapping,
+  bool applyHardwareMapping(DatastreamId id, const flova::config::HardwareMapping& mapping,
                             double minimum = 0, double maximum = 100,
                             bool hasRange = false);
+
+  struct PendingConfiguration {
+    uint64_t messageId = 0;
+    uint32_t generation = 0;
+    uint32_t sequence = 0;
+    uint32_t recordCount = 0;
+    uint16_t schemaVersion = 0;
+    uint16_t maximumRecordBytes = 0;
+    uint8_t checksum[32] = {};
+    FlovaLinkConfigurationPhase phase = FlovaLinkConfigurationPhase::Begin;
+    uint8_t recordType = 0;
+    DatastreamId datastreamId = FLOVA_INVALID_DATASTREAM_ID;
+    char datastreamKey[FLOVA_LINK_TEXT_BYTES] = {};
+    uint16_t recordLength = 0;
+    uint8_t record[FLOVA_LINK_RECORD_BYTES] = {};
+  };
 
   FlovaTransport& transport_;
   FlovaStorage& storage_;
@@ -219,7 +250,6 @@ class FlovaDevice {
   uint32_t lastHeartbeatMs_ = 0;
   uint32_t bootNonce_ = 0;
   uint32_t lastReconnectMs_ = 0;
-  uint32_t lastCriticalRetryMs_ = 0;
   uint32_t batchSequence_ = 0;
   uint32_t batchQueuedAtMs_ = 0;
   uint32_t batchLastPublishedMs_ = 0;
@@ -256,7 +286,9 @@ class FlovaDevice {
   bool configurationApplyPending_ = false;
   bool configurationRuntimeDeferred_ = false;
   uint32_t configurationApplyingGeneration_ = 0;
-  FlovaLinkConfigurationRecord pendingConfiguration_ = {};
+  PendingConfiguration pendingConfiguration_ = {};
+  const char* bindingKeys_[FLOVA_DATASTREAM_CAPACITY] = {};
+  uint8_t bindingKeyCount_ = 0;
 };
 
 #include "FlovaDatastream.h"

@@ -23,5 +23,11 @@
 // delivery. Keep this compile-time controlled so production builds can remove
 // serial output without adding runtime state or heap usage.
 #ifndef FLOVA_DATASTREAM_LOGGING
-#define FLOVA_DATASTREAM_LOGGING 1
+#define FLOVA_DATASTREAM_LOGGING 0
+#endif
+
+// Runtime Link timing is intentionally off by default. ESP8266 serial output
+// is synchronous and changes the latency being measured.
+#ifndef FLOVA_LINK_PERFORMANCE_LOGGING
+#define FLOVA_LINK_PERFORMANCE_LOGGING 0
 #endif

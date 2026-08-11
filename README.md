@@ -1,52 +1,144 @@
-# Flova Firmware MVP
+# Flova Firmware SDK
 
-SDK-style PlatformIO firmware for the MVP vertical slice.
+Flova Firmware is a bounded, local-first device runtime for constrained boards.
+The portable SDK keeps datastream state, safety rules, persistence hooks,
+offline delivery, scheduling, provisioning, and board-independent protocol
+contracts separate from Arduino and ESP implementation details.
 
-- Core SDK: `packages/flova-device-sdk`
-- Arduino adapter: `packages/flova-arduino`
-- ESP8266 wrapper: `packages/flova-esp8266`
-- ESP32 wrapper: `packages/flova-esp32`
-- Universal firmware: `examples/universal-esp8266`, `examples/universal-esp32`
-- Typed API examples: `examples/datastream-api-esp8266`, `examples/datastream-api-esp32`
-- Portable C++11 custom-board example: `examples/custom-board-basic`
+This repository is currently an MVP/development codebase. The standalone
+`flova::Device` runtime is the canonical API for new board ports. Existing
+ESP32 and ESP8266 applications still use the older `FlovaDevice` compatibility
+surface while that runtime is being migrated; new functionality must target
+the standalone core.
 
-Start with the [.docs index](.docs/README.md) for architecture, API semantics, device-link behavior, and the validation matrix.
+## Architecture
 
-For STM32, RTOS, PLC, gateway, Ethernet, cellular, BLE, or LoRaWAN integrations, include `FlovaCore.h` and provide the four small link/storage/clock/logger services described in the [custom-board guide](.docs/custom-boards.md).
+```text
+flova-device-sdk   portable C++11 runtime and domain contracts
+        ↓
+flova-arduino      Arduino services and Device Link adapter
+        ↓
+flova-esp32/8266   board lifecycle, storage, networking, and hardware wiring
+        ↓
+examples/          selected firmware applications
+```
 
-Use `FlovaProvisioning.h` to adapt the Link v1 bootstrap and transactional session storage on custom boards. Clock synchronization and offline policy behavior are documented in [clock and offline data](.docs/clock-and-offline.md).
+The [codebase map](.docs/codebase-map.md) explains package ownership and the
+dependency direction. The root `src/` directory is only a PlatformIO source
+anchor; each environment selects its application from `examples/*/src`.
 
-On first boot the ESP starts a `Flova-*` SoftAP. The app posts Wi-Fi credentials and the Engine provision token to `http://192.168.4.1/provision`. Firmware then joins Wi-Fi and bootstraps over the same verified Flova Link v1 WSS protocol used at runtime. Engine streams `CONFIG_BEGIN`, bounded independently persisted `CONFIG_RECORD` values, and `CONFIG_END`; firmware validates and commits the inactive A/B generation before Engine redeems the token.
+## Repository layout
 
-The ESP8266 Link endpoint uses a bounded 4,096-byte BearSSL RX / 512-byte TX profile. Every binary WebSocket message is exactly one complete Flova Link frame, limited to 512 bytes including its fixed 12-byte header. OTA first disconnects Link, then uses its separate verified 16 KiB RX / 512-byte TX profile. Shared IRAM remains enabled for OTA headroom, and certificate/hostname verification is never disabled.
+- `packages/flova-device-sdk`: portable `flova::Device` SDK.
+- `packages/flova-arduino`: Arduino clock, storage, logging, TLS, OTA, and
+  Device Link services.
+- `packages/flova-esp32`, `packages/flova-esp8266`: board-specific wrappers.
+- `examples/universal-*`: universal ESP firmware applications.
+- `examples/datastream-api-*`: typed API compile contracts.
+- `examples/custom-board-basic`: normal-C++11 custom-board integration.
+- `protocol`: CDDL schema, generated codecs, and conformance vectors; see the
+  [protocol asset guide](protocol/README.md).
+- `scripts`: focused validation, generation, and PlatformIO integration tools;
+  see the [script guide](scripts/README.md).
+- `.docs`: maintained architecture, API, protocol, board-porting, and testing
+  documentation.
 
-Build:
+## Build the universal firmware
+
+From the repository root:
 
 ```sh
 pio run -e universal-esp32
 pio run -e universal-esp8266
 ```
 
-ESP32 transactional recovery is optional: build `universal-esp32-ab-4m` or
-`universal-esp32-ab-8m` to use the supplied A/B layouts and health-gated rollback.
+The ESP8266 Link profile uses verified BearSSL with 2,048-byte RX and
+512-byte TX buffers. Every WebSocket binary message contains exactly one
+complete Flova Link frame of at most 512 bytes, including its fixed 12-byte
+header. OTA disconnects Link first and uses a separate verified HTTPS profile
+with 16,384-byte RX and 512-byte TX buffers.
 
-OTA releases are managed by Engine and delivered over the authenticated device link. Universal ESP32/ESP8266 firmware downloads the immutable binary directly, verifies its SHA-256, installs it outside the link callback, reboots, and reports progress. See [`.docs/ota.md`](.docs/ota.md).
+## Portable board integration
 
-## Local-first datastreams
-
-`FlovaDevice::datastream<T>(key)` keeps a fixed-size local snapshot. `read()` only reads that cache; it never reads hardware or the network. `refresh()` calls the registered reader and reports its result. `report()` records an observed value without running an actuator handler. `write()` runs the same local handler used by remote writes, then updates and synchronizes the accepted state.
+A new board should include `FlovaCore.h`, implement four bounded services, and
+compose the runtime in its own application:
 
 ```cpp
-auto relay = flova.datastream<bool>("relay")
-  .mode(FlovaDatastreamMode::State)
-  .offline(FlovaOfflinePolicy::KeepLatest)
-  .persist(FlovaPersistencePolicy::Persistent);
+#include <FlovaCore.h>
 
-relay.onWrite([](bool enabled) {
-  if (enabled && tankEmpty()) return FlovaWriteResult::reject("dry_run_protection");
-  digitalWrite(RELAY_PIN, enabled ? HIGH : LOW);
-  return FlovaWriteResult::accept();
-});
+flova::Device device(link, storage, clock, logger);
+auto relay = device.datastream<bool>("relay")
+    .mode(flova::Mode::State)
+    .offline(flova::OfflinePolicy::KeepLatest)
+    .persist(flova::PersistencePolicy::Persistent);
+
+static flova::WriteResult writeRelay(bool enabled) {
+  // `writeBoardRelay` belongs to the board HAL, not the portable SDK.
+  return writeBoardRelay(enabled) ? flova::WriteResult::accept()
+                                  : flova::WriteResult::reject("hardware_write_failed");
+}
+
+int main() {
+  relay.onWrite(writeRelay);
+  if (!device.begin()) return 1;
+  for (;;) device.run();
+}
 ```
 
-State written while disconnected is applied locally and the newest value is sent after reconnect. Remote commands use this exact handler and publish a structured command result only after acceptance or rejection. Scheduled actions use the same handler and safety checks.
+The board supplies:
+
+- `flova::Link` for bounded structured messages and datastream binding;
+- `flova::Storage` for fixed-size records and capability reporting;
+- `flova::Clock` for monotonic time and optional UTC synchronization;
+- `flova::Logger` for bounded diagnostics.
+
+Provisioning, OTA, boot control, schedules, and hardware mappings are optional
+board services. Transport callbacks must queue bounded work; hardware writes
+run from the device loop. See [Custom boards](.docs/custom-boards.md) and the
+[custom-board example](examples/custom-board-basic/README.md).
+
+## Local-first datastream semantics
+
+`read()` reads only the local cache. `refresh()` invokes the registered reader.
+`report()` records an observation without invoking an actuator. `write()` uses
+the same handler as remote commands and updates the cache only after the
+hardware operation is accepted. Offline policies determine whether the newest
+state is retained, history is persisted, data is dropped, or delivery is
+rejected.
+
+## Device Link and provisioning
+
+Flova Link v1 is defined by
+[`protocol/flova-link-v1.cddl`](protocol/flova-link-v1.cddl). It uses
+deterministic bounded CBOR, generated zcbor codecs, fixed-size frames, numeric
+runtime datastream IDs, and streamed transactional configuration:
+
+```text
+CONFIG_BEGIN → CONFIG_RECORD* → CONFIG_END
+```
+
+The firmware persists and verifies records in the inactive A/B generation
+before acknowledging them, then promotes the generation atomically. See
+[Device Link](.docs/cloud-protocol.md) and
+[Provisioning](.docs/provisioning.md).
+
+## Validation
+
+Run the complete software validation set with:
+
+```sh
+cmake -S . -B /tmp/flova-core-build
+cmake --build /tmp/flova-core-build
+ctest --test-dir /tmp/flova-core-build --output-on-failure
+scripts/check_flova_link_contract.sh
+scripts/check_esp8266_stack_usage.py
+pio run -e universal-esp32 -e universal-esp8266
+pio run -e datastream-api-esp32 -e datastream-api-esp8266
+pio test -e test-esp32 -e test-esp8266 --without-uploading --without-testing
+pio test -e test-bootstrap-esp8266 --without-uploading --without-testing
+git diff --check
+```
+
+See [Testing and release checks](.docs/testing.md) for hardware acceptance.
+Software builds do not replace physical provisioning, WSS/TLS, reconnect, OTA,
+power-loss recovery, or ESP8266 memory-stability testing.

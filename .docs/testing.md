@@ -6,8 +6,7 @@ The repository currently uses PlatformIO compile contracts because both public w
 cmake -S . -B /tmp/flova-core-build
 cmake --build /tmp/flova-core-build
 ctest --test-dir /tmp/flova-core-build --output-on-failure
-scripts/lint_flova_link_cddl.sh
-scripts/check_flova_link_hot_path.sh
+scripts/check_flova_link_contract.sh
 pio run -e universal-esp32 -e universal-esp8266
 scripts/check_esp8266_stack_usage.py
 pio run -e datastream-api-esp32 -e datastream-api-esp8266
@@ -25,14 +24,12 @@ The board examples compile the typed APIs on ESP32 and ESP8266;
 `--without-uploading` verifies Unity test binaries, while connected boards
 execute them.
 
-`scripts/lint_flova_link_cddl.sh` rejects an unbounded, tagged, recursive, or
-generic CDDL contract and requires the depth-four profile declaration.
-`scripts/check_flova_link_hot_path.sh` scans the explicit Link/configuration
-paths and rejects ArduinoJson, runtime JSON, heap allocation, dynamic
-containers, generic CBOR trees, TLV, and legacy value decoders. Its allowlist
-has one exact-file/line format and is only for reviewed scaffolding outside the
-Link/configuration path; it must not preserve a legacy codec. Both checks must
-pass before claiming Link v1 conformance.
+`scripts/check_flova_link_contract.sh` is the stable combined entry point. It
+requires the depth-four, bounded, non-recursive CDDL profile and scans the
+explicit Link/configuration paths for ArduinoJson, runtime JSON, heap
+allocation, dynamic containers, generic CBOR trees, TLV, and legacy value
+decoders. Its focused subchecks remain available in `scripts/` when diagnosing
+a failure. Both checks must pass before claiming Link v1 conformance.
 
 The universal ESP8266 build emits compiler stack-usage records.
 `scripts/check_esp8266_stack_usage.py` rejects regressions in boot restore,
@@ -58,7 +55,7 @@ Keep WSS connected through network interruptions, deliver a 512-byte frame,
 reject a 513-byte frame, then begin OTA. Confirm Link releases its TLS workload
 before HTTPS begins, no Link/configuration hot-path operation allocates after
 transport setup, and failed reconnects do not leak memory. Release builds must
-use the 4,096/512 Link and 16,384/512 OTA profiles with the 16 KiB cache,
+use the 2,048/512 Link and 16,384/512 OTA profiles with the 16 KiB cache,
 48 KiB IRAM shared-second-heap option. Diagnostics must show DRAM and IRAM; a
 build without the required second heap must fail closed before connecting.
 

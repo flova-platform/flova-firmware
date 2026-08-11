@@ -6,8 +6,13 @@
 
 #include "FlovaBuildConfig.h"
 #include "FlovaConfigurationRuntime.h"
+#include "FlovaDatastreamId.h"
 #include "FlovaTypes.h"
 
+// Temporary Arduino-runtime transport surface. New board ports should
+// implement flova::Link from FlovaCore.h instead. This type remains only for
+// the current ESP application migration and must not become a second core
+// protocol abstraction.
 // The SDK deliberately exposes domain records, never a route or serialized
 // payload.  A platform Link implementation owns CBOR and the outer frame.
 static const size_t FLOVA_LINK_TEXT_BYTES = FLOVA_TEXT_CAPACITY;
@@ -29,6 +34,7 @@ enum class FlovaLinkMessageType : uint8_t {
   ConfigurationEnd,
   ConfigurationReport,
   BootstrapCommitted,
+  DatastreamBound,
   OtaOffer,
   OtaReport,
   ScheduleRecord,
@@ -63,7 +69,7 @@ struct FlovaLinkValue {
 };
 
 struct FlovaLinkStateReading {
-  uint16_t datastreamId;
+  DatastreamId datastreamId;
   FlovaLinkValue value;
   uint32_t revision;
 };
@@ -80,7 +86,7 @@ struct FlovaLinkCommand {
   FlovaLinkId correlationId;
   uint32_t configurationGeneration;
   uint32_t desiredVersion;
-  uint16_t datastreamId;
+  DatastreamId datastreamId;
   bool isUserCommand;
   // Zero means no expiry protection. A non-zero deadline requires a valid UTC
   // clock and is rejected before the application write handler is called.
@@ -93,7 +99,7 @@ struct FlovaLinkCommandResult {
   FlovaLinkId commandId;
   FlovaLinkId correlationId;
   uint32_t desiredVersion;
-  uint16_t datastreamId;
+  DatastreamId datastreamId;
   FlovaLinkResultStatus status;
   bool duplicate;
   FlovaLinkValue value;
@@ -119,7 +125,7 @@ struct FlovaLinkConfigurationRecord {
   uint8_t checksum[32];
   FlovaLinkConfigurationPhase phase;
   uint8_t recordType;
-  uint16_t datastreamId;
+  DatastreamId datastreamId;
   char datastreamKey[FLOVA_LINK_TEXT_BYTES];
   uint16_t recordLength;
   uint8_t record[FLOVA_LINK_RECORD_BYTES];
@@ -159,7 +165,9 @@ struct FlovaLinkOtaOffer {
   FlovaLinkId releaseId;
   char version[FLOVA_LINK_TEXT_BYTES];
   char firmwareTarget[FLOVA_LINK_TEXT_BYTES];
-  char url[FLOVA_LINK_RECORD_BYTES];
+  // The Arduino adapter already bounds all OTA text fields to the profile
+  // text capacity; retaining a record-sized URL here wastes persistent RAM.
+  char url[FLOVA_LINK_TEXT_BYTES];
   char sha256[FLOVA_LINK_TEXT_BYTES];
   uint32_t sizeBytes;
 };
@@ -225,6 +233,11 @@ struct FlovaLinkInboundMessage {
     FlovaLinkOtaOffer otaOffer;
     FlovaLinkScheduleRecord schedule;
     FlovaLinkTimeResponse timeResponse;
+    struct {
+      uint32_t generation;
+      uint8_t count;
+      DatastreamId ids[FLOVA_MAX_ACTIVE_DATASTREAMS];
+    } datastreamBound;
   } body;
 };
 
@@ -236,11 +249,9 @@ class FlovaTransport {
   virtual bool begin() = 0;
   virtual bool connected() = 0;
   virtual bool connect(const char* deviceId, const char* secret) = 0;
-  // Configuration-scoped identity stays at this domain edge. Keys are never
-  // carried in Flova Link CBOR state, command, or result records.
-  virtual bool datastreamIdForKey(const char* key, uint16_t& id) const = 0;
-  virtual bool datastreamKeyForId(uint32_t generation, uint16_t id, char* out,
-                                  size_t outSize) const = 0;
+  // Keys are declaration-time inputs only. The transport sends them once
+  // during the authenticated binding phase and never stores a name registry.
+  virtual bool setDatastreamKeys(const char* const* keys, uint8_t count) = 0;
   virtual void setConfigurationGeneration(uint32_t generation) = 0;
   virtual bool publishState(const FlovaLinkStateBatch& message) = 0;
   virtual bool publishCommandResult(const FlovaLinkCommandResult& message) = 0;
