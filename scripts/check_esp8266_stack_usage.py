@@ -11,6 +11,8 @@ LIMITS = (
     ("completeBootstrap", re.compile(r"completeBootstrap\("), 384),
     ("drainConfiguration", re.compile(r"drainConfiguration\("), 384),
     ("restoreActiveConfiguration", re.compile(r"restoreActiveConfiguration\(\)"), 256),
+    ("validateGeneration", re.compile(r"validateGeneration\("), 256),
+    ("applyGeneration", re.compile(r"applyGeneration\("), 256),
     ("processOta", re.compile(r"FlovaClient::processOta\(\)"), 512),
     ("ArduinoOtaInstaller::install", re.compile(r"ArduinoOtaInstaller::install\("), 768),
     ("sendDatastreamBinding", re.compile(r"sendDatastreamBinding\(\)"), 768),

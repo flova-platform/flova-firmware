@@ -11,13 +11,13 @@ namespace flova {
 static const size_t kDeviceIdBytes = 97;
 static const size_t kLinkUrlBytes = 193;
 static const size_t kSecretTextBytes = 65;
-static const size_t kWifiSsidBytes = 33;
-static const size_t kWifiPasswordBytes = 65;
 static const size_t kTemplateIdBytes = 37;
 static const size_t kChecksumTextBytes = 65;
 static const size_t kProvisionTokenBytes = 65;
 static const size_t kProvisioningErrorBytes = 48;
-static const uint16_t kConfigurationImageVersion = 1;
+// Fits the built-in 32-byte SSID plus 64-byte password representation while
+// keeping every persisted/runtime copy bounded on ESP8266.
+static const uint16_t kConfigurationImageVersion = 3;
 
 inline bool formatUuidText(const uint8_t (&bytes)[16], char* output,
                            size_t capacity) {
@@ -35,8 +35,6 @@ inline bool formatUuidText(const uint8_t (&bytes)[16], char* output,
 }
 
 struct DeviceConfiguration {
-  char wifiSsid[kWifiSsidBytes];
-  char wifiPassword[kWifiPasswordBytes];
   char deviceId[kDeviceIdBytes];
   char linkUrl[kLinkUrlBytes];
   char linkSecret[kSecretTextBytes];
@@ -45,9 +43,27 @@ struct DeviceConfiguration {
   uint32_t generation;
 };
 
+template <size_t N>
+inline bool copyBounded(const char* value, char (&out)[N], bool required = false) {
+  const size_t length = value ? strnlen(value, N) : 0;
+  if (length >= N || (required && length == 0)) return false;
+  if (length) memcpy(out, value, length);
+  out[length] = 0;
+  return true;
+}
+
 struct ProvisioningHandoff {
-  char wifiSsid[kWifiSsidBytes];
-  char wifiPassword[kWifiPasswordBytes];
+  char linkUrl[kLinkUrlBytes];
+  char token[kProvisionTokenBytes];
+
+  ProvisioningHandoff(const char* url = nullptr, const char* provisionToken = nullptr)
+      : linkUrl(), token() {
+    copyBounded(url, linkUrl);
+    copyBounded(provisionToken, token);
+  }
+};
+
+struct ProvisioningState {
   char linkUrl[kLinkUrlBytes];
   char token[kProvisionTokenBytes];
   char linkSecret[kSecretTextBytes];
@@ -55,7 +71,7 @@ struct ProvisioningHandoff {
 
 struct ProvisioningHandoffImage {
   uint16_t version;
-  ProvisioningHandoff handoff;
+  ProvisioningState handoff;
   uint8_t attempts;
   uint8_t inProgress;
   char lastError[kProvisioningErrorBytes];
@@ -78,21 +94,12 @@ inline ProvisioningBootMode provisioningBootMode(bool hasCredentials,
                            : ProvisioningBootMode::Bootstrap;
 }
 
-template <size_t N>
-inline bool copyBounded(const char* value, char (&out)[N], bool required = false) {
-  const size_t length = value ? strnlen(value, N) : 0;
-  if (length >= N || (required && length == 0)) return false;
-  if (length) memcpy(out, value, length);
-  out[length] = 0;
-  return true;
-}
-
 inline bool configurationValid(const DeviceConfiguration& config) {
-  return config.wifiSsid[0] && config.deviceId[0] &&
+  return config.deviceId[0] &&
          strncmp(config.linkUrl, "wss://", 6) == 0 && config.linkSecret[0];
 }
 
-inline uint32_t provisioningChecksum(const ProvisioningHandoff& handoff) {
+inline uint32_t provisioningChecksum(const ProvisioningState& handoff) {
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&handoff);
   uint32_t hash = 2166136261u;
   for (size_t i = 0; i < sizeof(handoff); ++i) {
@@ -102,12 +109,12 @@ inline uint32_t provisioningChecksum(const ProvisioningHandoff& handoff) {
   return hash;
 }
 
-inline bool provisioningValid(const ProvisioningHandoff& handoff) {
-  return handoff.wifiSsid[0] && handoff.token[0] && handoff.linkSecret[0] &&
+inline bool provisioningValid(const ProvisioningState& handoff) {
+  return handoff.token[0] && handoff.linkSecret[0] &&
          strncmp(handoff.linkUrl, "wss://", 6) == 0;
 }
 
-inline void makeProvisioningImage(const ProvisioningHandoff& handoff,
+inline void makeProvisioningImage(const ProvisioningState& handoff,
                                    ProvisioningHandoffImage& image) {
   // The facade may parse directly into image.handoff to avoid another
   // maximum-sized provisioning object on the ESP8266 stack.

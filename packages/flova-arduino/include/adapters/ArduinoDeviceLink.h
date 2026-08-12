@@ -127,6 +127,7 @@ class ArduinoDeviceLink final {
     if (!parseUuid(deviceId, deviceId_) || !decodeSecret(secret, secret_) || !parseUrl()) return false;
     disconnect();
     connectionAttemptFailed_ = false;
+    resourceUnavailable_ = false;
 #if defined(ESP8266)
     flova::TlsHeapStats heap;
     const flova::TlsResourceStatus resources = flova::tlsResourceStatus(flova::TlsUse::Link, &heap);
@@ -134,19 +135,14 @@ class ArduinoDeviceLink final {
     if (!trustAnchors_ || resources != flova::TlsResourceStatus::Ready) {
       Serial.printf("[flova] Link rejected reason=%s\n",
                     trustAnchors_ ? flova::tlsResourceError(resources) : "trust_anchors_unavailable");
+      resourceUnavailable_ = true;
       return false;
     }
 #endif
     if (!openConnection(false)) return false;
-    const uint32_t deadline = millis() + 10000;
-    while (static_cast<int32_t>(deadline - millis()) > 0) {
-      loop();
-      if (connected()) return true;
-      if (connectionAttemptFailed_) break;
-      delay(1);
-    }
-    disconnect();
-    return false;
+    // WebSocket authentication completes from loop(); do not stop the
+    // application's loop for up to ten seconds during startup/reconnect.
+    return true;
   }
 
   bool connectBootstrap(const char* token, const char* hardwareId,
@@ -160,6 +156,7 @@ class ArduinoDeviceLink final {
         !parseUrl()) return false;
     disconnect();
     connectionAttemptFailed_ = false;
+    resourceUnavailable_ = false;
 #if defined(ESP8266)
     flova::TlsHeapStats heap;
     const flova::TlsResourceStatus resources = flova::tlsResourceStatus(flova::TlsUse::Link, &heap);
@@ -167,11 +164,14 @@ class ArduinoDeviceLink final {
     if (!trustAnchors_ || resources != flova::TlsResourceStatus::Ready) {
       Serial.printf("[flova] Link bootstrap rejected reason=%s\n",
                     trustAnchors_ ? flova::tlsResourceError(resources) : "trust_anchors_unavailable");
+      resourceUnavailable_ = true;
       return false;
     }
 #endif
     return openConnection(true);
   }
+
+  bool resourceRecoveryRequired() const { return resourceUnavailable_; }
 
   void setConfigurationGeneration(uint32_t generation) {
     configurationGeneration_ = generation;
@@ -1228,6 +1228,7 @@ class ArduinoDeviceLink final {
   void* callbackContext_ = nullptr;
   bool disconnecting_ = false;
   bool connectionAttemptFailed_ = false;
+  bool resourceUnavailable_ = false;
   bool bootstrapErrorPending_ = false;
   uint8_t pendingFrames_[kPendingFrameSlots][kFrameBytes] = {};
   size_t pendingFrameLengths_[kPendingFrameSlots] = {};

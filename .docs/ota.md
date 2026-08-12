@@ -21,7 +21,9 @@ The offer includes `version`, `firmware_target`, `sha256`, `size_bytes`, and `ar
 - Final success requires a matching release/install heartbeat and a stable boot state. A candidate must publish an authenticated heartbeat and stay connected for 30 seconds; it is rolled back after a two-minute health deadline.
 
 OTA is staged by the board-owned Device Link service and executed from the
-board loop. Firmware binary data never travels through Device Link.
+board loop. Firmware binary data never travels through Device Link. Passive
+ESP SDK facades advertise OTA as unavailable until the application explicitly
+calls `enableOta()`; universal firmware enables it by policy.
 
 Before downloading, the shared runtime publishes `installing`, disconnects
 Device Link, and releases its TLS session. ESP8266 reuses the device's single
@@ -35,7 +37,7 @@ reporting `failed`; a missing or insufficient TLS memory profile reports
 An Arduino OTA service accepts the bounded `FlovaLinkOtaOffer` and returns a
 `flova::OtaInstallResult`. A custom board may implement the same operation with
 its platform updater. The board adapter owns HTTPS, flash writing, and any
-platform-specific rollback mechanics; `FlovaClient` owns offer validation,
+platform-specific rollback mechanics; the internal Arduino runtime owns offer validation,
 Link lifecycle reports, disconnect-before-download, and restart behavior.
 
 Custom boards that provide health-gated firmware rollback may add a bounded

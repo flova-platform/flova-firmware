@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <FlovaCore.h>
-#include <FlovaProvisioningHandoff.h>
+#include <FlovaWifiProvisioning.h>
 #include <unity.h>
 
 class TestLink final : public flova::Link {
@@ -99,7 +99,7 @@ static void test_rejected_hardware_write_does_not_change_state() {
   TEST_ASSERT_TRUE(device.begin());
   TEST_ASSERT_TRUE(relay.write(true).accepted());
   TEST_ASSERT_FALSE(relay.write(false).accepted());
-  TEST_ASSERT_TRUE(relay.read());
+  TEST_ASSERT_TRUE(relay.value());
   TEST_ASSERT_EQUAL_UINT8(2, hardwareWrites);
 }
 
@@ -158,18 +158,31 @@ static void test_provisioning_parser_is_bounded_and_rejects_duplicates() {
   const char valid[] =
       "{\"wifi_ssid\":\"lab\",\"wifi_password\":\"secret\","
       "\"link_url\":\"wss://engine.example/link\",\"token\":\"once\"}";
-  flova::ProvisioningHandoff handoff;
+  flova::ProvisioningHandoff input;
+  flova::WifiRuntimeData wifi = {};
   TEST_ASSERT_TRUE(
-      flova::parseProvisioningHandoff(valid, strlen(valid), handoff));
-  TEST_ASSERT_EQUAL_STRING("lab", handoff.wifiSsid);
+      flova::parseWifiProvisioningHandoff(valid, strlen(valid), input, &wifi));
+  TEST_ASSERT_TRUE(flova::validWifiRuntimeData(wifi));
+  TEST_ASSERT_EQUAL_STRING("lab", wifi.ssid);
+  TEST_ASSERT_EQUAL_STRING("wss://engine.example/link", input.linkUrl);
 
   const char duplicate[] =
       "{\"wifi_ssid\":\"lab\",\"wifi_ssid\":\"other\","
       "\"link_url\":\"wss://engine.example/link\",\"token\":\"once\"}";
   TEST_ASSERT_FALSE(
-      flova::parseProvisioningHandoff(duplicate, strlen(duplicate), handoff));
+      flova::parseWifiProvisioningHandoff(duplicate, strlen(duplicate), input));
   TEST_ASSERT_FALSE(
-      flova::parseProvisioningHandoff(valid, strlen(valid) - 1, handoff));
+      flova::parseWifiProvisioningHandoff(valid, strlen(valid) - 1, input));
+  const char nested[] =
+      "{\"wrapper\":{\"wifi_ssid\":\"lab\"},"
+      "\"link_url\":\"wss://engine.example/link\",\"token\":\"once\"}";
+  TEST_ASSERT_FALSE(
+      flova::parseWifiProvisioningHandoff(nested, strlen(nested), input));
+  const char trailing[] =
+      "{\"wifi_ssid\":\"lab\",\"link_url\":\"wss://engine.example/link\","
+      "\"token\":\"once\",}";
+  TEST_ASSERT_FALSE(
+      flova::parseWifiProvisioningHandoff(trailing, strlen(trailing), input));
 }
 
 void setup() {

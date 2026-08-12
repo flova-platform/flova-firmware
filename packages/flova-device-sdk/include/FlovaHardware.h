@@ -10,7 +10,9 @@ class Hardware {
  public:
   virtual ~Hardware() {}
   virtual void attach(Device& device) = 0;
+  virtual bool validate(const config::Unit&) { return true; }
   virtual bool apply(const config::Unit& unit) = 0;
+  virtual void failSafe() {}
   virtual void run() = 0;
   virtual void setConnected(bool connected) = 0;
 };

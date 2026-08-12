@@ -113,6 +113,10 @@ class ArduinoFlovaLink : public FlovaClientLink {
     return configurationGeneration_;
   }
 
+  bool resourceRecoveryRequired() const override {
+    return resourceUnavailable_ || transport_.resourceRecoveryRequired();
+  }
+
   void disconnect() { transport_.disconnect(); }
 
 #if defined(ESP8266)
@@ -121,9 +125,8 @@ class ArduinoFlovaLink : public FlovaClientLink {
 
   bool begin() override {
     if (!ensureTransport()) return false;
-    // ArduinoDeviceLink keeps the established link non-blocking after this
-    // bounded connection/authentication phase. Application work is still
-    // performed only from FlovaClient::run().
+    // Socket/TLS setup starts here; WebSocket authentication and binding
+    // continue cooperatively from poll(). Application work remains in run().
     const bool connectedNow = transport_.connect(deviceIdText_, secretText_);
     nextReconnectAt_ = millis() + (connectedNow ? 5000UL : 1000UL);
     // A temporary Wi-Fi/TLS failure must not make application setup
@@ -227,11 +230,15 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   bool ensureTransport() {
+    resourceUnavailable_ = false;
     if (!configured_ && !transport_.configure(url_)) return false;
 #if defined(ESP8266)
     if (!trustAnchors_) {
       trustAnchors_ = new (std::nothrow) BearSSL::X509List(FLOVA_TLS_ROOT_CERTS);
-      if (!trustAnchors_) return false;
+      if (!trustAnchors_) {
+        resourceUnavailable_ = true;
+        return false;
+      }
       transport_.setTrustAnchors(*trustAnchors_);
     }
 #endif
@@ -270,6 +277,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
     output = FlovaLinkValue();
     switch (value.type) {
       case flova::ValueType::Boolean: output.kind = FlovaLinkValueKind::Bool; output.data.boolean = value.scalar.boolean; return true;
+      case flova::ValueType::Int64: output.kind = FlovaLinkValueKind::Int64; output.data.integer = value.scalar.integer; return true;
       case flova::ValueType::Float: output.kind = FlovaLinkValueKind::Float32; output.data.float32 = value.scalar.floating; return true;
       case flova::ValueType::Double: output.kind = FlovaLinkValueKind::Float64; output.data.float64 = value.scalar.number; return true;
       case flova::ValueType::Text:
@@ -284,10 +292,10 @@ class ArduinoFlovaLink : public FlovaClientLink {
   static bool fromLinkValue(flova::Value& output, const FlovaLinkValue& value) {
     switch (value.kind) {
       case FlovaLinkValueKind::Bool: output = flova::Value::from(value.data.boolean); return true;
+      case FlovaLinkValueKind::Int64: output = flova::Value::from(value.data.integer); return true;
       case FlovaLinkValueKind::Float32: output = flova::Value::from(value.data.float32); return true;
       case FlovaLinkValueKind::Float64: output = flova::Value::from(value.data.float64); return true;
       case FlovaLinkValueKind::Text: output = flova::Value::from(value.data.text); return true;
-      case FlovaLinkValueKind::Int64: return false;
     }
     return false;
   }
@@ -383,6 +391,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
   bool bootstrapCommittedPending_ = false;
   bool configurationPending_ = false;
   bool otaPending_ = false;
+  bool resourceUnavailable_ = false;
   uint32_t nextReconnectAt_ = 0;
   uint32_t configurationGeneration_ = 0;
   uint32_t messageNonce_;

@@ -201,6 +201,7 @@ class ScheduleRuntime {
   static void mixText(uint32_t& hash, const char* value) { while (value && *value) { hash ^= static_cast<uint8_t>(*value++); hash *= 16777619UL; } }
   static void mixValue(uint32_t& hash, const Value& value) {
     if (value.type == ValueType::Boolean) mix(hash, value.scalar.boolean);
+    else if (value.type == ValueType::Int64) mix64(hash, static_cast<uint64_t>(value.scalar.integer));
     else if (value.type == ValueType::Float) { uint32_t raw; memcpy(&raw, &value.scalar.floating, sizeof(raw)); mix(hash, raw); }
     else if (value.type == ValueType::Double) { uint64_t raw; memcpy(&raw, &value.scalar.number, sizeof(raw)); mix64(hash, raw); }
     else mixText(hash, value.text);
@@ -259,8 +260,8 @@ class ScheduleChunkCompiler {
     target.occurrenceCount = 0;
     occurrenceChunkCount_[slot] = 0;
     for (uint8_t i = 0; i < source.actionCount; ++i) {
-      if (source.actions[i].value.kind == config::ValueKind::Int64) return false;
       target.actions[i].value = source.actions[i].value.kind == config::ValueKind::Boolean ? Value::from(source.actions[i].value.data.boolean) :
+                                  source.actions[i].value.kind == config::ValueKind::Int64 ? Value::from(source.actions[i].value.data.integer) :
                                   source.actions[i].value.kind == config::ValueKind::Float32 ? Value::from(source.actions[i].value.data.float32) :
                                   source.actions[i].value.kind == config::ValueKind::Float64 ? Value::from(source.actions[i].value.data.float64) : Value::from(source.actions[i].value.data.text);
       if (!flovaValidDatastreamId(source.actions[i].datastreamId)) return false;

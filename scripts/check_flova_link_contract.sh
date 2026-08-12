@@ -11,5 +11,6 @@ esac
 "$repo_dir/scripts/lint_flova_link_cddl.sh"
 if [ "$mode" = all ]; then
   "$repo_dir/scripts/check_flova_link_hot_path.sh"
+  "$repo_dir/scripts/check_passive_esp_ownership.sh"
 fi
 echo "Flova Link contract checks passed"

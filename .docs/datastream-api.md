@@ -1,84 +1,87 @@
 # Datastream API
 
-Create a typed handle from an explicit board wrapper:
+Create a typed handle from the explicit board object:
 
 ```cpp
+FlovaEsp8266 flova;
 auto temperature = flova.datastream<float>("temperature");
 auto relay = flova.datastream<bool>("relay");
+auto status = flova.datastream<flova::Text>("status");
 ```
 
-Supported codecs are `bool`, `float`, `double`, and Arduino `String`.
+Supported types are `bool`, `int64_t`, `float`, `double`, and bounded
+`flova::Text`. Text longer than the configured capacity is rejected with
+`text_too_long`; it is never silently truncated. Keys are resolved to Engine-assigned numeric IDs during
+configuration or binding; normal runtime traffic uses only those IDs.
 
-## Operations
+## Write, report, and read
 
-- `read()` returns the latest cached value and returns the type's default value before initialization. Use `hasValue()` when initialization matters.
-- `snapshot()` adds origin, quality, revision, update time, stale, and dirty metadata.
-- `report(value)` records an observed value without invoking an actuator.
-- `refresh()` invokes `onRead`, then reports a successful result.
-- `write(value)` invokes `onWrite`; only accepted/no-change results can become authoritative state.
-- `publishEvery(milliseconds)` coalesces reports to the latest value until the interval is due.
+`write(value)` requests a state change through `onWrite`. Local, remote,
+scheduled, and mapped writes use this same path. Cache, revision, persistence,
+and outbound state change only after the handler accepts the operation.
 
 ```cpp
-temperature.onRead([]() {
-  if (!sensor.available()) return FlovaReadResult<float>::error("sensor_unavailable");
-  return FlovaReadResult<float>::success(sensor.readCelsius());
-});
-
 relay.onWrite([](bool enabled) {
-  if (enabled && emergencyStop()) return FlovaWriteResult::reject("emergency_stop");
   digitalWrite(RELAY_PIN, enabled ? HIGH : LOW);
-  return FlovaWriteResult::accept();
 });
 
-temperature.publishEvery(5000);
+relay.write(true);
 ```
 
-Single-reading publication remains the default. Applications with several
-readings due together may opt in once per device with
-`flova.enableStateBatching(32, 100)`. Batches never exceed 32 readings or the
-negotiated Device Link frame-size limit; event-mode datastreams bypass batching.
-
-## Modes
-
-Modes describe delivery meaning, not data type:
-
-- `State`: the latest durable/current value matters.
-- `Sample`: any device-observed time-series value; it can be numeric, boolean, or textual.
-- `Command`: an imperative operation that must not be replayed later.
-- `Event`: a point-in-time occurrence with identity.
-
-`Sample` is intentionally generic. A status string, counter, or sensor value can all be samples.
-
-## Offline and persistence
-
-`KeepLatest` applies writes locally and coalesces the newest unsynchronized state. `Drop` keeps local cache but does not queue network publication. `Reject` and bounded `StoreHistory` are reserved public policies; full history storage is a follow-up.
-
-Persistence is opt-in:
+A `void` handler is accepted automatically. Return a result when application
+validation can reject the operation:
 
 ```cpp
-auto relay = flova.datastream<bool>("relay")
-  .mode(FlovaDatastreamMode::State)
-  .offline(FlovaOfflinePolicy::KeepLatest)
-  .persist(FlovaPersistencePolicy::Persistent);
+relay.onWrite([](bool enabled) -> flova::WriteResult {
+  if (enabled && emergencyStop()) return flova::reject("emergency_stop");
+  digitalWrite(RELAY_PIN, enabled ? HIGH : LOW);
+  return flova::accept();
+});
 ```
 
-Persistence restores cache only. It does not energize an actuator at boot. Product firmware must explicitly choose and implement safe hardware restoration.
+`report(value)` records an observation without invoking `onWrite`. Use it for
+sensors, physical inputs, external controllers, or hardware controlled directly
+by application code:
 
-Complete board examples live in `examples/datastream-api-esp32` and `examples/datastream-api-esp8266`.
+```cpp
+temperature.report(readTemperature());
+
+digitalWrite(RELAY_PIN, HIGH);
+relay.report(true, flova::Origin::PhysicalInput);
+```
+
+`value()` returns the latest cached value. Use `hasValue()` when an initialized
+value must be distinguished from the type's default. `snapshot()` adds origin,
+quality, revision, update time, and unsynchronized-state metadata. `bound()`
+reports whether the key has a numeric runtime binding.
+
+## Offline and custom logic
+
+Local `write()` and `report()` calls normally continue to work without
+connectivity. The installed delivery policy decides whether state is
+synchronized later. `OfflinePolicy::Reject` is the explicit exception and
+returns `offline_delivery_required` before changing hardware or cached state.
+
+An unbound datastream remains usable as local state but produces no cloud
+traffic. Configuration and inbound runtime values with the wrong type are
+rejected before application or hardware handlers run. Application variables
+and pins need no datastream unless they should be visible to Flova.
+
+Advanced portable integrations may set local mode, offline retention, history,
+and persistence policies on `flova::Datastream<T>`. Normal ESP applications
+should use the configuration installed by Engine and only call `write()`,
+`report()`, and `onWrite()`.
+
 ## Hardware mappings
 
-Universal ESP32 and ESP8266 firmware automatically binds the template hardware
-mapping kinds `digital_input`, `digital_output`, `analog_input`, and
-`pwm_output`.
+Universal ESP32 and ESP8266 firmware binds template mappings for
+`digital_input`, `digital_output`, `analog_input`, and `pwm_output`. Custom
+applications and board ports keep ownership of their HAL and bind behavior with
+`onWrite()` or report externally applied state with `report()`.
 
 - Analog inputs publish the board's raw ADC count at `sample_interval_ms`.
-- PWM outputs accept any numeric range declared by the datastream's
-  `min_value` and `max_value`. The default range is 0–100. Firmware maps the
-  value linearly to the target's native PWM duty range, so a template may use
-  0–255 or 0–1023 when raw duty values are more useful.
-- Commands outside the declared PWM range are rejected without changing the
-  cached state or hardware output.
+- PWM outputs accept the configured numeric range and map it to native duty.
+- Out-of-range commands are rejected without changing hardware or cached state.
 
-Custom-board ports do not receive automatic GPIO bindings. Their pin string is
-an opaque, firmware-owned identifier. Bind the typed datastream with `onRead`
-or `onWrite` and interpret that identifier in the board port.
+Complete compile contracts live in `examples/datastream-api-esp32` and
+`examples/datastream-api-esp8266`.

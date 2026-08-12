@@ -24,12 +24,14 @@ the generated diff and run the native protocol tests afterward. Never edit
 ```sh
 scripts/check_flova_link_contract.sh
 scripts/check_flova_layers.sh
+scripts/check_passive_esp_ownership.sh
 scripts/check_esp8266_stack_usage.py
 ```
 
 The Link guard rejects unbounded schema and allocating codec/configuration hot
 paths. The layer guard keeps platform APIs and legacy runtimes out of the
-portable SDK. The stack guard consumes PlatformIO `-fstack-usage` output from
+portable SDK. The passive-ownership guard prevents the normal ESP facade from
+taking over networking, servers, GPIO, clock policy, or reboot. The stack guard consumes PlatformIO `-fstack-usage` output from
 `universal-esp8266` and fails when critical continuation-stack frames grow.
 
 Python bytecode, caches, build output, and PlatformIO output are ignored by

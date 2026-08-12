@@ -50,10 +50,12 @@ class TestLogger : public flova::Logger { public: void log(const char*) override
 
 static int writes;
 static int numericWrites;
+static int voidWrites;
 static bool reject;
-static flova::WriteResult writeRelay(bool) { writes++; return reject ? flova::WriteResult::reject("safety_lock") : flova::WriteResult::accept(); }
+static bool noChange;
+static flova::WriteResult writeRelay(bool) { writes++; return reject ? flova::WriteResult::reject("safety_lock") : noChange ? flova::WriteResult::noChange() : flova::WriteResult::accept(); }
 static flova::WriteResult writeSetpoint(double) { numericWrites++; return flova::WriteResult::accept(); }
-static flova::ReadResult<float> readTemperature() { return flova::ReadResult<float>::success(31.5f); }
+static void writeCounter(int64_t) { voidWrites++; }
 
 class SessionStorage : public flova::Storage { public: flova::ProvisioningSession session; bool present = false; bool read(const char* key, void* out, size_t size) override { if (!present || strcmp(key, "session") || size != sizeof(session)) return false; memcpy(out, &session, size); return true; } bool write(const char* key, const void* value, size_t size) override { if (!strcmp(key, "session") && size == sizeof(session)) { memcpy(&session, value, size); present = true; } return true; } bool remove(const char*) override { return true; } };
 class TestEngine : public flova::LinkBootstrapClient { public: bool beginBootstrap(const flova::ProvisioningRequest&) override { return true; } flova::ProvisioningPoll poll(flova::ProvisioningSession& out) override { out.schemaVersion = 1; flova::Value::copy(out.deviceId, "device-1"); flova::Value::copy(out.linkUrl, "wss://link.example/api/device-link"); flova::Value::copy(out.secret, "device-secret"); out.serverUtcMs = 100000; return flova::ProvisioningPoll::Complete; } };
@@ -119,21 +121,34 @@ int main() {
   flova::Datastream<bool> relay = device.datastream<bool>("relay");
   flova::Datastream<float> temperature = device.datastream<float>("temperature");
   flova::Datastream<double> setpoint = device.datastream<double>("setpoint");
+  flova::Datastream<int64_t> counter = device.datastream<int64_t>("counter");
+  flova::Datastream<flova::Text> status = device.datastream<flova::Text>("status");
   setpoint.onWrite(writeSetpoint);
-  relay.onWrite(writeRelay); temperature.mode(flova::Mode::Sample).onRead(readTemperature); assert(device.begin());
+  counter.onWrite(writeCounter);
+  relay.onWrite(writeRelay);
+  assert(!relay.bound());
+  assert(temperature.report(31.5f).accepted() && link.sends == 0);
+  assert(device.begin());
+  assert(relay.bound() && counter.bound());
 
-  assert(!temperature.hasValue() && temperature.read() == 0.0f);
-  assert(temperature.refresh().ok && temperature.read() == 31.5f);
-  assert(relay.write(false).accepted()); reject = true; assert(!relay.write(true).accepted() && relay.read() == false);
+  assert(temperature.hasValue() && temperature.value() == 31.5f);
+  assert(counter.write(INT64_MAX).accepted() && counter.value() == INT64_MAX && voidWrites == 1);
+  assert(status.report("ready").accepted() && !strcmp(status.value().c_str(), "ready"));
+  char longText[flova::kMaxText + 8]; memset(longText, 'x', sizeof(longText)); longText[sizeof(longText) - 1] = 0;
+  assert(!status.report(longText).accepted());
+  assert(relay.write(false).accepted()); reject = true; assert(!relay.write(true).accepted() && relay.value() == false);
+  reject = false; noChange = true; assert(relay.write(true).accepted() && relay.value()); noChange = false; assert(relay.write(false).accepted());
 
-  reject = false; flova::Message command; command.kind = flova::MessageKind::WriteRequest; command.datastreamId = 1; flova::Value::copy(command.commandId, "cmd-1"); command.value = flova::Value::from(true); command.revision = 1; command.origin = flova::Origin::UserCommand;
-  int before = writes; link.inject(command); assert(writes == before + 1 && relay.read()); assert(link.last.kind == flova::MessageKind::Acknowledgement);
+  flova::Message command; command.kind = flova::MessageKind::WriteRequest; command.datastreamId = 1; flova::Value::copy(command.commandId, "cmd-1"); command.value = flova::Value::from(true); command.revision = 1; command.origin = flova::Origin::UserCommand;
+  int before = writes; link.inject(command); assert(writes == before + 1 && relay.value()); assert(link.last.kind == flova::MessageKind::Acknowledgement);
   link.inject(command); assert(writes == before + 1);  // stale retry is acknowledged without hardware.
   command.revision = 0; link.inject(command); assert(writes == before + 1);  // command ID also deduplicates imperative writes.
   command.datastreamId = 99; flova::Value::copy(command.commandId, "cmd-2"); link.inject(command); assert(link.last.kind == flova::MessageKind::Error && strcmp(link.last.reason, "unknown_datastream") == 0);
+  command.datastreamId = 1; command.revision = 2; command.value = flova::Value::from(1.0f); flova::Value::copy(command.commandId, "cmd-wrong-type"); link.inject(command); assert(writes == before + 1 && link.last.kind == flova::MessageKind::Error && strcmp(link.last.reason, "type_mismatch") == 0);
 
-  link.online = false; assert(relay.write(false).accepted()); assert(relay.write(true).accepted()); int sends = link.sends;
-  link.online = true; device.run(); assert(link.sends == sends + 2 && link.last.value.scalar.boolean);  // time request, then dirty state
+  link.online = false; relay.offline(flova::OfflinePolicy::Reject); assert(!relay.write(false).accepted()); assert(!relay.write(true).accepted()); int sends = link.sends;
+  assert(relay.value());
+  link.online = true; device.run(); assert(link.sends > sends);
   link.acknowledge(link.last.messageId);
 
   flova::HistoryRetentionPolicy retention; retention.maximumRecords = 2;
@@ -150,6 +165,20 @@ int main() {
   InvalidBindingLink invalidLink; flova::Device invalidDevice(invalidLink, maximumStorage, maximumClock, maximumLogger); invalidDevice.datastream<bool>("invalid"); assert(!invalidDevice.begin());
   DuplicateBindingLink duplicateLink; flova::Device duplicateDevice(duplicateLink, maximumStorage, maximumClock, maximumLogger); duplicateDevice.datastream<bool>("duplicate"); duplicateDevice.datastream<bool>("duplicate-two"); assert(!duplicateDevice.begin());
   AsyncBindingLink asyncLink; flova::Device asyncDevice(asyncLink, maximumStorage, maximumClock, maximumLogger); flova::Datastream<bool> asyncDatastream = asyncDevice.datastream<bool>("async"); asyncDatastream.onWrite(writeRelay); assert(asyncDevice.begin() && !asyncDevice.ready()); asyncDevice.run(); assert(asyncDevice.ready() && asyncDatastream.write(true).accepted());
+
+  TestLink defaultHistoryLink; TestStorage defaultHistoryStorage;
+  TestClock defaultHistoryClock; TestLogger defaultHistoryLogger;
+  flova::Device defaultHistoryDevice(defaultHistoryLink, defaultHistoryStorage,
+                                     defaultHistoryClock,
+                                     defaultHistoryLogger);
+  flova::Datastream<float> defaultHistory =
+      defaultHistoryDevice.datastream<float>("default-history");
+  defaultHistory.offline(flova::OfflinePolicy::StoreHistory);
+  assert(defaultHistoryDevice.begin());
+  defaultHistoryLink.online = false;
+  assert(defaultHistory.report(42.0f).accepted());
+  assert(defaultHistoryDevice.diagnostics().droppedHistory == 0);
+  assert(defaultHistoryDevice.diagnostics().storageFailures == 0);
 
   flova::config::Unit configuredDatastream;
   configuredDatastream.kind = flova::config::UnitKind::Datastream;

@@ -37,33 +37,34 @@ geometry, write granularity, persistence, and wear sensitivity. Configure a
 `ResourceBudget` array before `Device::begin()`; history receives no implicit
 budget. This makes unsupported storage fail closed instead of filling flash.
 
-The portable core does not own Wi-Fi or provisioning. The Arduino ESP facade
-offers both app-managed static credentials and an optional board-wrapper
-provisioning lifecycle. ESP32 and ESP8266 board packages own the SoftAP,
-local HTTP endpoints, and durable handoff storage.
+The portable core does not own Wi-Fi or provisioning. The normal Arduino ESP
+facade observes application-managed connectivity and stores only Flova-private
+identity/configuration. The full-device universal composition separately owns
+SoftAP, its local HTTP server, Wi-Fi credential storage, GPIO, OTA, and restart
+policy. Every alternate setup channel ultimately supplies the same bounded
+`ProvisioningHandoff`, so no Wi-Fi fields leak into the channel-neutral SDK.
 
 ## Arduino ESP client
 
-For an ESP32 or ESP8266 Arduino project that already owns its Wi-Fi and GPIO,
+For an ESP32 or ESP8266 Arduino project that owns its GPIO and application logic,
 include one public header:
 
 ```cpp
 #include <FlovaEsp32.h>
 
-const FlovaClientConfig config = {
-    "device-uuid", "base64url-secret", "wss://engine.example/api/device-link"};
-FlovaEsp32 flova(config);
-flova::Datastream<bool> led = flova.datastream<bool>("LED");
+FlovaEsp32 flova;
+auto led = flova.datastream<bool>("LED");
 
 static flova::WriteResult writeLed(void* context, bool value) {
   digitalWrite(*static_cast<uint8_t*>(context), value ? HIGH : LOW);
-  return flova::WriteResult::accept();
+  return flova::accept();
 }
 
 void setup() {
+  WiFi.begin("your-wifi", "your-password");
   static uint8_t pin = LED_BUILTIN;
   pinMode(pin, OUTPUT);
-  led.mode(flova::Mode::Command).onWrite(writeLed, &pin);
+  led.onWrite(writeLed, &pin);
   flova.begin();
 }
 
@@ -71,14 +72,54 @@ void loop() { flova.run(); }
 ```
 
 `FlovaEsp32` and `FlovaEsp8266` are explicit board compositions over the same
-typed facade. Include the matching board header; the shared facade does not
+typed application API. Include the matching board header; shared code does not
 inspect `ESP32` or `ESP8266` macros. Datastream names are declared by the
 application and resolved to the Engine's numeric IDs during the authenticated
 binding handshake. The handler receives a context pointer, runs from
 `flova.run()`, and may safely own the board's GPIO or application state.
-Passing `FlovaProvisioningConfig` enables persisted credentials, automatic
-setup AP fallback, and `startProvisioning()` for factory reset or
-re-provisioning.
+`begin()` restores persisted Flova identity or enters `AwaitingProvisioning`.
+It never opens a setup AP. `startProvisioning()` remains available for a
+deliberate factory reset, but the application decides how its setup channel and
+network behave.
+
+To replace the setup channel, implement the small `FlovaProvisioningAdapter`
+callbacks and use the borrowed-service runtime:
+
+```cpp
+FlovaEsp32Storage storage;
+FlovaEsp32Entropy entropy;
+ArduinoFlovaLink link(entropy);
+ArduinoFlovaClock clock;
+ArduinoFlovaLogger logger;
+ArduinoFlovaHardware hardware;
+MyProvisioningAdapter provisioning;
+FlovaClient flova(link, provisioning, storage, clock, logger, entropy, hardware);
+```
+
+The adapter calls the supplied `FlovaProvisioningHandler` after decoding its
+channel into `flova::ProvisioningHandoff`. Channel-specific runtime data stays
+inside that adapter rather than being interpreted by the core.
+
+`FlovaClient` owns no default Link, SoftAP, or provisioning implementation.
+The application initializes its storage service before `flova.begin()` and
+keeps every borrowed service alive for the lifetime of the client. A custom
+Link implements `FlovaClientLink`; no second transport abstraction is required.
+
+Restart and OTA handling are explicit in this tier. Register
+`setRestartHandler(...)` to perform a platform reset automatically, or poll
+`restartRequired()` and `restartReason()` and reset at an application-safe
+time. OTA installation is disabled unless the application calls
+`enableOta()`. Universal firmware enables OTA and installs its automatic
+restart handler.
+
+Factory tooling and custom setup channels pass the same product-independent
+handoff; device identity and secret are not compiled into the binary:
+
+```cpp
+flova::ProvisioningHandoff handoff(
+    "wss://engine.example/api/device-link", shortLivedToken);
+flova.provision(handoff);
+```
 
 Custom ports set the required `FLOVA_*_CAPACITY` values in their build profile.
 Those macros describe fixed memory layout only; runtime behavior belongs in
@@ -119,6 +160,7 @@ Flova validates only that the identifier is non-empty and bounded. Unlike the
 universal ESP32 and ESP8266 targets, the custom-board runtime does not
 automatically call GPIO APIs.
 
-Use the typed datastream API to bind the identifier to the board HAL. This
+Use `onWrite()` to bind the typed datastream to the board HAL, or control the
+HAL independently and call `report()` afterward. This
 keeps the cloud contract numeric or boolean while the port controls native ADC
 resolution, PWM resolution, safety checks, and actual peripherals.

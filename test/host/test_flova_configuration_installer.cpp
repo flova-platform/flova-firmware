@@ -171,6 +171,11 @@ void appendAll(Installer& installer, uint32_t generation, uint32_t count) {
     assert(installer.record(record(generation, i, static_cast<uint8_t>(20 + i))).status == Status::Accepted);
 }
 
+void finish(Installer& installer, const Begin& transaction) {
+  assert(installer.end(end(transaction)).status == Status::Accepted);
+  assert(installer.promote(transaction.generation));
+}
+
 void testInterruptedTransferLeavesActiveUntouched() {
   TestConfigurationStorage storage;
   Installer installer(storage, kTestRecords);
@@ -184,7 +189,7 @@ void testInterruptedTransferLeavesActiveUntouched() {
   Installer restarted(storage, kTestRecords);
   assert(restarted.begin(transaction).status == Status::Accepted);
   appendAll(restarted, 1, 3);
-  assert(restarted.end(end(transaction)).status == Status::Accepted);
+  finish(restarted, transaction);
   assert(storage.activeGeneration(active) && active == 1);
 }
 
@@ -220,7 +225,7 @@ void testStaleGenerationRejected() {
   Begin first = begin(2, 1);
   assert(installer.begin(first).accepted());
   appendAll(installer, 2, 1);
-  assert(installer.end(end(first)).accepted());
+  finish(installer, first);
   Installer next(storage, kTestRecords);
   assert(next.begin(begin(1, 1)).status == Status::StaleGeneration);
   assert(next.begin(begin(2, 1)).status == Status::AlreadyCommitted);
@@ -232,7 +237,7 @@ void testCommittedGenerationReplayIsIdempotent() {
   Begin transaction = begin(1, 2);
   assert(first.begin(transaction).accepted());
   appendAll(first, 1, 2);
-  assert(first.end(end(transaction)).status == Status::Accepted);
+  finish(first, transaction);
 
   Installer replay(storage, kTestRecords);
   assert(replay.begin(transaction).status == Status::AlreadyCommitted);
@@ -251,12 +256,15 @@ void testFinalCommitIsRetrySafe() {
   Begin transaction = begin(1, 2);
   assert(installer.begin(transaction).accepted());
   appendAll(installer, 1, 2);
+  assert(installer.end(end(transaction)).status == Status::Accepted);
   storage.failPromotion(true);
-  assert(installer.end(end(transaction)).status == Status::StorageFailure);
+  assert(!installer.promote(transaction.generation));
+  assert(installer.record(record(1, 0, 20)).status == Status::Duplicate);
   uint32_t active = 99;
   assert(storage.activeGeneration(active) && active == 0);
   storage.failPromotion(false);
   assert(installer.end(end(transaction)).status == Status::Accepted);
+  assert(installer.promote(transaction.generation));
   assert(storage.activeGeneration(active) && active == 1);
 
   // The first successful acknowledgement could have been lost. A fresh

@@ -342,7 +342,7 @@ class Installer {
 
   Ack record(const Record& record) {
     Ack ack = acknowledgement(record.messageId, record.generation, record.sequence);
-    if (phase_ == Phase::Committed) {
+    if (phase_ == Phase::Committed || phase_ == Phase::Finalized) {
       if (record.generation != manifest_.generation)
         return with(ack, record.generation < manifest_.generation ? Status::StaleGeneration
                                                                     : Status::InvalidRecord);
@@ -405,13 +405,19 @@ class Installer {
       phase_ = Phase::Finalized;
     }
 
-    // A retry after a lost acknowledgement reaches this point. If promotion
-    // previously succeeded, the storage implementation should report success
-    // or the next Installer instance will return AlreadyCommitted above.
-    if (!storage_.promoteGeneration(manifest_.generation))
-      return with(ack, Status::StorageFailure);
-    phase_ = Phase::Committed;
+    // Finalization makes the complete inactive generation durable. Runtime
+    // code must semantically validate every record before calling promote().
     return with(ack, Status::Accepted);
+  }
+
+  bool promote(uint32_t generation) {
+    if (phase_ == Phase::Committed)
+      return generation == manifest_.generation;
+    if (phase_ != Phase::Finalized || generation != manifest_.generation)
+      return false;
+    if (!storage_.promoteGeneration(generation)) return false;
+    phase_ = Phase::Committed;
+    return true;
   }
 
   void reset() {

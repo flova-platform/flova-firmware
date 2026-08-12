@@ -11,9 +11,13 @@ These directories are reusable libraries, not application entry points.
 
 Arduino users who want to keep their own application code should install the
 matching board package and include `<FlovaEsp32.h>` or `<FlovaEsp8266.h>`.
-Both concrete classes expose the same typed facade; the application retains
-ownership of GPIO, sensors, and long-running work. `FlovaProvisioningConfig`
-enables the selected board package's persisted Wi-Fi and phone setup lifecycle.
+Both concrete classes expose the same typed application API; the application
+retains ownership of Wi-Fi, servers, GPIO, sensors, reboot policy, and
+long-running work. `begin()` restores Flova-private state or waits for a
+bounded `ProvisioningHandoff`; it does not start a setup AP.
+`FlovaUniversalEsp32` and `FlovaUniversalEsp8266` are the full-device, no-code
+compositions. Advanced ports may compose `FlovaClient` directly with their own
+`FlovaClientLink` and `FlovaProvisioningAdapter`.
 The public protocol package is named `flova-link`; generated zcbor headers
 remain an internal implementation detail of that package.
 

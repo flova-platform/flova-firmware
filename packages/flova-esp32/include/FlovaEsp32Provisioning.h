@@ -1,51 +1,19 @@
 #pragma once
 
-#include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <time.h>
 
 #include <FlovaConfiguration.h>
-#include <FlovaBoardProvisioning.h>
+#include <FlovaProvisioningAdapter.h>
+#include <FlovaWifiProvisioning.h>
+#include <FlovaEsp32Services.h>
+#include <adapters/ArduinoFlovaUtcBootstrap.h>
 
-class FlovaEsp32Storage : public flova::Storage {
- public:
-  bool begin() { return preferences_.begin("flova", false); }
-
-  bool read(const char* key, void* output, size_t size) override {
-    return key && output && size && preferences_.getBytesLength(key) == size &&
-           preferences_.getBytes(key, output, size) == size;
-  }
-
-  bool write(const char* key, const void* value, size_t size) override {
-    return key && value && size && preferences_.putBytes(key, value, size) == size;
-  }
-
-  bool remove(const char* key) override {
-    return key && (!preferences_.isKey(key) || preferences_.remove(key));
-  }
-
-  flova::StorageCapabilities capabilities() const override {
-    flova::StorageCapabilities value;
-    value.usableBytes = 4096;
-    value.availableBytes = 4096;
-    value.maxRecordBytes = 1024;
-    value.eraseBlockBytes = 4096;
-    value.writeGranularity = 1;
-    value.persistent = true;
-    value.wearSensitive = true;
-    return value;
-  }
-
- private:
-  Preferences preferences_;
-};
-
-class FlovaEsp32Provisioning : public FlovaBoardProvisioning {
+class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
  public:
   explicit FlovaEsp32Provisioning(FlovaEsp32Storage& storage) : storage_(storage) {}
-
-  bool beginStorage() override { return storage_.begin(); }
 
   bool defaultHardwareId(char* output, size_t capacity) const override {
     if (!output || capacity < 25) return false;
@@ -73,20 +41,13 @@ class FlovaEsp32Provisioning : public FlovaBoardProvisioning {
   }
 
   void loop() override {
-    if (provisioning_) {
-      server_.handleClient();
-    }
-    if (restartPending_ && millis() - acceptedAt_ >= 1000UL) {
-      restartPending_ = false;
-      server_.stop();
-      WiFi.softAPdisconnect(true);
-      ESP.restart();
-    }
+    if (provisioning_) server_.handleClient();
+    utc_.run(runtimeConnected());
   }
 
   bool startProvisioning() override {
     provisioning_ = false;
-    restartPending_ = false;
+    if (!storage_.remove("wifi")) return false;
     WiFi.disconnect(true, true);
     WiFi.mode(WIFI_AP);
     char ssid[32] = {};
@@ -98,56 +59,57 @@ class FlovaEsp32Provisioning : public FlovaBoardProvisioning {
     return true;
   }
 
-  bool provisioning() const override { return provisioning_; }
-
-  bool beginStation(const char* ssid, const char* password) override {
-    if (!ssid || !ssid[0]) return false;
+  bool beginRuntime() override {
+    flova::WifiRuntimeData wifi = {};
+    if (!storage_.read("wifi", &wifi, sizeof(wifi)) ||
+        !flova::validWifiRuntimeData(wifi)) return false;
     provisioning_ = false;
     server_.stop();
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
-    WiFi.begin(ssid, password ? password : "");
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    WiFi.begin(wifi.ssid, wifi.password);
     return true;
   }
 
-  bool stationConnected() const override { return WiFi.status() == WL_CONNECTED; }
+  bool runtimeConnected() const override { return WiFi.status() == WL_CONNECTED; }
 
-  bool clockReady() const override { return time(nullptr) >= 1700000000; }
-
-  void scheduleRestart() override {
-    restartPending_ = true;
-    acceptedAt_ = millis();
-  }
+  bool clockReady() const override { return utc_.ready(); }
 
  private:
   void handleStatus() {
     char error[flova::kProvisioningErrorBytes] = {};
-    String body = "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true";
-    if (storage_.read("prov_error", error, sizeof(error)) && error[0]) {
-      body += ",\"last_error_code\":\"";
-      body += error;
-      body += "\"";
-    }
-    body += "}";
+    char* body = reinterpret_cast<char*>(&input_);
+    const size_t bodyCapacity = sizeof(input_);
+    const bool hasError =
+        storage_.read("prov_error", error, sizeof(error)) && error[0];
+    snprintf(body, bodyCapacity,
+             hasError
+                 ? "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true,\"last_error_code\":\"%s\"}"
+                 : "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true}",
+             error);
     server_.send(200, "application/json", body);
   }
 
   void handleProvision() {
-    String body = server_.arg("plain");
-    if (!handler_ || body.length() >= 768) {
+    const String& body = server_.arg("plain");
+    if (!handler_ || body.length() >= 768 ||
+        !flova::parseWifiProvisioningHandoff(body.c_str(), body.length(), input_,
+                                             &wifi_)) {
       server_.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
       return;
     }
-    const FlovaProvisioningResponse result =
-        handler_(context_, body.c_str(), body.length());
+    if (!storage_.write("wifi", &wifi_, sizeof(wifi_))) {
+      server_.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
+      return;
+    }
+    const FlovaProvisioningResponse result = handler_(context_, input_);
     if (result == FlovaProvisioningResponse::Accepted) {
       server_.send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
-      scheduleRestart();
     } else if (result == FlovaProvisioningResponse::StorageFailed) {
       server_.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
     } else {
+      storage_.remove("wifi");
       server_.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
     }
   }
@@ -156,8 +118,9 @@ class FlovaEsp32Provisioning : public FlovaBoardProvisioning {
   WebServer server_{80};
   FlovaProvisioningHandler handler_ = nullptr;
   void* context_ = nullptr;
+  flova::ProvisioningHandoff input_;
+  flova::WifiRuntimeData wifi_ = {};
   bool routesRegistered_ = false;
   bool provisioning_ = false;
-  bool restartPending_ = false;
-  uint32_t acceptedAt_ = 0;
+  ArduinoFlovaUtcBootstrap<WiFiUDP> utc_;
 };

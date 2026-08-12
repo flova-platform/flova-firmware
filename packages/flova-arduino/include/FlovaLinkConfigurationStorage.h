@@ -48,21 +48,19 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
 
   bool discardGeneration(uint32_t generation) {
     if (!generation) return false;
-    bool changed = false;
+    bool success = true;
     Pointer pointer = {};
     if (loadPointer("flova_l_a", pointer) && pointer.generation == generation) {
-      storage_.remove("flova_l_a");
-      changed = true;
+      success = storage_.remove("flova_l_a") && success;
     }
     if (loadPointer("flova_l_b", pointer) && pointer.generation == generation) {
-      storage_.remove("flova_l_b");
-      changed = true;
+      success = storage_.remove("flova_l_b") && success;
     }
     StoredManifest pending = {};
     if (load("flova_l_p", pending) && pending.generation == generation)
-      storage_.remove("flova_l_p");
-    storage_.remove(manifestKey(generation));
-    return changed;
+      success = storage_.remove("flova_l_p") && success;
+    success = storage_.remove(manifestKey(generation)) && success;
+    return success;
   }
 
   bool generationManifest(uint32_t generation,

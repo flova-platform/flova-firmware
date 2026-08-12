@@ -69,13 +69,16 @@ a datastream with nested hardware mapping, a system record, schedule metadata,
 an ordered schedule-occurrence chunk, or a safety policy. Firmware decodes one
 fixed record, validates it, immediately writes it
 to inactive A/B storage, verifies that write, and sends its bounded ACK before
-accepting another record. `CONFIG_END` verifies count/checksum and atomically
-promotes the generation. Nested configuration is preserved semantically, but a
+accepting another record. `CONFIG_END` verifies count/checksum, finalizes the
+inactive bank, validates the complete generation without hardware side effects,
+and only then atomically promotes it. Nested configuration is preserved semantically, but a
 complete configuration is never rebuilt in RAM. More records use more transfer
 time and flash, not more working memory.
 
-SoftAP may hand off Wi-Fi/bootstrap inputs. The board persists the handoff and
-reboots before Wi-Fi/TLS bootstrap, so setup HTTP and BearSSL never coexist.
+SoftAP may hand off Wi-Fi/bootstrap inputs. The board persists the handoff,
+returns the local acknowledgement, stops the setup server, and changes to the
+configured network before Wi-Fi/TLS bootstrap; an intermediate reboot is not
+required.
 Engine bootstrap uses this same verified WSS CBOR record exchange. Credentials become
 authoritative only after the staged generation is verified and committed; final
 provisioning confirmation is idempotent across a lost ACK, including replay of

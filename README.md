@@ -5,10 +5,37 @@ The portable SDK keeps datastream state, safety rules, persistence hooks,
 offline delivery, scheduling, provisioning, and board-independent protocol
 contracts separate from Arduino and ESP implementation details.
 
-This repository is currently an MVP/development codebase. The standalone
-`flova::Device` runtime is the canonical API. ESP32 and ESP8266 applications
-compose it through explicit `FlovaEsp32` and `FlovaEsp8266` classes; board
-selection is made by the include, not by a shared facade's platform branches.
+This repository is currently an MVP/development codebase. Applications use an
+explicit `FlovaEsp32` or `FlovaEsp8266`; board ports compose the same
+`flova::Device` runtime without a second SDK layer or platform-selection macros.
+
+## Quickstart
+
+```cpp
+#include <ESP8266WiFi.h>
+#include <FlovaEsp8266.h>
+
+FlovaEsp8266 flova;
+auto relay = flova.datastream<bool>("relay");
+
+void setup() {
+  WiFi.begin("your-wifi", "your-password");
+  relay.onWrite([](bool enabled) {
+    digitalWrite(LED_BUILTIN, enabled ? LOW : HIGH);
+  });
+  flova.begin();
+}
+
+void loop() { flova.run(); }
+```
+
+`begin()` restores Flova's private identity when present and otherwise enters
+`AwaitingProvisioning`; it never changes Wi-Fi, starts or stops a server,
+touches GPIO, or reboots the board. Deliver a phone or factory handoff with
+`flova.provision(flova::ProvisioningHandoff(linkUrl, token))`, or attach Flova's
+two bounded routes to an existing Arduino web server. Universal firmware is a
+separate full-device composition that owns SoftAP, Wi-Fi, GPIO, OTA, and
+automatic restart.
 
 ## Architecture
 
@@ -17,7 +44,7 @@ flova-device-sdk   portable C++11 runtime and domain contracts
         ↓
 flova-arduino      Arduino services and Device Link adapter
         ↓
-flova-esp32/8266   board lifecycle, storage, networking, and hardware wiring
+flova-esp32/8266   passive SDK facades plus explicit universal compositions
         ↓
 examples/          selected firmware applications
 ```
@@ -70,15 +97,12 @@ compose the runtime in its own application:
 #include <FlovaCore.h>
 
 flova::Device device(link, storage, clock, logger);
-auto relay = device.datastream<bool>("relay")
-    .mode(flova::Mode::State)
-    .offline(flova::OfflinePolicy::KeepLatest)
-    .persist(flova::PersistencePolicy::Persistent);
+auto relay = device.datastream<bool>("relay");
 
 static flova::WriteResult writeRelay(bool enabled) {
   // `writeBoardRelay` belongs to the board HAL, not the portable SDK.
-  return writeBoardRelay(enabled) ? flova::WriteResult::accept()
-                                  : flova::WriteResult::reject("hardware_write_failed");
+  return writeBoardRelay(enabled) ? flova::accept()
+                                  : flova::reject("hardware_write_failed");
 }
 
 int main() {
@@ -100,7 +124,7 @@ board services. Transport callbacks must queue bounded work; hardware writes
 run from the device loop. See [Custom boards](.docs/custom-boards.md) and the
 [custom-board example](examples/custom-board-basic/README.md).
 
-For an existing ESP32/ESP8266 Arduino application, use the simpler facade
+For an existing ESP32/ESP8266 Arduino application, use the board API
 example:
 
 ```sh
@@ -108,9 +132,9 @@ pio run -e custom-arduino-client-esp32
 pio run -e custom-arduino-client-esp8266
 ```
 
-It includes the matching `<FlovaEsp32.h>` or `<FlovaEsp8266.h>`, keeps Wi-Fi and
-hardware ownership in the sketch, and uses context-aware typed callbacks for
-remote datastream writes. See the
+It includes the matching `<FlovaEsp32.h>` or `<FlovaEsp8266.h>`, keeps hardware
+ownership in the sketch, and supports both simple and context-aware typed
+callbacks. See the
 [custom Arduino client](examples/custom-arduino-client/README.md).
 
 For phone provisioning, use the matching board package and the
@@ -118,12 +142,11 @@ For phone provisioning, use the matching board package and the
 
 ## Local-first datastream semantics
 
-`read()` reads only the local cache. `refresh()` invokes the registered reader.
-`report()` records an observation without invoking an actuator. `write()` uses
-the same handler as remote commands and updates the cache only after the
-hardware operation is accepted. Offline policies determine whether the newest
-state is retained, history is persisted, data is dropped, or delivery is
-rejected.
+`value()` reads only the local cache. `report()` records an observation or a
+hardware change the application performed itself. `write()` uses the same
+handler as remote commands and updates state only after acceptance. Both work
+offline; installed delivery policy controls later synchronization, not whether
+local application code can run.
 
 ## Device Link and provisioning
 

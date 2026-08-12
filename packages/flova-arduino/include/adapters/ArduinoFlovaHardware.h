@@ -9,7 +9,33 @@ class ArduinoFlovaHardware final : public flova::Hardware {
  public:
   void attach(flova::Device& device) override { device_ = &device; }
 
+  bool validate(const flova::config::Unit& unit) override {
+    if (unit.kind == flova::config::UnitKind::System)
+      return !unit.data.system.hasStatusLedPin ||
+             unit.data.system.statusLedPin <= 255;
+    if (unit.kind != flova::config::UnitKind::Datastream ||
+        !unit.data.datastream.hasMapping)
+      return true;
+    if (unit.data.datastream.mapping.pin > 255) return false;
+    flova::ValueType type;
+    if (!valueType(unit.data.datastream.valueType, type)) return false;
+    const flova::config::MappingKind kind =
+        unit.data.datastream.mapping.kind;
+    if (kind == flova::config::MappingKind::DigitalInput ||
+        kind == flova::config::MappingKind::DigitalOutput)
+      return type == flova::ValueType::Boolean;
+    if (kind == flova::config::MappingKind::AnalogInput ||
+        kind == flova::config::MappingKind::PwmOutput) {
+      if (!numeric(type)) return false;
+      const double minimum = number(unit.data.datastream.minimum, 0);
+      const double maximum = number(unit.data.datastream.maximum, 100);
+      return minimum < maximum;
+    }
+    return false;
+  }
+
   bool apply(const flova::config::Unit& unit) override {
+    if (!validate(unit)) return false;
     if (unit.kind == flova::config::UnitKind::System) {
       if (!unit.data.system.hasStatusLedPin) return true;
       if (unit.data.system.statusLedPin > 255) return false;
@@ -34,6 +60,8 @@ class ArduinoFlovaHardware final : public flova::Hardware {
     mapping->owner = this;
     mapping->id = unit.data.datastream.id;
     mapping->kind = unit.data.datastream.mapping.kind;
+    if (!valueType(unit.data.datastream.valueType, mapping->valueType))
+      return false;
     mapping->pin = static_cast<uint8_t>(unit.data.datastream.mapping.pin);
     mapping->activeHigh = !unit.data.datastream.mapping.hasActiveHigh ||
                           unit.data.datastream.mapping.activeHigh;
@@ -52,6 +80,7 @@ class ArduinoFlovaHardware final : public flova::Hardware {
     if (mapping->minimum >= mapping->maximum) return false;
 
     if (mapping->kind == flova::config::MappingKind::DigitalInput) {
+      if (mapping->valueType != flova::ValueType::Boolean) return false;
       const uint8_t mode = unit.data.datastream.mapping.hasPull &&
                                    unit.data.datastream.mapping.pull == 1
                                ? INPUT_PULLUP
@@ -60,8 +89,14 @@ class ArduinoFlovaHardware final : public flova::Hardware {
       mapping->lastRaw = readDigital(*mapping);
       mapping->changedAt = millis();
     } else if (mapping->kind == flova::config::MappingKind::AnalogInput) {
+      if (!numeric(mapping->valueType)) return false;
       pinMode(mapping->pin, INPUT);
     } else {
+      if ((mapping->kind == flova::config::MappingKind::DigitalOutput &&
+           mapping->valueType != flova::ValueType::Boolean) ||
+          (mapping->kind == flova::config::MappingKind::PwmOutput &&
+           !numeric(mapping->valueType)))
+        return false;
       pinMode(mapping->pin, OUTPUT);
       if (!device_->setWriteHandler(mapping->id, writeMapped, mapping))
         return false;
@@ -103,10 +138,13 @@ class ArduinoFlovaHardware final : public flova::Hardware {
                  (!mapping.sampled || now - mapping.lastSampleAt >= mapping.sampleMs)) {
         mapping.sampled = true;
         mapping.lastSampleAt = now;
-        device_->report(mapping.id,
-                        flova::Value::from(
-                            static_cast<double>(analogRead(mapping.pin))),
-                        flova::Origin::PhysicalInput);
+        const int reading = analogRead(mapping.pin);
+        const flova::Value reported = mapping.valueType == flova::ValueType::Int64
+                                          ? flova::Value::from(static_cast<int64_t>(reading))
+                                      : mapping.valueType == flova::ValueType::Float
+                                          ? flova::Value::from(static_cast<float>(reading))
+                                          : flova::Value::from(static_cast<double>(reading));
+        device_->report(mapping.id, reported, flova::Origin::PhysicalInput);
       }
     }
   }
@@ -114,6 +152,18 @@ class ArduinoFlovaHardware final : public flova::Hardware {
   void setConnected(bool connected) override {
     if (connected_ == connected) return;
     connected_ = connected;
+    updateStatusLed();
+  }
+
+  void failSafe() override {
+    for (size_t i = 0; i < mappingCount_; ++i) {
+      const Mapping& mapping = mappings_[i];
+      if (mapping.kind == flova::config::MappingKind::DigitalOutput)
+        digitalWrite(mapping.pin, mapping.activeHigh ? LOW : HIGH);
+      else if (mapping.kind == flova::config::MappingKind::PwmOutput)
+        analogWrite(mapping.pin, 0);
+    }
+    connected_ = false;
     updateStatusLed();
   }
 
@@ -126,6 +176,7 @@ class ArduinoFlovaHardware final : public flova::Hardware {
     DatastreamId id = FLOVA_INVALID_DATASTREAM_ID;
     flova::config::MappingKind kind =
         flova::config::MappingKind::DigitalInput;
+    flova::ValueType valueType = flova::ValueType::Boolean;
     uint8_t pin = 255;
     bool activeHigh = true;
     bool lastRaw = false;
@@ -160,13 +211,16 @@ class ArduinoFlovaHardware final : public flova::Hardware {
                                              : !input.scalar.boolean;
       digitalWrite(mapping->pin, level ? HIGH : LOW);
     } else if (mapping->kind == flova::config::MappingKind::PwmOutput) {
-      if (input.type != flova::ValueType::Float &&
+      if (input.type != flova::ValueType::Int64 &&
+          input.type != flova::ValueType::Float &&
           input.type != flova::ValueType::Double) {
         return flova::WriteResult::reject("hardware_type_mismatch");
       }
-      const double actual = input.type == flova::ValueType::Float
-                                ? input.scalar.floating
-                                : input.scalar.number;
+      const double actual = input.type == flova::ValueType::Int64
+                                ? static_cast<double>(input.scalar.integer)
+                                : input.type == flova::ValueType::Float
+                                      ? input.scalar.floating
+                                      : input.scalar.number;
       if (actual < mapping->minimum || actual > mapping->maximum)
         return flova::WriteResult::reject("out_of_range");
       const double ratio = (actual - mapping->minimum) /
@@ -186,6 +240,8 @@ class ArduinoFlovaHardware final : public flova::Hardware {
 
   static double number(const flova::config::Value& input,
                        double fallback) {
+    if (input.kind == flova::config::ValueKind::Int64)
+      return static_cast<double>(input.data.integer);
     if (input.kind == flova::config::ValueKind::Float32)
       return input.data.float32;
     if (input.kind == flova::config::ValueKind::Float64)
@@ -197,6 +253,8 @@ class ArduinoFlovaHardware final : public flova::Hardware {
                     flova::Value& output) {
     if (input.kind == flova::config::ValueKind::Boolean)
       output = flova::Value::from(input.data.boolean);
+    else if (input.kind == flova::config::ValueKind::Int64)
+      output = flova::Value::from(input.data.integer);
     else if (input.kind == flova::config::ValueKind::Float32)
       output = flova::Value::from(input.data.float32);
     else if (input.kind == flova::config::ValueKind::Float64)
@@ -206,6 +264,21 @@ class ArduinoFlovaHardware final : public flova::Hardware {
     else
       return false;
     return true;
+  }
+
+  static bool valueType(uint8_t input, flova::ValueType& output) {
+    if (input == 0) output = flova::ValueType::Boolean;
+    else if (input == 1) output = flova::ValueType::Int64;
+    else if (input == 2) output = flova::ValueType::Float;
+    else if (input == 3) output = flova::ValueType::Double;
+    else if (input == 4) output = flova::ValueType::Text;
+    else return false;
+    return true;
+  }
+
+  static bool numeric(flova::ValueType type) {
+    return type == flova::ValueType::Int64 || type == flova::ValueType::Float ||
+           type == flova::ValueType::Double;
   }
 
   Mapping* find(DatastreamId id) {

@@ -1,19 +1,24 @@
 #include <Arduino.h>
-#include <FlovaEsp32.h>
+#include <FlovaUniversalEsp32.h>
 
-static FlovaClientConfig config = {nullptr, nullptr, nullptr};
-static FlovaProvisioningConfig provisioning(nullptr, nullptr, nullptr,
-                                            "universal_esp32", true);
-FlovaEsp32 device(config, provisioning);
+// Universal firmware is the no-code/full-device composition. Unlike the
+// passive FlovaEsp32 facade, it owns setup SoftAP, Wi-Fi credential storage,
+// universal GPIO mappings, OTA policy, and automatic restart policy.
+FlovaUniversalEsp32 device;
 
 void setup() {
   Serial.begin(115200);
   delay(50);
   Serial.println();
   Serial.println("[flova] esp32 boot");
+
+  // A configured device restores private state. A fresh device enters the
+  // universal provisioning lifecycle used by the mobile QR flow.
   device.begin();
 }
 
 void loop() {
+  // This composition owns setup HTTP handling, Device Link, dynamic
+  // datastream configuration, hardware mappings, OTA, and restart work.
   device.run();
 }

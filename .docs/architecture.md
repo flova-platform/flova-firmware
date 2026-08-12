@@ -28,14 +28,25 @@ local write or Device Link command
   -> return locally or report one correlated command result
 ```
 
-`read()` never touches hardware/network. `refresh()` enters `report()`;
-`report()` observes state and never invokes an actuator. Transport callbacks
+`value()` never touches hardware or the network. `report()` observes state and
+never invokes an actuator. Transport callbacks
 only decode/queue bounded records and never invoke hardware directly.
+
+`FlovaClient::begin()` is the single owner of Flova-private storage startup.
+It mounts or opens storage before any provisioning, configuration, schedule,
+or history access and fails closed when startup fails. Board facades delegate
+to that lifecycle instead of mounting storage themselves, so both direct SDK
+composition and universal firmware have the same ordering. Physical storage
+adapters reject access before successful startup and expose bounded record and
+capacity limits; application-owned filesystems and servers remain otherwise
+untouched.
 
 ## Portable core and protocol boundary
 
 `FlovaCore.h` remains Arduino/ESP/GPIO/exception/RTTI-free. Board adapters own
-WSS, TLS, Wi-Fi, SoftAP handoff, GPIO, and storage. The C++11 core uses fixed
+WSS, TLS, and storage. Applications own Wi-Fi, servers, GPIO, OTA permission,
+and reboot policy unless they deliberately select a universal full-device
+composition. The C++11 core uses fixed
 arrays and explicit callbacks, not dynamic protocol containers or generic
 CBOR/JSON object trees.
 
@@ -53,7 +64,7 @@ OTA images stay outside Link as streamed verified HTTPS downloads.
 ```text
 CONFIG_BEGIN -> validate/stage metadata and compact IDs
 CONFIG_RECORD -> fixed decode -> validate -> inactive A/B write -> verify -> ACK
-CONFIG_END -> count/checksum validation -> atomic promotion -> ACK
+CONFIG_END -> finalize -> side-effect-free semantic validation -> atomic promotion -> ACK
 ```
 
 `CONFIG_BEGIN` establishes a configuration generation and compact datastream ID
@@ -67,7 +78,10 @@ out-of-order chunks before installation. Commands may carry a bounded UTC
 expiry deadline; expiry-protected commands are rejected when the device clock
 is invalid or the deadline has passed.
 
-The SoftAP only hands off Wi-Fi/bootstrap inputs. Once connected, Engine
+Every setup channel ends in one bounded Link URL/token handoff. Universal
+firmware obtains it through SoftAP and stores Wi-Fi separately; a normal SDK
+application can supply the same handoff through its existing server, BLE,
+serial, cellular, or factory flow. Once connected, Engine
 bootstrap uses the same WSS transactional CBOR exchange and A/B installer as a
 normal update. Credentials are authoritative only after verified commit, and
 final confirmation is idempotent if the connection is lost.
@@ -111,8 +125,9 @@ valid outside those paths.
 This is the required architecture, not evidence that a particular build has
 completed every acceptance test. Release claims require measured results.
 
-ESP applications compose `flova::Device` through explicit board classes. The
-board header owns platform identity, entropy, storage, provisioning, and
-restart behavior; shared facade code does not select a board with preprocessor
-branches. New board integrations use the service seams described in
+ESP applications use explicit board classes composed over `flova::Device`.
+The passive board header owns only Flova-private identity, entropy, storage,
+TLS, UTC bootstrap, and bounded runtime services. Universal classes add
+full-device provisioning, hardware, OTA, and restart ownership. Shared runtime
+code does not select a board with preprocessor branches. New board integrations use the service seams described in
 `.docs/custom-boards.md`.

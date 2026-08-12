@@ -1,37 +1,81 @@
 #pragma once
 
-#include <Flova.h>
-#include <FlovaEsp8266Provisioning.h>
-#include <adapters/ArduinoFlovaHardware.h>
+#include <ESP8266WebServer.h>
 #include <user_interface.h>
+
+#include <Flova.h>
+#include <FlovaEsp8266Services.h>
+#include <FlovaWifiProvisioning.h>
+#include <adapters/ArduinoFlovaApplicationHardware.h>
 
 class FlovaEsp8266Entropy : public FlovaEntropySource {
  public:
   uint8_t byte() override { return static_cast<uint8_t>(os_random()); }
 };
 
-// Explicit ESP8266 composition. The ESP8266 package owns its filesystem,
-// SoftAP, identity, and restart policy; the facade only orchestrates them.
+// Plug-in facade for existing applications. It owns only Flova-private state
+// and observes the application's connectivity without changing it.
 class FlovaEsp8266 final {
  public:
-  FlovaEsp8266(const FlovaClientConfig& config,
-               const FlovaProvisioningConfig& provisioning = FlovaProvisioningConfig())
-      : link_(entropy_), board_(storage_),
-        client_(config, provisioning, link_, board_, storage_, clock_, logger_,
-                entropy_, hardware_) {
-    // Keep the shared hardware adapter's normalized 0..255 PWM contract.
-    analogWriteRange(255);
+  FlovaEsp8266()
+      : link_(entropy_),
+        client_(link_, runtime_, storage_, clock_, logger_, entropy_, hardware_) {}
+
+  bool begin() { return client_.begin(false); }
+  void run() { client_.run(); }
+
+  FlovaProvisioningResponse provision(const flova::ProvisioningHandoff& input) {
+    return client_.provision(input);
   }
 
-  bool begin() { return client_.begin(); }
-  void run() { client_.run(); }
+  bool attachProvisioning(ESP8266WebServer& server) {
+    if (routesAttached_) return false;
+    provisioningServer_ = &server;
+    server.on("/status", HTTP_GET, [this]() {
+      const char* error = lastError();
+      snprintf(response_, sizeof(response_),
+               error && error[0]
+                   ? "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true,\"last_error_code\":\"%s\"}"
+                   : "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true}",
+               error ? error : "");
+      provisioningServer_->send(200, "application/json", response_);
+    });
+    server.on("/provision", HTTP_POST, [this]() {
+      const String& body = provisioningServer_->arg("plain");
+      if (body.length() >= 768 ||
+          !flova::parseWifiProvisioningHandoff(body.c_str(), body.length(),
+                                               provisioningInput_)) {
+        provisioningServer_->send(400, "application/json",
+                    "{\"ok\":false,\"error\":\"invalid_handoff\"}");
+        return;
+      }
+      const FlovaProvisioningResponse result = provision(provisioningInput_);
+      if (result == FlovaProvisioningResponse::Accepted)
+        provisioningServer_->send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
+      else if (result == FlovaProvisioningResponse::StorageFailed)
+        provisioningServer_->send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
+      else
+        provisioningServer_->send(409, "application/json", "{\"ok\":false,\"error\":\"invalid_state\"}");
+    });
+    routesAttached_ = true;
+    return true;
+  }
+
   bool startProvisioning() { return client_.startProvisioning(); }
   bool provisioning() const { return client_.provisioning(); }
   FlovaLifecycle lifecycle() const { return client_.lifecycle(); }
   bool connected() const { return client_.connected(); }
   bool ready() const { return client_.ready(); }
+  const char* lastError() const { return client_.lastError(); }
   const flova::Diagnostics& diagnostics() const { return client_.diagnostics(); }
   flova::Device& device() { return client_.device(); }
+  bool setFirmwareTarget(const char* target) { return client_.setFirmwareTarget(target); }
+  void enableOta(bool enabled = true) { client_.setOtaEnabled(enabled); }
+  void setRestartHandler(FlovaRestartHandler handler, void* context = nullptr) {
+    client_.setRestartHandler(handler, context);
+  }
+  bool restartRequired() const { return client_.restartRequired(); }
+  FlovaRestartReason restartReason() const { return client_.restartReason(); }
 
   template <typename T>
   flova::Datastream<T> datastream(const char* key) {
@@ -44,7 +88,11 @@ class FlovaEsp8266 final {
   FlovaEsp8266Storage storage_;
   ArduinoFlovaClock clock_;
   ArduinoFlovaLogger logger_;
-  ArduinoFlovaHardware hardware_;
-  FlovaEsp8266Provisioning board_;
+  ArduinoFlovaApplicationHardware hardware_;
+  FlovaEsp8266Runtime runtime_;
   FlovaClient client_;
+  ESP8266WebServer* provisioningServer_ = nullptr;
+  flova::ProvisioningHandoff provisioningInput_;
+  char response_[192] = {};
+  bool routesAttached_ = false;
 };
