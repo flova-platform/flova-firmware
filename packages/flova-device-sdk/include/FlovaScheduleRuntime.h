@@ -11,9 +11,10 @@ static const size_t kMaxOccurrencesPerSchedule = FLOVA_SCHEDULE_OCCURRENCE_CAPAC
 static const uint64_t kRenewRetryMs = 6ULL * 60 * 60 * 1000;
 
 struct ScheduleAction {
+  uint32_t offsetMs;
   DatastreamId datastreamId;
   Value value;
-  ScheduleAction() : datastreamId(FLOVA_INVALID_DATASTREAM_ID) {}
+  ScheduleAction() : offsetMs(0), datastreamId(FLOVA_INVALID_DATASTREAM_ID) {}
 };
 
 struct CompiledSchedule {
@@ -43,22 +44,25 @@ struct ScheduleManifest {
         scheduleCount(0), checksum(0) {}
 };
 
-typedef WriteResult (*ScheduleApply)(const char* scheduleId,
+typedef WriteResult (*ScheduleApply)(void* context, const char* scheduleId,
                                      const ScheduleAction& action,
                                      uint64_t occurrence);
-typedef void (*ScheduleRenew)(uint32_t appliedRevision, uint64_t validUntil);
-typedef void (*ScheduleStatus)(const char* status, uint32_t revision,
+typedef void (*ScheduleRenew)(void* context, uint32_t appliedRevision,
+                              uint64_t validUntil);
+typedef void (*ScheduleStatus)(void* context, const char* status, uint32_t revision,
                                uint64_t validUntil);
 class ScheduleRuntime {
  public:
   ScheduleRuntime(Storage& storage, Clock& clock)
       : storage_(storage), clock_(clock), apply_(0), renew_(0), status_(0),
-        lastRenewRequest_(0), expiredReported_(false) {}
+        context_(0), lastRenewRequest_(0), expiredReported_(false) {}
 
-  void handlers(ScheduleApply apply, ScheduleRenew renew, ScheduleStatus status) {
+  void handlers(ScheduleApply apply, ScheduleRenew renew, ScheduleStatus status,
+                void* context) {
     apply_ = apply;
     renew_ = renew;
     status_ = status;
+    context_ = context;
   }
 
   bool begin() {
@@ -74,10 +78,27 @@ class ScheduleRuntime {
     if (!storage_.write("schedule.active", &incoming, sizeof(incoming))) return false;
     storage_.remove("schedule.staging");
     manifest_ = incoming;
-    for (size_t i = 0; i < kMaxSchedules; ++i) progress_[i] = 0;
+    progress_ = Progress();
     persistProgress();
     expiredReported_ = false;
-    if (status_) status_("installed", manifest_.revision, manifest_.validUntil);
+    if (status_) status_(context_, "installed", manifest_.revision, manifest_.validUntil);
+    return true;
+  }
+
+  // Configuration restore compiles directly into the inactive runtime
+  // workspace. Keeping a second maximum-sized manifest permanently allocated
+  // wastes scarce static RAM, especially on ESP32 where DRAM is segmented.
+  ScheduleManifest& workspace() { return manifest_; }
+
+  bool installPrepared() {
+    if (!valid(manifest_)) return false;
+    if (!storage_.write("schedule.staging", &manifest_, sizeof(manifest_))) return false;
+    if (!storage_.write("schedule.active", &manifest_, sizeof(manifest_))) return false;
+    storage_.remove("schedule.staging");
+    progress_ = Progress();
+    persistProgress();
+    expiredReported_ = false;
+    if (status_) status_(context_, "installed", manifest_.revision, manifest_.validUntil);
     return true;
   }
 
@@ -85,7 +106,7 @@ class ScheduleRuntime {
     if (!clock_.utcValid() || !manifest_.revision) return;
     const uint64_t now = clock_.utcMilliseconds();
     if (now >= manifest_.validUntil) {
-      if (!expiredReported_ && status_) status_("schedule_horizon_expired", manifest_.revision, manifest_.validUntil);
+      if (!expiredReported_ && status_) status_(context_, "schedule_horizon_expired", manifest_.revision, manifest_.validUntil);
       expiredReported_ = true;
       requestRenew(now);
       return;
@@ -95,23 +116,38 @@ class ScheduleRuntime {
     for (size_t i = 0; i < manifest_.scheduleCount; ++i) {
       CompiledSchedule& schedule = manifest_.schedules[i];
       if (!schedule.enabled) continue;
-      while (progress_[i] < schedule.occurrenceCount &&
-             schedule.occurrences[progress_[i]] <= now) {
-        const uint64_t occurrence = schedule.occurrences[progress_[i]++];
+      while (progress_.occurrence[i] < schedule.occurrenceCount) {
+        const uint8_t occurrenceIndex = progress_.occurrence[i];
+        const uint8_t actionCount = schedule.actionCount ? schedule.actionCount : 1;
+        const ScheduleAction& action = schedule.actionCount
+                                           ? schedule.actions[progress_.action[i]]
+                                           : schedule.action;
+        const uint64_t occurrence = schedule.occurrences[occurrenceIndex];
+        if (occurrence + action.offsetMs > now) break;
+        ++progress_.action[i];
+        if (progress_.action[i] >= actionCount) {
+          progress_.action[i] = 0;
+          ++progress_.occurrence[i];
+        }
         // Progress is persisted before hardware execution: after a brownout it
         // is safer to miss one action than to execute an imperative action twice.
         persistProgress();
-        if (apply_) {
-          const uint8_t actionCount = schedule.actionCount ? schedule.actionCount : 1;
-          for (uint8_t action = 0; action < actionCount; ++action)
-            apply_(schedule.id, schedule.actionCount ? schedule.actions[action] : schedule.action, occurrence);
-        }
+        if (apply_) apply_(context_, schedule.id, action, occurrence);
       }
     }
   }
 
   uint32_t revision() const { return manifest_.revision; }
   uint64_t validUntil() const { return manifest_.validUntil; }
+
+  void clear() {
+    storage_.remove("schedule.staging");
+    storage_.remove("schedule.active");
+    storage_.remove("schedule.progress");
+    manifest_ = ScheduleManifest();
+    progress_ = Progress();
+    expiredReported_ = false;
+  }
 
   static uint32_t checksum(const ScheduleManifest& manifest) {
     uint32_t hash = 2166136261UL;
@@ -123,7 +159,7 @@ class ScheduleRuntime {
       const uint8_t actionCount = schedule.actionCount ? schedule.actionCount : 1;
       for (uint8_t action = 0; action < actionCount; ++action) {
         const ScheduleAction& item = schedule.actionCount ? schedule.actions[action] : schedule.action;
-        mix(hash, item.datastreamId); mix(hash, static_cast<uint32_t>(item.value.type)); mixValue(hash, item.value);
+        mix(hash, item.offsetMs); mix(hash, item.datastreamId); mix(hash, static_cast<uint32_t>(item.value.type)); mixValue(hash, item.value);
       }
       mix(hash, schedule.occurrenceCount);
       for (size_t j = 0; j < schedule.occurrenceCount; ++j) mix64(hash, schedule.occurrences[j]);
@@ -146,16 +182,20 @@ class ScheduleRuntime {
   void requestRenew(uint64_t now) {
     if (!renew_ || (lastRenewRequest_ && now - lastRenewRequest_ < kRenewRetryMs)) return;
     lastRenewRequest_ = now;
-    renew_(manifest_.revision, manifest_.validUntil);
+    renew_(context_, manifest_.revision, manifest_.validUntil);
   }
 
   void restoreProgress() {
-    if (!storage_.read("schedule.progress", progress_, sizeof(progress_)))
-      for (size_t i = 0; i < kMaxSchedules; ++i) progress_[i] = 0;
+    if (!storage_.read("schedule.progress", &progress_, sizeof(progress_)))
+      progress_ = Progress();
     for (size_t i = 0; i < manifest_.scheduleCount; ++i)
-      if (progress_[i] > manifest_.schedules[i].occurrenceCount) progress_[i] = 0;
+      if (progress_.occurrence[i] > manifest_.schedules[i].occurrenceCount ||
+          progress_.action[i] > manifest_.schedules[i].actionCount) {
+        progress_.occurrence[i] = 0;
+        progress_.action[i] = 0;
+      }
   }
-  void persistProgress() { storage_.write("schedule.progress", progress_, sizeof(progress_)); }
+  void persistProgress() { storage_.write("schedule.progress", &progress_, sizeof(progress_)); }
   static void mix(uint32_t& hash, uint32_t value) { for (uint8_t i = 0; i < 4; ++i) { hash ^= value & 0xff; hash *= 16777619UL; value >>= 8; } }
   static void mix64(uint32_t& hash, uint64_t value) { mix(hash, static_cast<uint32_t>(value)); mix(hash, static_cast<uint32_t>(value >> 32)); }
   static void mixText(uint32_t& hash, const char* value) { while (value && *value) { hash ^= static_cast<uint8_t>(*value++); hash *= 16777619UL; } }
@@ -169,10 +209,15 @@ class ScheduleRuntime {
   Storage& storage_;
   Clock& clock_;
   ScheduleManifest manifest_;
-  uint8_t progress_[kMaxSchedules] = {};
+  struct Progress {
+    uint8_t occurrence[kMaxSchedules];
+    uint8_t action[kMaxSchedules];
+    Progress() { memset(this, 0, sizeof(*this)); }
+  } progress_;
   ScheduleApply apply_;
   ScheduleRenew renew_;
   ScheduleStatus status_;
+  void* context_;
   uint64_t lastRenewRequest_;
   bool expiredReported_;
 };
@@ -182,7 +227,10 @@ class ScheduleRuntime {
 // schedule runtime model and rejects duplicates, gaps, and over-capacity input.
 class ScheduleChunkCompiler {
  public:
-  ScheduleChunkCompiler() : started_(false), scheduleCount_(0) { reset(); }
+  explicit ScheduleChunkCompiler(ScheduleManifest& workspace)
+      : manifest_(workspace), scheduleCount_(0), started_(false) {
+    reset();
+  }
 
   bool begin(uint32_t revision, uint64_t generatedAt, uint64_t validUntil,
              uint64_t renewBefore, uint8_t scheduleCount) {
@@ -216,6 +264,7 @@ class ScheduleChunkCompiler {
                                   source.actions[i].value.kind == config::ValueKind::Float32 ? Value::from(source.actions[i].value.data.float32) :
                                   source.actions[i].value.kind == config::ValueKind::Float64 ? Value::from(source.actions[i].value.data.float64) : Value::from(source.actions[i].value.data.text);
       if (!flovaValidDatastreamId(source.actions[i].datastreamId)) return false;
+      target.actions[i].offsetMs = source.actions[i].offsetMs;
       target.actions[i].datastreamId = source.actions[i].datastreamId;
     }
     target.action = target.actions[0];
@@ -233,11 +282,10 @@ class ScheduleChunkCompiler {
     return true;
   }
 
-  bool finish(ScheduleManifest& output) {
+  bool finish() {
     if (!started_) return false;
     for (size_t i = 0; i < scheduleCount_; ++i) if (!manifest_.schedules[i].id[0] || !occurrenceChunkTotals_[i] || occurrenceChunkCount_[i] != occurrenceChunkTotals_[i]) return false;
     manifest_.checksum = ScheduleRuntime::checksum(manifest_);
-    output = manifest_;
     started_ = false;
     return true;
   }
@@ -250,7 +298,7 @@ class ScheduleChunkCompiler {
     scheduleCount_ = 0;
   }
 
-  ScheduleManifest manifest_;
+  ScheduleManifest& manifest_;
   uint16_t occurrenceChunkCount_[kMaxSchedules];
   uint16_t occurrenceChunkTotals_[kMaxSchedules];
   uint8_t scheduleCount_;

@@ -11,6 +11,16 @@ uint32_t millis() { return nowMs; }
 unsigned long micros() { return nowMs * 1000UL; }
 void delay(unsigned long milliseconds) { nowMs += static_cast<uint32_t>(milliseconds); }
 
+class TestEntropy : public FlovaEntropySource {
+ public:
+  uint8_t byte() override { return next_++; }
+
+ private:
+  uint8_t next_ = 1;
+};
+
+static TestEntropy entropy;
+
 class FakeClient : public Client {
  public:
   bool socket = true;
@@ -181,7 +191,7 @@ static void verifyHandshakeAndFrames() {
   FakeClient client;
   client.includeProtocol = false;
   client.maximumWriteBytes = 3;
-  FlovaWs websocket(client);
+  FlovaWs websocket(client, entropy);
   assert(websocket.handshake("engine.example", "/api/device-link"));
   assert(websocket.connected());
   assert(!websocket.handshake("engine.example", "/api/device-link"));
@@ -192,7 +202,7 @@ static void verifyHandshakeAndFrames() {
                 "Sec-WebSocket-Protocol:") == nullptr);
 
   FakeClient customPort;
-  FlovaWs customPortWebsocket(customPort);
+  FlovaWs customPortWebsocket(customPort, entropy);
   assert(customPortWebsocket.handshake("engine.example", 8443, "/api/device-link"));
   assert(strstr(reinterpret_cast<const char*>(customPort.written),
                 "Host: engine.example:8443\r\n") != nullptr);
@@ -200,7 +210,7 @@ static void verifyHandshakeAndFrames() {
   FakeClient longHeader;
   longHeader.includeProtocol = false;
   longHeader.includeLongHeader = true;
-  FlovaWs longHeaderWebsocket(longHeader);
+  FlovaWs longHeaderWebsocket(longHeader, entropy);
   assert(longHeaderWebsocket.handshake("engine.example", "/api/device-link"));
 
   const uint8_t payload[] = {0x01, 0x02, 0x03};
@@ -254,7 +264,7 @@ static void verifyRejection() {
   client.respondToHandshake = false;
   const char response[] = "HTTP/1.1 200 OK\r\n\r\n";
   client.feed(reinterpret_cast<const uint8_t*>(response), sizeof(response) - 1);
-  FlovaWs websocket(client);
+  FlovaWs websocket(client, entropy);
   assert(!websocket.handshake("engine.example", "/", "flova.cbor.v1"));
   assert(websocket.error() == FlovaWs::Error::Handshake);
   assert(websocket.handshakeStatus() == 200);
@@ -269,7 +279,7 @@ static void verifyRejection() {
       "Sec-WebSocket-Accept: invalid\r\n\r\n";
   invalidAccept.feed(reinterpret_cast<const uint8_t*>(invalidAcceptResponse),
                      sizeof(invalidAcceptResponse) - 1);
-  FlovaWs invalidAcceptWebsocket(invalidAccept);
+  FlovaWs invalidAcceptWebsocket(invalidAccept, entropy);
   assert(!invalidAcceptWebsocket.handshake("engine.example", "/"));
   assert(invalidAcceptWebsocket.handshakeFailure() ==
          FlovaWs::HandshakeFailure::InvalidAccept);
@@ -282,18 +292,18 @@ static void verifyRejection() {
       "Sec-WebSocket-Accept: invalid\r\n\r\n";
   missingUpgrade.feed(reinterpret_cast<const uint8_t*>(missingUpgradeResponse),
                       sizeof(missingUpgradeResponse) - 1);
-  FlovaWs missingUpgradeWebsocket(missingUpgrade);
+  FlovaWs missingUpgradeWebsocket(missingUpgrade, entropy);
   assert(!missingUpgradeWebsocket.handshake("engine.example", "/"));
   assert(missingUpgradeWebsocket.handshakeFailure() ==
          FlovaWs::HandshakeFailure::MissingUpgrade);
 
   FakeClient invalidHost;
-  FlovaWs invalidHostWebsocket(invalidHost);
+  FlovaWs invalidHostWebsocket(invalidHost, entropy);
   assert(!invalidHostWebsocket.handshake("engine.example\n", "/"));
   assert(invalidHostWebsocket.handshakeFailure() == FlovaWs::HandshakeFailure::InvalidRequest);
 
   FakeClient oversized;
-  FlovaWs oversizedWs(oversized);
+  FlovaWs oversizedWs(oversized, entropy);
   assert(oversizedWs.handshake("engine.example", "/", "flova.cbor.v1"));
   const uint8_t tooLarge[] = {0x82, 0x7F, 0, 0, 0, 0, 0, 0, 0x02, 0x01};
   oversized.feed(tooLarge, sizeof(tooLarge));
@@ -302,7 +312,7 @@ static void verifyRejection() {
   assert(oversizedWs.error() == FlovaWs::Error::MessageTooLarge);
 
   FakeClient masked;
-  FlovaWs maskedWs(masked);
+  FlovaWs maskedWs(masked, entropy);
   assert(maskedWs.handshake("engine.example", "/", "flova.cbor.v1"));
   const uint8_t maskedFrame[] = {0x82, 0x81, 1, 2, 3, 4, 'x'};
   masked.feed(maskedFrame, sizeof(maskedFrame));
@@ -310,7 +320,7 @@ static void verifyRejection() {
   assert(maskedWs.error() == FlovaWs::Error::Protocol);
 
   FakeClient invalidCloseCode;
-  FlovaWs invalidCloseCodeWs(invalidCloseCode);
+  FlovaWs invalidCloseCodeWs(invalidCloseCode, entropy);
   assert(invalidCloseCodeWs.handshake("engine.example", "/", "flova.cbor.v1"));
   const uint8_t invalidCloseCodeFrame[] = {0x88, 0x02, 0x03, 0xEC};
   invalidCloseCode.feed(invalidCloseCodeFrame, sizeof(invalidCloseCodeFrame));
@@ -318,7 +328,7 @@ static void verifyRejection() {
   assert(invalidCloseCodeWs.error() == FlovaWs::Error::Protocol);
 
   FakeClient invalidCloseReason;
-  FlovaWs invalidCloseReasonWs(invalidCloseReason);
+  FlovaWs invalidCloseReasonWs(invalidCloseReason, entropy);
   assert(invalidCloseReasonWs.handshake("engine.example", "/", "flova.cbor.v1"));
   const uint8_t invalidCloseReasonFrame[] = {0x88, 0x04, 0x03, 0xE8, 0xC0, 0xAF};
   invalidCloseReason.feed(invalidCloseReasonFrame, sizeof(invalidCloseReasonFrame));
@@ -329,7 +339,7 @@ static void verifyRejection() {
 static void verifyReconnectCycles() {
   FakeClient client;
   client.includeProtocol = false;
-  FlovaWs websocket(client);
+  FlovaWs websocket(client, entropy);
   for (size_t cycle = 0; cycle < 10000; ++cycle) {
     client.socket = true;
     client.writtenLength = 0;
@@ -346,7 +356,7 @@ static void verifyReconnectCycles() {
 static void verifyPeerCloseReconnect() {
   FakeClient client;
   client.includeProtocol = false;
-  FlovaWs websocket(client);
+  FlovaWs websocket(client, entropy);
   assert(websocket.handshake("engine.example", "/"));
 
   const uint8_t closeFrame[] = {0x88, 0x02, 0x03, 0xE8};
@@ -368,7 +378,7 @@ static void verifyPeerCloseReconnect() {
 static void verifyCoalescedWrite() {
   FakeClient client;
   client.includeProtocol = false;
-  FlovaWs websocket(client);
+  FlovaWs websocket(client, entropy);
   assert(websocket.handshake("engine.example", "/"));
   client.writtenLength = 0;
   client.writeCalls = 0;

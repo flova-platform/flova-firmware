@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include <FlovaOta.h>
+#include <FlovaClientLink.h>
 #include <FlovaTlsRoots.h>
 #include <FlovaTlsProfile.h>
 
@@ -17,7 +17,7 @@
 #include <Update.h>
 #endif
 
-class ArduinoOtaInstaller : public FlovaOtaInstaller {
+class ArduinoOtaInstaller final {
  public:
 #if defined(ESP8266)
   void setTrustAnchors(BearSSL::X509List& trustAnchors) {
@@ -25,7 +25,7 @@ class ArduinoOtaInstaller : public FlovaOtaInstaller {
   }
 #endif
 
-  FlovaOtaResult install(const FlovaOtaOffer& offer) override {
+  flova::OtaInstallResult install(const FlovaLinkOtaOffer& offer) {
     HTTPClient http;
 #if defined(ESP8266)
     BearSSL::WiFiClientSecure client;
@@ -38,7 +38,7 @@ class ArduinoOtaInstaller : public FlovaOtaInstaller {
         Serial.print(F("[flova] OTA rejected reason="));
         Serial.println(flova::tlsResourceError(resources));
       }
-      return FlovaOtaResult::ResourceUnavailable;
+      return flova::OtaInstallResult::ResourceUnavailable;
     }
     flova::configureOtaTls(client);
     client.setTrustAnchors(trustAnchors_);
@@ -46,17 +46,17 @@ class ArduinoOtaInstaller : public FlovaOtaInstaller {
     WiFiClientSecure client;
     client.setCACert(FLOVA_TLS_ROOT_CERTS);
 #endif
-    if (!offer.artifactUrl.startsWith("https://") || !http.begin(client, offer.artifactUrl))
-      return FlovaOtaResult::DownloadFailed;
+    if (strncmp(offer.url, "https://", 8) != 0 || !http.begin(client, offer.url))
+      return flova::OtaInstallResult::DownloadFailed;
     http.setTimeout(flova::kHttpsTimeoutMs);
     int status = http.GET();
     if (status != HTTP_CODE_OK || (uint32_t)http.getSize() != offer.sizeBytes) {
       http.end();
-      return FlovaOtaResult::DownloadFailed;
+      return flova::OtaInstallResult::DownloadFailed;
     }
     if (!Update.begin(offer.sizeBytes)) {
       http.end();
-      return FlovaOtaResult::FlashFailed;
+      return flova::OtaInstallResult::FlashFailed;
     }
 
 #if defined(ESP8266)
@@ -69,7 +69,7 @@ class ArduinoOtaInstaller : public FlovaOtaInstaller {
       mbedtls_sha256_free(&hash);
       abortUpdate();
       http.end();
-      return FlovaOtaResult::HashMismatch;
+      return flova::OtaInstallResult::HashMismatch;
     }
 #endif
     WiFiClient* stream = http.getStreamPtr();
@@ -82,7 +82,7 @@ class ArduinoOtaInstaller : public FlovaOtaInstaller {
       if (!count || Update.write(transferBuffer_, count) != count) {
         abortUpdate();
         http.end();
-        return FlovaOtaResult::FlashFailed;
+        return flova::OtaInstallResult::FlashFailed;
       }
 #if defined(ESP8266)
       br_sha256_update(&hash, transferBuffer_, count);
@@ -100,12 +100,14 @@ class ArduinoOtaInstaller : public FlovaOtaInstaller {
     mbedtls_sha256_finish_ret(&hash, digest);
     mbedtls_sha256_free(&hash);
 #endif
-    if (written != offer.sizeBytes || hex(digest, sizeof(digest)) != offer.sha256) {
+    if (written != offer.sizeBytes ||
+        !hashMatches(digest, sizeof(digest), offer.sha256)) {
       abortUpdate();
-      return FlovaOtaResult::HashMismatch;
+      return flova::OtaInstallResult::HashMismatch;
     }
-    FlovaOtaResult result =
-        Update.end(true) ? FlovaOtaResult::Installed : FlovaOtaResult::FlashFailed;
+    flova::OtaInstallResult result =
+        Update.end(true) ? flova::OtaInstallResult::Installed
+                         : flova::OtaInstallResult::FlashFailed;
     return result;
   }
 
@@ -118,11 +120,15 @@ class ArduinoOtaInstaller : public FlovaOtaInstaller {
 #endif
   }
 
-  String hex(const uint8_t* bytes, size_t length) {
+  static bool hashMatches(const uint8_t* bytes, size_t length,
+                          const char* expected) {
     static const char digits[] = "0123456789abcdef";
-    String result; result.reserve(length * 2);
-    for (size_t i = 0; i < length; ++i) { result += digits[bytes[i] >> 4]; result += digits[bytes[i] & 15]; }
-    return result;
+    if (!bytes || !expected || strlen(expected) != length * 2) return false;
+    for (size_t i = 0; i < length; ++i) {
+      if (expected[i * 2] != digits[bytes[i] >> 4] ||
+          expected[i * 2 + 1] != digits[bytes[i] & 15]) return false;
+    }
+    return true;
   }
 #if defined(ESP8266)
   BearSSL::X509List* trustAnchors_ = nullptr;

@@ -6,10 +6,9 @@ offline delivery, scheduling, provisioning, and board-independent protocol
 contracts separate from Arduino and ESP implementation details.
 
 This repository is currently an MVP/development codebase. The standalone
-`flova::Device` runtime is the canonical API for new board ports. Existing
-ESP32 and ESP8266 applications still use the older `FlovaDevice` compatibility
-surface while that runtime is being migrated; new functionality must target
-the standalone core.
+`flova::Device` runtime is the canonical API. ESP32 and ESP8266 applications
+compose it through explicit `FlovaEsp32` and `FlovaEsp8266` classes; board
+selection is made by the include, not by a shared facade's platform branches.
 
 ## Architecture
 
@@ -36,6 +35,10 @@ anchor; each environment selects its application from `examples/*/src`.
 - `examples/universal-*`: universal ESP firmware applications.
 - `examples/datastream-api-*`: typed API compile contracts.
 - `examples/custom-board-basic`: normal-C++11 custom-board integration.
+- `examples/custom-arduino-client`: Blynk-like explicit board-class integration
+  for ESP32/ESP8266 Arduino applications.
+- `examples/custom-arduino-provisioning`: explicit board-class phone provisioning with
+  no hardcoded Wi-Fi credentials.
 - `protocol`: CDDL schema, generated codecs, and conformance vectors; see the
   [protocol asset guide](protocol/README.md).
 - `scripts`: focused validation, generation, and PlatformIO integration tools;
@@ -96,6 +99,22 @@ Provisioning, OTA, boot control, schedules, and hardware mappings are optional
 board services. Transport callbacks must queue bounded work; hardware writes
 run from the device loop. See [Custom boards](.docs/custom-boards.md) and the
 [custom-board example](examples/custom-board-basic/README.md).
+
+For an existing ESP32/ESP8266 Arduino application, use the simpler facade
+example:
+
+```sh
+pio run -e custom-arduino-client-esp32
+pio run -e custom-arduino-client-esp8266
+```
+
+It includes the matching `<FlovaEsp32.h>` or `<FlovaEsp8266.h>`, keeps Wi-Fi and
+hardware ownership in the sketch, and uses context-aware typed callbacks for
+remote datastream writes. See the
+[custom Arduino client](examples/custom-arduino-client/README.md).
+
+For phone provisioning, use the matching board package and the
+[custom Arduino provisioning example](examples/custom-arduino-provisioning/README.md).
 
 ## Local-first datastream semantics
 

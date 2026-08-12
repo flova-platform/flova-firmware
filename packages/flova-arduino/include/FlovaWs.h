@@ -3,11 +3,11 @@
 #include <Arduino.h>
 #include <Client.h>
 
-#if defined(ESP8266)
-#include <user_interface.h>
-#elif defined(ESP32)
-#include <esp_system.h>
-#endif
+class FlovaEntropySource {
+ public:
+  virtual ~FlovaEntropySource() {}
+  virtual uint8_t byte() = 0;
+};
 
 // Small RFC 6455 client for the Flova Link. The transport is deliberately
 // borrowed: TLS, certificates, time, socket cleanup, and reconnect policy
@@ -51,7 +51,8 @@ class FlovaWs {
     UnexpectedExtension
   };
 
-  explicit FlovaWs(Client& transport) : transport_(transport) { reset(); }
+  FlovaWs(Client& transport, FlovaEntropySource& entropy)
+      : transport_(transport), entropy_(entropy) { reset(); }
 
   // The Device Link server does not negotiate an application subprotocol;
   // binary framing and the first Link byte identify the protocol instead.
@@ -438,20 +439,7 @@ class FlovaWs {
     return "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
   }
 
-  static uint8_t randomByte() {
-#if defined(ESP8266)
-    return static_cast<uint8_t>(os_random());
-#elif defined(ESP32)
-    return static_cast<uint8_t>(esp_random());
-#else
-    static uint32_t value = 0xA5C31E27UL;
-    value ^= value << 13;
-    value ^= value >> 17;
-    value ^= value << 5;
-    value ^= static_cast<uint32_t>(micros());
-    return static_cast<uint8_t>(value);
-#endif
-  }
+  uint8_t randomByte() { return entropy_.byte(); }
 
   static bool base64(const uint8_t* input, size_t length, char* output, size_t capacity) {
     static const char alphabet[] =
@@ -828,6 +816,7 @@ class FlovaWs {
   }
 
   Client& transport_;
+  FlovaEntropySource& entropy_;
   State state_ = State::Closed;
   Error error_ = Error::None;
   HandshakeFailure handshakeFailure_ = HandshakeFailure::None;

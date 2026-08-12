@@ -23,6 +23,8 @@ target_include_directories(flova-core INTERFACE
   protocol/generated/firmware/include
   third_party/zcbor/include)
 target_link_libraries(flova-core INTERFACE flova-link-cbor)
+target_compile_options(flova-core INTERFACE
+  -Wall -Wextra -fno-exceptions -fno-rtti)
 target_compile_definitions(flova-core INTERFACE
   FLOVA_DATASTREAM_CAPACITY=64 FLOVA_TEXT_CAPACITY=128 FLOVA_HISTORY_CAPACITY=64
   FLOVA_COMMAND_DEDUP_CAPACITY=16 FLOVA_HARDWARE_INPUT_CAPACITY=16
@@ -42,9 +44,12 @@ target_include_directories(flova-ws-test PRIVATE
   packages/flova-arduino/include)
 add_executable(flova-custom-board examples/custom-board-basic/src/main.cpp)
 target_link_libraries(flova-custom-board PRIVATE flova-core)
+add_executable(flova-configuration-test test/host/test_flova_configuration.cpp)
+target_include_directories(flova-configuration-test PRIVATE packages/flova-arduino/include)
 enable_testing()
 add_test(NAME flova-core-test COMMAND flova-core-test)
 add_test(NAME flova-configuration-installer-test COMMAND flova-configuration-installer-test)
 add_test(NAME flova-link-cbor-test COMMAND flova-link-cbor-test)
 add_test(NAME flova-link-fuzz-test COMMAND flova-link-fuzz-test)
 add_test(NAME flova-ws-test COMMAND flova-ws-test)
+add_test(NAME flova-configuration-test COMMAND flova-configuration-test)

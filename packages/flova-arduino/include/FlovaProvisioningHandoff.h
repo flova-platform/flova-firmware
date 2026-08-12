@@ -2,39 +2,55 @@
 
 #include <Arduino.h>
 #include <FlovaConfiguration.h>
-#if defined(ESP32)
-#include <esp_system.h>
-#elif defined(ESP8266)
-#include <user_interface.h>
-#endif
+#include <FlovaWs.h>
 
 namespace flova {
 
-inline bool jsonField(const char* json, const char* name, char* output,
-                      size_t capacity, bool required) {
-  if (!json || !name || !output || !capacity) return false;
+inline const char* findJsonLiteral(const char* begin, const char* end,
+                                   const char* literal, size_t length) {
+  if (!begin || !end || !literal || begin > end ||
+      static_cast<size_t>(end - begin) < length) return 0;
+  for (const char* cursor = begin; cursor + length <= end; ++cursor)
+    if (memcmp(cursor, literal, length) == 0) return cursor;
+  return 0;
+}
+
+inline bool jsonField(const char* json, const char* end, const char* name,
+                      char* output, size_t capacity, bool required) {
+  if (!json || !end || !name || !output || !capacity || json > end)
+    return false;
   char needle[48] = {};
-  if (snprintf(needle, sizeof(needle), "\"%s\"", name) >= static_cast<int>(sizeof(needle))) return false;
-  const char* cursor = strstr(json, needle);
+  const int needleLength = snprintf(needle, sizeof(needle), "\"%s\"", name);
+  if (needleLength <= 0 || needleLength >= static_cast<int>(sizeof(needle)))
+    return false;
+  const char* cursor = findJsonLiteral(
+      json, end, needle, static_cast<size_t>(needleLength));
   if (!cursor) return !required;
-  cursor += strlen(needle);
-  while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') ++cursor;
-  if (*cursor++ != ':') return false;
-  while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') ++cursor;
-  if (*cursor++ != '"') return false;
+  if (findJsonLiteral(cursor + needleLength, end, needle,
+                      static_cast<size_t>(needleLength))) return false;
+  cursor += needleLength;
+  while (cursor < end && (*cursor == ' ' || *cursor == '\t' ||
+                          *cursor == '\r' || *cursor == '\n')) ++cursor;
+  if (cursor == end || *cursor++ != ':') return false;
+  while (cursor < end && (*cursor == ' ' || *cursor == '\t' ||
+                          *cursor == '\r' || *cursor == '\n')) ++cursor;
+  if (cursor == end || *cursor++ != '"') return false;
   size_t length = 0;
-  while (*cursor && *cursor != '"') {
+  while (cursor < end && *cursor != '"') {
     char value = *cursor++;
     if (value == '\\') {
+      if (cursor == end) return false;
       value = *cursor++;
       if (value == 'n') value = '\n';
       else if (value == 'r') value = '\r';
       else if (value == 't') value = '\t';
+      else if (value != '"' && value != '\\' && value != '/') return false;
     }
+    if (static_cast<unsigned char>(value) < 0x20) return false;
     if (length + 1 >= capacity) return false;
     output[length++] = value;
   }
-  if (*cursor != '"') return false;
+  if (cursor == end || *cursor != '"') return false;
   output[length] = 0;
   return required ? length != 0 : true;
 }
@@ -42,28 +58,33 @@ inline bool jsonField(const char* json, const char* name, char* output,
 inline bool parseProvisioningHandoff(const char* json, size_t length,
                                      ProvisioningHandoff& output) {
   if (!json || !length || length >= 768) return false;
+  if (memchr(json, 0, length)) return false;
+  const char* end = json + length;
+  const char* first = json;
+  while (first < end && (*first == ' ' || *first == '\t' ||
+                         *first == '\r' || *first == '\n')) ++first;
+  const char* last = end;
+  while (last > first && (last[-1] == ' ' || last[-1] == '\t' ||
+                          last[-1] == '\r' || last[-1] == '\n')) --last;
+  if (last - first < 2 || *first != '{' || last[-1] != '}') return false;
   output = ProvisioningHandoff();
-  if (!jsonField(json, "wifi_ssid", output.wifiSsid, sizeof(output.wifiSsid), true) ||
-      !jsonField(json, "wifi_password", output.wifiPassword, sizeof(output.wifiPassword), false) ||
-      !jsonField(json, "link_url", output.linkUrl, sizeof(output.linkUrl), true) ||
-      !jsonField(json, "token", output.token, sizeof(output.token), true)) return false;
+  if (!jsonField(first, last, "wifi_ssid", output.wifiSsid,
+                 sizeof(output.wifiSsid), true) ||
+      !jsonField(first, last, "wifi_password", output.wifiPassword,
+                 sizeof(output.wifiPassword), false) ||
+      !jsonField(first, last, "link_url", output.linkUrl,
+                 sizeof(output.linkUrl), true) ||
+      !jsonField(first, last, "token", output.token,
+                 sizeof(output.token), true)) return false;
   return strncmp(output.linkUrl, "wss://", 6) == 0;
 }
 
-inline bool generateSecret(char (&output)[kSecretTextBytes]) {
+inline bool generateSecret(char (&output)[kSecretTextBytes],
+                           FlovaEntropySource& entropy) {
   static const char alphabet[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
   uint8_t raw[32] = {};
-#if defined(ESP32)
-  for (size_t i = 0; i < sizeof(raw); i += 4) {
-    const uint32_t value = esp_random();
-    memcpy(raw + i, &value, (sizeof(raw) - i >= 4) ? 4 : sizeof(raw) - i);
-  }
-#elif defined(ESP8266)
-  for (size_t i = 0; i < sizeof(raw); ++i) raw[i] = static_cast<uint8_t>(os_random());
-#else
-  for (size_t i = 0; i < sizeof(raw); ++i) raw[i] = static_cast<uint8_t>(random(0, 256));
-#endif
+  for (size_t i = 0; i < sizeof(raw); ++i) raw[i] = entropy.byte();
   size_t outputLength = 0;
   uint32_t bits = 0;
   uint8_t available = 0;

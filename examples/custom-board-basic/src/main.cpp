@@ -4,15 +4,23 @@
 // HAL, FreeRTOS, a PLC SDK, Ethernet, cellular, BLE, LoRaWAN, or a gateway.
 class BoardLink : public flova::Link {
  public:
+  explicit BoardLink(uint32_t bootNonce) : bootNonce_(bootNonce) {}
   bool begin() override { return true; }
   bool connected() const override { return online_; }
   bool send(const flova::Message&) override { return online_; }
   void poll() override {}
   void setReceiver(flova::MessageReceiver receiver, void* context) override { receiver_ = receiver; context_ = context; }
+  uint32_t messageNonce() const override { return bootNonce_; }
+  bool bindDatastreams(const char* const* keys, size_t count, DatastreamId* ids) override {
+    if (!keys || !ids || count > 1 || (count && !keys[0])) return false;
+    if (count) ids[0] = 1;
+    return true;
+  }
  private:
   bool online_ = true;
   flova::MessageReceiver receiver_ = 0;
   void* context_ = 0;
+  uint32_t bootNonce_;
 };
 
 class BoardStorage : public flova::Storage {
@@ -36,15 +44,18 @@ class BoardStorage : public flova::Storage {
 class BoardClock : public flova::Clock { public: uint64_t milliseconds() const override { return 0; } };
 class BoardLogger : public flova::Logger { public: void log(const char*) override {} };
 
-BoardLink link;
+// A production board supplies a fresh non-zero hardware-random value on every
+// boot. This fixed value keeps the host compile contract deterministic.
+BoardLink link(0x43555354UL);
 BoardStorage storage;
 BoardClock clockSource;
 BoardLogger logger;
 flova::Device flovaDevice(link, storage, clockSource, logger);
 flova::Datastream<bool> relay = flovaDevice.datastream<bool>("relay");
 
-static flova::WriteResult setRelay(bool enabled) {
+static flova::WriteResult setRelay(void* context, bool enabled) {
   // Replace with the board's safe hardware operation.
+  (void)context;
   (void)enabled;
   return flova::WriteResult::accept();
 }
@@ -57,7 +68,7 @@ int main() {
   budgets[static_cast<size_t>(flova::ResourceKind::History)].maximumBytes = 8192;
   budgets[static_cast<size_t>(flova::ResourceKind::History)].elastic = true;
   flovaDevice.resourcePlan(budgets, static_cast<size_t>(flova::ResourceKind::Count));
-  relay.onWrite(setRelay).offline(flova::OfflinePolicy::KeepLatest);
+  relay.onWrite(setRelay, nullptr).offline(flova::OfflinePolicy::KeepLatest);
   flovaDevice.begin();
   relay.write(true);
   for (;;) flovaDevice.run();

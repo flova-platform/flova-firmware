@@ -7,12 +7,9 @@
 #include "FlovaBuildConfig.h"
 #include "FlovaConfigurationRuntime.h"
 #include "FlovaDatastreamId.h"
-#include "FlovaTypes.h"
 
-// Temporary Arduino-runtime transport surface. New board ports should
-// implement flova::Link from FlovaCore.h instead. This type remains only for
-// the current ESP application migration and must not become a second core
-// protocol abstraction.
+// Internal wire-record transport used by the Arduino codec implementation.
+// Public applications implement flova::Link from FlovaCore.h instead.
 // The SDK deliberately exposes domain records, never a route or serialized
 // payload.  A platform Link implementation owns CBOR and the outer frame.
 static const size_t FLOVA_LINK_TEXT_BYTES = FLOVA_TEXT_CAPACITY;
@@ -242,27 +239,4 @@ struct FlovaLinkInboundMessage {
 };
 
 typedef void (*FlovaMessageCallback)(const FlovaLinkInboundMessage& message);
-
-class FlovaTransport {
- public:
-  virtual ~FlovaTransport() {}
-  virtual bool begin() = 0;
-  virtual bool connected() = 0;
-  virtual bool connect(const char* deviceId, const char* secret) = 0;
-  // Keys are declaration-time inputs only. The transport sends them once
-  // during the authenticated binding phase and never stores a name registry.
-  virtual bool setDatastreamKeys(const char* const* keys, uint8_t count) = 0;
-  virtual void setConfigurationGeneration(uint32_t generation) = 0;
-  virtual bool publishState(const FlovaLinkStateBatch& message) = 0;
-  virtual bool publishCommandResult(const FlovaLinkCommandResult& message) = 0;
-  virtual bool publishHeartbeat(const FlovaLinkHeartbeat& message) = 0;
-  virtual bool publishConfigurationReport(const FlovaLinkConfigurationReport& message) = 0;
-  virtual bool publishConfigurationState(const FlovaLinkConfigurationState& message) = 0;
-  virtual bool publishOtaReport(const FlovaLinkOtaReport& message) = 0;
-  virtual bool publishScheduleStatus(const FlovaLinkScheduleStatus& message) = 0;
-  virtual bool publishScheduleRenew(const FlovaLinkScheduleStatus& message) = 0;
-  virtual bool publishTimeRequest(const FlovaLinkTimeRequest& message) = 0;
-  virtual void disconnect() {}
-  virtual void setCallback(FlovaMessageCallback callback) = 0;
-  virtual void loop() = 0;
-};
+typedef void (*FlovaMessageCallbackWithContext)(void* context, const FlovaLinkInboundMessage& message);

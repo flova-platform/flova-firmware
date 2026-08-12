@@ -19,23 +19,38 @@ static const size_t kProvisionTokenBytes = 65;
 static const size_t kProvisioningErrorBytes = 48;
 static const uint16_t kConfigurationImageVersion = 1;
 
+inline bool formatUuidText(const uint8_t (&bytes)[16], char* output,
+                           size_t capacity) {
+  static const char digits[] = "0123456789abcdef";
+  if (!output || capacity < 37) return false;
+
+  size_t cursor = 0;
+  for (size_t i = 0; i < 16; ++i) {
+    if (i == 4 || i == 6 || i == 8 || i == 10) output[cursor++] = '-';
+    output[cursor++] = digits[bytes[i] >> 4];
+    output[cursor++] = digits[bytes[i] & 0x0f];
+  }
+  output[cursor] = 0;
+  return true;
+}
+
 struct DeviceConfiguration {
-  char wifiSsid[kWifiSsidBytes] = {};
-  char wifiPassword[kWifiPasswordBytes] = {};
-  char deviceId[kDeviceIdBytes] = {};
-  char linkUrl[kLinkUrlBytes] = {};
-  char linkSecret[kSecretTextBytes] = {};
-  char templateVersionId[kTemplateIdBytes] = {};
-  char checksum[kChecksumTextBytes] = {};
-  uint32_t generation = 0;
+  char wifiSsid[kWifiSsidBytes];
+  char wifiPassword[kWifiPasswordBytes];
+  char deviceId[kDeviceIdBytes];
+  char linkUrl[kLinkUrlBytes];
+  char linkSecret[kSecretTextBytes];
+  char templateVersionId[kTemplateIdBytes];
+  char checksum[kChecksumTextBytes];
+  uint32_t generation;
 };
 
 struct ProvisioningHandoff {
-  char wifiSsid[kWifiSsidBytes] = {};
-  char wifiPassword[kWifiPasswordBytes] = {};
-  char linkUrl[kLinkUrlBytes] = {};
-  char token[kProvisionTokenBytes] = {};
-  char linkSecret[kSecretTextBytes] = {};
+  char wifiSsid[kWifiSsidBytes];
+  char wifiPassword[kWifiPasswordBytes];
+  char linkUrl[kLinkUrlBytes];
+  char token[kProvisionTokenBytes];
+  char linkSecret[kSecretTextBytes];
 };
 
 struct ProvisioningHandoffImage {
@@ -94,10 +109,14 @@ inline bool provisioningValid(const ProvisioningHandoff& handoff) {
 
 inline void makeProvisioningImage(const ProvisioningHandoff& handoff,
                                    ProvisioningHandoffImage& image) {
-  image = ProvisioningHandoffImage();
+  // The facade may parse directly into image.handoff to avoid another
+  // maximum-sized provisioning object on the ESP8266 stack.
+  if (&handoff != &image.handoff) image.handoff = handoff;
   image.version = kConfigurationImageVersion;
-  image.handoff = handoff;
-  image.checksum = provisioningChecksum(handoff);
+  image.attempts = 0;
+  image.inProgress = 0;
+  memset(image.lastError, 0, sizeof(image.lastError));
+  image.checksum = provisioningChecksum(image.handoff);
 }
 
 inline bool verifyProvisioningImage(const ProvisioningHandoffImage& image) {

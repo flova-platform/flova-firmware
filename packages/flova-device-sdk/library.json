@@ -6,5 +6,6 @@
   "license": "MIT",
   "frameworks": "*",
   "platforms": "*",
-  "build": { "includeDir": "include" }
+  "build": { "includeDir": "include" },
+  "dependencies": { "flova-link": "^1.0.0" }
 }

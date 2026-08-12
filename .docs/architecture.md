@@ -111,8 +111,8 @@ valid outside those paths.
 This is the required architecture, not evidence that a particular build has
 completed every acceptance test. Release claims require measured results.
 
-The current ESP applications still compile through the older `FlovaDevice` and
-`FlovaTransport` compatibility surface. That surface is migration-only, not a
-second product architecture. New board integrations and new SDK behavior must
-use `flova::Device` and the service seams described in
+ESP applications compose `flova::Device` through explicit board classes. The
+board header owns platform identity, entropy, storage, provisioning, and
+restart behavior; shared facade code does not select a board with preprocessor
+branches. New board integrations use the service seams described in
 `.docs/custom-boards.md`.

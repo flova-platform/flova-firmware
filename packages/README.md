@@ -9,7 +9,14 @@ These directories are reusable libraries, not application entry points.
 | `flova-esp32` | ESP32 provisioning, boot/storage policy, and board composition | Portable SDK semantics |
 | `flova-esp8266` | ESP8266 provisioning, TLS/resource policy, boot/storage, and board composition | Portable SDK semantics |
 
-`FlovaDevice.h` and `FlovaTransport.h` remain temporarily available for the
-existing ESP applications. They are migration-only compatibility headers; new
-board ports must include `FlovaCore.h` and implement the four `flova::` service
-interfaces documented in `.docs/custom-boards.md`.
+Arduino users who want to keep their own application code should install the
+matching board package and include `<FlovaEsp32.h>` or `<FlovaEsp8266.h>`.
+Both concrete classes expose the same typed facade; the application retains
+ownership of GPIO, sensors, and long-running work. `FlovaProvisioningConfig`
+enables the selected board package's persisted Wi-Fi and phone setup lifecycle.
+The public protocol package is named `flova-link`; generated zcbor headers
+remain an internal implementation detail of that package.
+
+`FlovaCore.h` is the portable runtime. New board ports implement the four
+`flova::` service interfaces and compose an explicit board class as documented
+in `.docs/custom-boards.md`.

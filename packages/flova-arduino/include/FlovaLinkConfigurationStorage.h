@@ -3,15 +3,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <FlovaCore.h>
 #include <FlovaConfigurationInstaller.h>
-#include <FlovaStorage.h>
 
 // Shared fixed-key A/B adapter. Board storage supplies atomic bounded binary
 // reads/writes; this class owns generation metadata and record-slot naming.
 // It never retains more than one persisted record in a local workspace.
 class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage {
  public:
-  FlovaLinkConfigurationStorage(FlovaStorage& storage, uint32_t maximumRecords)
+  FlovaLinkConfigurationStorage(flova::Storage& storage, uint32_t maximumRecords)
       : storage_(storage), maximumRecords_(maximumRecords) {}
 
   bool activeGeneration(uint32_t& generation) const override {
@@ -252,7 +252,7 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
                                         offsetof(Pointer, checksum));
   }
 
-  FlovaStorage& storage_;
+  flova::Storage& storage_;
   uint32_t maximumRecords_;
   mutable StoredRecord storedWorkspace_ = {};
   mutable char manifestKey_[12] = {};

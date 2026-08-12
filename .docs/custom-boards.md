@@ -2,14 +2,15 @@
 
 `FlovaCore.h` is the canonical header-only C++11 runtime with no Arduino, ESP, Wi-Fi, WebSocket, exception, or RTTI dependency. It can run on an STM32 HAL/FreeRTOS application, another MCU SDK, an industrial Linux controller, or a PLC runtime that supports C++ integration.
 
-Do not start a new board port from `FlovaDevice.h` or `FlovaTransport.h`; those
-are the temporary Arduino-runtime compatibility surface used by the existing
-ESP applications. New board code should include `FlovaCore.h` and compose the
-portable `flova::Device` with its own services.
+New board code includes `FlovaCore.h` and composes the portable
+`flova::Device` with its own services. There is no compatibility runtime or
+transport base class to inherit.
 
 Implement four bounded services:
 
-- `flova::Link`: moves structured `flova::Message` envelopes and calls the registered receiver with its context.
+- `flova::Link`: moves structured `flova::Message` envelopes, supplies a fresh
+  non-zero hardware-random boot nonce, and calls the registered receiver with
+  its context.
 - `flova::Storage`: reads and writes fixed-size records using NVS, EEPROM, flash, a file, or PLC retained memory.
 - `flova::Clock`: supplies monotonic milliseconds.
 - `flova::Logger`: maps SDK diagnostics to the target's bounded logger.
@@ -36,7 +37,56 @@ geometry, write granularity, persistence, and wear sensitivity. Configure a
 `ResourceBudget` array before `Device::begin()`; history receives no implicit
 budget. This makes unsupported storage fail closed instead of filling flash.
 
-The application supplies credentials and initializes its network before or inside `Link::begin()`. Provisioning is not required by the core. ESP SoftAP provisioning remains a board-wrapper feature.
+The portable core does not own Wi-Fi or provisioning. The Arduino ESP facade
+offers both app-managed static credentials and an optional board-wrapper
+provisioning lifecycle. ESP32 and ESP8266 board packages own the SoftAP,
+local HTTP endpoints, and durable handoff storage.
+
+## Arduino ESP client
+
+For an ESP32 or ESP8266 Arduino project that already owns its Wi-Fi and GPIO,
+include one public header:
+
+```cpp
+#include <FlovaEsp32.h>
+
+const FlovaClientConfig config = {
+    "device-uuid", "base64url-secret", "wss://engine.example/api/device-link"};
+FlovaEsp32 flova(config);
+flova::Datastream<bool> led = flova.datastream<bool>("LED");
+
+static flova::WriteResult writeLed(void* context, bool value) {
+  digitalWrite(*static_cast<uint8_t*>(context), value ? HIGH : LOW);
+  return flova::WriteResult::accept();
+}
+
+void setup() {
+  static uint8_t pin = LED_BUILTIN;
+  pinMode(pin, OUTPUT);
+  led.mode(flova::Mode::Command).onWrite(writeLed, &pin);
+  flova.begin();
+}
+
+void loop() { flova.run(); }
+```
+
+`FlovaEsp32` and `FlovaEsp8266` are explicit board compositions over the same
+typed facade. Include the matching board header; the shared facade does not
+inspect `ESP32` or `ESP8266` macros. Datastream names are declared by the
+application and resolved to the Engine's numeric IDs during the authenticated
+binding handshake. The handler receives a context pointer, runs from
+`flova.run()`, and may safely own the board's GPIO or application state.
+Passing `FlovaProvisioningConfig` enables persisted credentials, automatic
+setup AP fallback, and `startProvisioning()` for factory reset or
+re-provisioning.
+
+Custom ports set the required `FLOVA_*_CAPACITY` values in their build profile.
+Those macros describe fixed memory layout only; runtime behavior belongs in
+composed service classes.
+
+Install `Flova ESP32` or `Flova ESP8266` for a board-specific package; both
+expose the same typed API through explicit board classes. `flova-device-sdk` remains the portable option
+for non-Arduino boards, where the application supplies its own four services.
 
 For a production custom board, implement `flova::LinkBootstrapClient` and use
 `flova::Provisioner`; this keeps Link v1 bootstrap, session validation, atomic

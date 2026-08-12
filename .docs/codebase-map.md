@@ -14,7 +14,7 @@ examples/                   firmware applications and compile contracts
 protocol/                   CDDL authority, generated codecs, and vectors
 third_party/                vendored protocol dependencies
 test/host/                  CMake host tests for the portable runtime/protocol
-test/test_datastream/       PlatformIO Unity tests for embedded compatibility
+test/test_datastream/       PlatformIO Unity tests for the portable runtime
 scripts/                    generators and bounded-contract checks
 .docs/                      maintained architecture and contributor contracts
 ```
@@ -38,9 +38,9 @@ selected example application
 ```
 
 `FlovaCore.h` and the `flova::` namespace are the canonical portable SDK
-surface for new board ports. The older `FlovaDevice`/`FlovaTransport` surface
-is retained only while the ESP applications migrate; new features must not be
-added there.
+surface. Arduino applications select `FlovaEsp32` or `FlovaEsp8266` explicitly;
+board-specific composition owns platform APIs and the portable core remains
+unchanged.
 
 Portable core code must not include Arduino, ESP, GPIO, Wi-Fi, WebSocket, TLS,
 or filesystem headers. A board supplies `Link`, `Storage`, `Clock`, and

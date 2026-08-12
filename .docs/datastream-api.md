@@ -1,6 +1,6 @@
 # Datastream API
 
-Create a typed handle from the board wrapper or `FlovaDevice`:
+Create a typed handle from an explicit board wrapper:
 
 ```cpp
 auto temperature = flova.datastream<float>("temperature");

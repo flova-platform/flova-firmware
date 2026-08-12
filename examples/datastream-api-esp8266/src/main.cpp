@@ -1,34 +1,58 @@
 #include <Arduino.h>
+#include <ESP8266WiFi.h>
 #include <FlovaEsp8266.h>
 
-FlovaEsp8266 device;
-auto temperature = device.datastream<float>("temperature").mode(FlovaDatastreamMode::Sample).offline(FlovaOfflinePolicy::Drop);
-auto relay = device.datastream<bool>("relay").persist(FlovaPersistencePolicy::Persistent);
-auto cookMode = device.datastream<String>("cook_mode").mode(FlovaDatastreamMode::Command).offline(FlovaOfflinePolicy::Reject);
+namespace {
+const FlovaClientConfig CONFIG = {
+    "00000000-0000-0000-0000-000000000000",
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "wss://engine.example.invalid/api/device-link"};
+const char* WIFI_SSID = "your-wifi";
+const char* WIFI_PASSWORD = "your-password";
+const uint8_t RELAY_PIN = LED_BUILTIN;
+const uint8_t WATER_PIN = D5;
 
-static FlovaReadResult<float> readTemperature() { return FlovaReadResult<float>::success(25.0f); }
-static FlovaWriteResult writeRelay(bool enabled) {
-  if (enabled && digitalRead(D5) == LOW) return FlovaWriteResult::reject("insufficient_water");
-  digitalWrite(LED_BUILTIN, enabled ? LOW : HIGH);
-  return FlovaWriteResult::accept();
+FlovaEsp8266 client(CONFIG);
+flova::Datastream<float> temperature = client.datastream<float>("temperature");
+flova::Datastream<bool> relay = client.datastream<bool>("relay");
+flova::Datastream<const char*> cookMode = client.datastream<const char*>("cook_mode");
+uint32_t lastSampleMs = 0;
+
+flova::ReadResult<float> readTemperature() {
+  return flova::ReadResult<float>::success(25.0f);
 }
-static FlovaWriteResult setCookMode(String mode) {
-  return mode == "start" || mode == "pause" || mode == "resume" || mode == "cancel"
-             ? FlovaWriteResult::accept()
-             : FlovaWriteResult::reject("mode_not_supported");
+
+flova::WriteResult writeRelay(void*, bool enabled) {
+  if (enabled && digitalRead(WATER_PIN) == LOW)
+    return flova::WriteResult::reject("insufficient_water");
+  digitalWrite(RELAY_PIN, enabled ? LOW : HIGH);
+  return flova::WriteResult::accept();
+}
+
+flova::WriteResult writeCookMode(void*, const char* mode) {
+  return mode && (!strcmp(mode, "start") || !strcmp(mode, "pause") ||
+                  !strcmp(mode, "resume") || !strcmp(mode, "cancel"))
+             ? flova::WriteResult::accept()
+             : flova::WriteResult::reject("mode_not_supported");
+}
 }
 
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(D5, INPUT);
-  temperature.onRead(readTemperature);
-  relay.onWrite(writeRelay);
-  cookMode.onWrite(setCookMode);
-  device.begin();
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(WATER_PIN, INPUT);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  temperature.mode(flova::Mode::Sample).offline(flova::OfflinePolicy::Drop).onRead(readTemperature);
+  relay.persist(flova::PersistencePolicy::Persistent).onWrite(writeRelay, nullptr);
+  cookMode.mode(flova::Mode::Command).offline(flova::OfflinePolicy::Reject).onWrite(writeCookMode, nullptr);
+  client.begin();
 }
 
 void loop() {
-  device.loop();
-  temperature.refresh();
-  if (temperature.read() > 30.0f) relay.write(false);
+  client.run();
+  if (millis() - lastSampleMs >= 1000) {
+    lastSampleMs = millis();
+    temperature.refresh();
+    if (temperature.read() > 30.0f) relay.write(false);
+  }
+  yield();
 }

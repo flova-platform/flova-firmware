@@ -38,7 +38,9 @@ review of the CDDL, vectors, generated codecs, and native tests.
 
 ## Runtime boundary
 
-The generated codec is the only firmware protocol implementation. The
+The generated codec is the only firmware protocol implementation. It is
+published to PlatformIO as `flova-link`; generated zcbor headers remain an
+implementation detail and are not part of the application-facing SDK API. The
 portable SDK owns bounded message values and Link-facing contracts; Arduino
 and board packages own WebSocket, TLS, Wi-Fi, storage, and callback scheduling.
 The wire contract does not permit a second JSON, TLV, or generic CBOR tree

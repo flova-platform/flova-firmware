@@ -59,4 +59,6 @@ use the 2,048/512 Link and 16,384/512 OTA profiles with the 16 KiB cache,
 48 KiB IRAM shared-second-heap option. Diagnostics must show DRAM and IRAM; a
 build without the required second heap must fail closed before connecting.
 
-Native host execution is recommended follow-up work. It requires extracting Arduino `String` behind a native-compatible value boundary; do that as a focused change rather than adding a production fake.
+The CMake host suite executes the portable runtime, configuration installer,
+protocol codec/fuzz contracts, WebSocket framing, and a custom-board compile
+contract. Keep Arduino `String` and platform APIs outside that include closure.

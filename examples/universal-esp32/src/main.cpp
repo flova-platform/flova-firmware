@@ -1,7 +1,10 @@
 #include <Arduino.h>
 #include <FlovaEsp32.h>
 
-FlovaEsp32 device;
+static FlovaClientConfig config = {nullptr, nullptr, nullptr};
+static FlovaProvisioningConfig provisioning(nullptr, nullptr, nullptr,
+                                            "universal_esp32", true);
+FlovaEsp32 device(config, provisioning);
 
 void setup() {
   Serial.begin(115200);
@@ -12,5 +15,5 @@ void setup() {
 }
 
 void loop() {
-  device.loop();
+  device.run();
 }

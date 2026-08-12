@@ -8,7 +8,7 @@
 #include <FlovaWs.h>
 #include <FlovaTlsProfile.h>
 #include <FlovaTlsRoots.h>
-#include <FlovaTransport.h>
+#include <FlovaLinkMessages.h>
 
 extern "C" {
 #include <flova_link_decode.h>
@@ -26,7 +26,7 @@ extern "C" {
 // records and never sees CBOR, JSON, or a serialized configuration document.
 // Network bytes are copied into the fixed queue; board code drains it from
 // loop(), where application hardware is allowed to run.
-class ArduinoDeviceLink : public FlovaTransport {
+class ArduinoDeviceLink final {
  public:
 #if defined(ESP8266)
   typedef BearSSL::WiFiClientSecure LinkTlsClient;
@@ -49,8 +49,9 @@ class ArduinoDeviceLink : public FlovaTransport {
   static_assert(sizeof(struct config_record) <= 384,
                 "generated CONFIG_RECORD decode workspace exceeded its budget");
 
-  ArduinoDeviceLink() : websocket_(tls_) {}
-  ~ArduinoDeviceLink() override { disconnect(); }
+  explicit ArduinoDeviceLink(FlovaEntropySource& entropy)
+      : websocket_(tls_, entropy) {}
+  ~ArduinoDeviceLink() { disconnect(); }
 
 #if defined(ESP8266)
   void setTrustAnchors(BearSSL::X509List& anchors) { trustAnchors_ = &anchors; }
@@ -63,7 +64,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     return parseUrl();
   }
 
-  bool setDatastreamKeys(const char* const* keys, uint8_t count) override {
+  bool setDatastreamKeys(const char* const* keys, uint8_t count) {
     if (count > kMaximumDatastreamBindings || (count && !keys)) return false;
     for (uint8_t i = 0; i < count; ++i) {
       if (!keys[i] || !*keys[i] || strlen(keys[i]) > FLOVA_MAX_DATASTREAM_KEY_LENGTH) return false;
@@ -113,16 +114,16 @@ class ArduinoDeviceLink : public FlovaTransport {
     return readConfigurationUnit(output, value.config_record_record_body);
   }
 
-  bool begin() override {
+  bool begin() {
     return parseUrl();
   }
 
-  bool connected() override {
+  bool connected() {
     return active_ && websocket_.connected() &&
            (bootstrap_ || (authenticated_ && !bindingPending_));
   }
 
-  bool connect(const char* deviceId, const char* secret) override {
+  bool connect(const char* deviceId, const char* secret) {
     if (!parseUuid(deviceId, deviceId_) || !decodeSecret(secret, secret_) || !parseUrl()) return false;
     disconnect();
     connectionAttemptFailed_ = false;
@@ -172,11 +173,11 @@ class ArduinoDeviceLink : public FlovaTransport {
     return openConnection(true);
   }
 
-  void setConfigurationGeneration(uint32_t generation) override {
+  void setConfigurationGeneration(uint32_t generation) {
     configurationGeneration_ = generation;
   }
 
-  bool publishState(const FlovaLinkStateBatch& message) override {
+  bool publishState(const FlovaLinkStateBatch& message) {
     if (!connected() || !message.count || message.count > FLOVA_LINK_MAX_STATE_READINGS) return false;
     struct state value = {};
     value.state_generation = message.configurationGeneration;
@@ -190,7 +191,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x11, message.messageId, value, cbor_encode_state);
   }
 
-  bool publishCommandResult(const FlovaLinkCommandResult& message) override {
+  bool publishCommandResult(const FlovaLinkCommandResult& message) {
     if (!connected()) return false;
     struct command_result_r value = {};
     const bool ok = message.status == FlovaLinkResultStatus::Ok ||
@@ -220,7 +221,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x12, message.messageId, value, cbor_encode_command_result);
   }
 
-  bool publishHeartbeat(const FlovaLinkHeartbeat& message) override {
+  bool publishHeartbeat(const FlovaLinkHeartbeat& message) {
     if (!connected()) return false;
     struct heartbeat value = {};
     value.heartbeat_generation = configurationGeneration_;
@@ -230,7 +231,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x10, message.messageId, value, cbor_encode_heartbeat);
   }
 
-  bool publishConfigurationReport(const FlovaLinkConfigurationReport& message) override {
+  bool publishConfigurationReport(const FlovaLinkConfigurationReport& message) {
     if (!connected()) return false;
     struct config_ack value = {};
     value.config_ack_ack_generation = message.generation;
@@ -243,7 +244,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x18, message.messageId, value, cbor_encode_config_ack);
   }
 
-  bool publishConfigurationState(const FlovaLinkConfigurationState& message) override {
+  bool publishConfigurationState(const FlovaLinkConfigurationState& message) {
     if (!connected()) return false;
     struct config_reported value = {};
     value.config_reported_reported_config_generation = message.generation;
@@ -254,7 +255,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x13, message.messageId, value, cbor_encode_config_reported);
   }
 
-  bool publishOtaReport(const FlovaLinkOtaReport& message) override {
+  bool publishOtaReport(const FlovaLinkOtaReport& message) {
     if (!connected()) return false;
     struct ota_reported value = {};
     if (!setId(value.ota_reported_reported_ota_id, message.installId) ||
@@ -263,7 +264,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x14, message.messageId, value, cbor_encode_ota_reported);
   }
 
-  bool publishScheduleStatus(const FlovaLinkScheduleStatus& message) override {
+  bool publishScheduleStatus(const FlovaLinkScheduleStatus& message) {
     if (!connected()) return false;
     struct schedule_reported value = {};
     value.schedule_reported_reported_schedule_generation = message.generation;
@@ -275,7 +276,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x15, message.messageId, value, cbor_encode_schedule_reported);
   }
 
-  bool publishScheduleRenew(const FlovaLinkScheduleStatus& message) override {
+  bool publishScheduleRenew(const FlovaLinkScheduleStatus& message) {
     if (!connected()) return false;
     struct schedule_renew value = {};
     value.schedule_renew_renew_generation = message.generation;
@@ -283,7 +284,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x16, message.messageId, value, cbor_encode_schedule_renew);
   }
 
-  bool publishTimeRequest(const FlovaLinkTimeRequest& message) override {
+  bool publishTimeRequest(const FlovaLinkTimeRequest& message) {
     if (!connected()) return false;
     struct time_request value = {};
     value.time_request_id = message.messageId;
@@ -291,8 +292,12 @@ class ArduinoDeviceLink : public FlovaTransport {
     return sendEncoded(0x17, message.messageId, value, cbor_encode_time_request);
   }
 
-  void setCallback(FlovaMessageCallback callback) override { callback_ = callback; }
-  void loop() override {
+  void setCallback(FlovaMessageCallback callback) { callback_ = callback; }
+  void setCallbackContext(FlovaMessageCallbackWithContext callback, void* context) {
+    callbackWithContext_ = callback;
+    callbackContext_ = context;
+  }
+  void loop() {
     if (!active_) return;
 #if defined(ESP8266)
     pumpTransmit();
@@ -334,9 +339,10 @@ class ArduinoDeviceLink : public FlovaTransport {
     // Configuration decoding uses generated CBOR structs that are too large
     // for the ESP8266 callback stack. Dispatch only after handleFrame() has
     // returned and those temporary structs have been released.
-    if (pendingCallback_ && callback_ && active_) {
+    if (pendingCallback_ && (callback_ || callbackWithContext_) && active_) {
       pendingCallback_ = false;
-      callback_(inbound_);
+      if (callbackWithContext_) callbackWithContext_(callbackContext_, inbound_);
+      else callback_(inbound_);
     }
   }
   bool takeBootstrapError() {
@@ -354,7 +360,7 @@ class ArduinoDeviceLink : public FlovaTransport {
     bootstrapErrorPending_ = false;
     return pending;
   }
-  void disconnect() override {
+  void disconnect() {
     if (disconnecting_) return;
     disconnecting_ = true;
     const bool hadConnection = active_ || authenticated_ || bootstrap_ ||
@@ -734,6 +740,9 @@ class ArduinoDeviceLink : public FlovaTransport {
     copyId(inbound_.body.otaOffer.installId, value.ota_desired_ota_install_id);
     copyText(inbound_.body.otaOffer.version, value.ota_desired_ota_version);
     copyText(inbound_.body.otaOffer.url, value.ota_desired_ota_url);
+    if (value.ota_desired_ota_target_present)
+      copyText(inbound_.body.otaOffer.firmwareTarget,
+               value.ota_desired_ota_target.ota_desired_ota_target);
     if (!copyHex(inbound_.body.otaOffer.sha256, sizeof(inbound_.body.otaOffer.sha256),
                  value.ota_desired_ota_checksum)) return disconnect();
     inbound_.body.otaOffer.sizeBytes = static_cast<uint32_t>(value.ota_desired_ota_size);
@@ -753,7 +762,11 @@ class ArduinoDeviceLink : public FlovaTransport {
 
   void handleConfiguration(const flova::link::FrameView& frame) {
     inbound_ = FlovaLinkInboundMessage();
-    inbound_.type = FlovaLinkMessageType::ConfigurationRecord;
+    inbound_.type = frame.messageType == 0x28
+                        ? FlovaLinkMessageType::ConfigurationBegin
+                        : frame.messageType == 0x29
+                              ? FlovaLinkMessageType::ConfigurationRecord
+                              : FlovaLinkMessageType::ConfigurationEnd;
     inbound_.messageId = frame.messageId;
     inbound_.body.configuration.messageId = frame.messageId;
     inbound_.body.configuration.phase = frame.messageType == 0x28 ? FlovaLinkConfigurationPhase::Begin :
@@ -1211,6 +1224,8 @@ class ArduinoDeviceLink : public FlovaTransport {
   bool bindingPending_ = false;
   uint32_t configurationGeneration_ = 0;
   FlovaMessageCallback callback_ = nullptr;
+  FlovaMessageCallbackWithContext callbackWithContext_ = nullptr;
+  void* callbackContext_ = nullptr;
   bool disconnecting_ = false;
   bool connectionAttemptFailed_ = false;
   bool bootstrapErrorPending_ = false;

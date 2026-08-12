@@ -25,9 +25,9 @@ area.
   deterministic conformance vectors. Do not hand-edit generated files.
 - `test/`: host and embedded tests. `scripts/`: generators and static guards.
 
-`FlovaDevice.h` and `FlovaTransport.h` are the migration-only compatibility
-surface used by the current ESP applications. Do not add new SDK behavior or
-new board ports there; use `FlovaCore.h` and the `flova::` service interfaces.
+`FlovaCore.h` is the only device runtime. `FlovaLinkMessages.h` contains the
+bounded Arduino codec records but no transport base class. Add SDK behavior to
+the `flova::` service interfaces and compose board services explicitly.
 
 ## Engineering rules
 
@@ -36,8 +36,7 @@ new board ports there; use `FlovaCore.h` and the `flova::` service interfaces.
 - Never update authoritative cached state, persistence, or revisions after a
   rejected hardware write.
 - Transport callbacks may copy into fixed-capacity queues only. Apply hardware
-  work from the board-owned device loop (`flova::Device::run()` or the current
-  compatibility loop).
+  work from the board-owned `flova::Device::run()` loop.
 - Keep frames, strings, queues, registries, command history, configuration
   records, and CBOR nesting explicitly bounded.
 - Persist and verify each configuration record before acknowledging it; retain

@@ -1,5 +1,5 @@
 {
-  "name": "flova-link-cbor-generated",
+  "name": "flova-link",
   "version": "1.0.0",
   "build": {
     "srcDir": "src",
