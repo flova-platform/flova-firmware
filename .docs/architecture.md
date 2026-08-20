@@ -43,7 +43,7 @@ untouched.
 
 ## Portable core and protocol boundary
 
-`FlovaCore.h` remains Arduino/ESP/GPIO/exception/RTTI-free. Board adapters own
+`FlovaDevice.h` remains Arduino/ESP/GPIO/exception/RTTI-free. Board adapters own
 WSS, TLS, and storage. Applications own Wi-Fi, servers, GPIO, OTA permission,
 and reboot policy unless they deliberately select a universal full-device
 composition. The C++11 core uses fixed

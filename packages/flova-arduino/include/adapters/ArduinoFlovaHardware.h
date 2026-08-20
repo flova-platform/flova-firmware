@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 #include <FlovaHardware.h>
 
 class ArduinoFlovaHardware final : public flova::Hardware {

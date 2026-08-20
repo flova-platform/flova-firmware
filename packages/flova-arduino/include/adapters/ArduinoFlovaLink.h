@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <new>
 
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 #include <FlovaClientLink.h>
 #include <FlovaTlsRoots.h>
 #include "ArduinoDeviceLink.h"

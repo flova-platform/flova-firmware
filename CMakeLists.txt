@@ -19,7 +19,7 @@ target_compile_definitions(flova-link-cbor PRIVATE ZCBOR_CANONICAL)
 
 add_library(flova-core INTERFACE)
 target_include_directories(flova-core INTERFACE
-  packages/flova-device-sdk/include
+  packages/flova-embedded-sdk/include
   protocol/generated/firmware/include
   third_party/zcbor/include)
 target_link_libraries(flova-core INTERFACE flova-link-cbor)

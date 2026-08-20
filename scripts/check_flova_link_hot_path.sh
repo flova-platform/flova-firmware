@@ -5,10 +5,10 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_dir"
 
 paths="
-packages/flova-device-sdk/include/FlovaCore.h
-packages/flova-device-sdk/include/FlovaLinkMessages.h
-packages/flova-device-sdk/include/FlovaConfigurationInstaller.h
-packages/flova-arduino/include/Flova.h
+packages/flova-embedded-sdk/include/FlovaDevice.h
+packages/flova-embedded-sdk/include/FlovaLinkMessages.h
+packages/flova-embedded-sdk/include/FlovaConfigurationInstaller.h
+packages/flova-arduino/include/FlovaArduino.h
 packages/flova-arduino/include/FlovaLinkConfigurationStorage.h
 packages/flova-arduino/include/adapters/ArduinoDeviceLink.h
 protocol/generated/firmware

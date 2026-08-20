@@ -6,13 +6,13 @@ cd "$repo_dir"
 failed=0
 
 if rg -n '#include[[:space:]]*[<"](Arduino|ESP|WiFi|FS|LittleFS)' \
-    packages/flova-device-sdk/include; then
+    packages/flova-embedded-sdk/include; then
   echo "error: portable SDK includes a platform header" >&2
   failed=1
 fi
 
 if rg -n '\bString\b|std::(string|vector|map)|\b(new|delete)\b' \
-    packages/flova-device-sdk/include; then
+    packages/flova-embedded-sdk/include; then
   echo "error: portable SDK uses an allocating or Arduino value type" >&2
   failed=1
 fi
@@ -22,15 +22,15 @@ if rg -n '\b(dynamic_cast|typeid|throw)[[:space:]<(]' packages examples test; th
   failed=1
 fi
 
-if find packages/flova-device-sdk -type f \
-    \( -name 'FlovaDevice.h' -o -name 'FlovaTransport.h' \
+if find packages/flova-embedded-sdk -type f \
+    \( -name 'FlovaTransport.h' \
        -o -name 'FlovaTypes.h' -o -name 'FlovaDevice.cpp' \) | grep -q .; then
   echo "error: legacy device runtime returned" >&2
   failed=1
 fi
 
 if rg -n '#if.*defined\((ESP32|ESP8266)\)' \
-    packages/flova-device-sdk packages/flova-arduino/include/Flova.h; then
+    packages/flova-embedded-sdk packages/flova-arduino/include/FlovaArduino.h; then
   echo "error: board selection leaked into shared runtime code" >&2
   failed=1
 fi

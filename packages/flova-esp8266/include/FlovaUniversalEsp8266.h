@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Flova.h>
+#include <FlovaArduino.h>
 #include <FlovaEsp8266.h>
 #include <FlovaEsp8266Provisioning.h>
 #include <adapters/ArduinoFlovaHardware.h>

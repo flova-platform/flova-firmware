@@ -7,7 +7,7 @@
   "frameworks": ["arduino"],
   "platforms": ["espressif32", "espressif8266"],
   "dependencies": {
-    "Flova Device SDK": "^0.2.0",
+    "Flova Embedded SDK": "^0.2.0",
     "flova-link": "^1.0.0"
   },
   "build": {

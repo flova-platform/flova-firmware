@@ -10,7 +10,7 @@ area.
 
 ## Repository boundaries
 
-- `packages/flova-device-sdk`: canonical C++11 `flova::Device` runtime. Its
+- `packages/flova-embedded-sdk`: canonical C++11 `flova::Device` runtime. Its
   portable include closure must not depend on Arduino, ESP, GPIO, Wi-Fi,
   WebSocket, TLS, filesystem, exceptions, RTTI, or unbounded containers.
 - `packages/flova-arduino`: Arduino clock, storage, logging, TLS, OTA, and
@@ -25,7 +25,7 @@ area.
   deterministic conformance vectors. Do not hand-edit generated files.
 - `test/`: host and embedded tests. `scripts/`: generators and static guards.
 
-`FlovaCore.h` is the only device runtime. `FlovaLinkMessages.h` contains the
+`FlovaDevice.h` is the only portable device runtime. `FlovaLinkMessages.h` contains the
 bounded Arduino codec records but no transport base class. Add SDK behavior to
 the `flova::` service interfaces and compose board services explicitly.
 
@@ -61,6 +61,7 @@ cmake -S . -B /tmp/flova-core-build
 cmake --build /tmp/flova-core-build
 ctest --test-dir /tmp/flova-core-build --output-on-failure
 scripts/check_flova_link_contract.sh
+scripts/check_flova_public_surface.sh
 scripts/check_esp8266_stack_usage.py
 pio run -e universal-esp32 -e universal-esp8266
 pio run -e datastream-api-esp32 -e datastream-api-esp8266

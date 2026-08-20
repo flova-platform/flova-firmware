@@ -1,15 +1,13 @@
 {
   "name": "Flova ESP8266",
   "version": "0.2.0",
-  "description": "Flova ESP8266 board services and custom Arduino client entry point",
+  "description": "Flova ESP8266 board package with plug-in and universal firmware entry points",
   "keywords": ["flova", "iot", "esp8266", "arduino"],
   "license": "MIT",
   "frameworks": ["arduino"],
   "platforms": ["espressif8266"],
   "build": { "includeDir": "include" },
   "dependencies": {
-    "Flova Arduino": "^0.2.0",
-    "Flova Device SDK": "^0.2.0",
-    "flova-link": "^1.0.0"
+    "Flova Arduino": "^0.2.0"
   }
 }

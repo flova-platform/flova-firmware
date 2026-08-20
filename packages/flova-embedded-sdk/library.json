@@ -1,7 +1,7 @@
 {
-  "name": "Flova Device SDK",
+  "name": "Flova Embedded SDK",
   "version": "0.2.0",
-  "description": "Portable C++11 local-first Flova datastream runtime",
+  "description": "Portable C++11 local-first Flova embedded device runtime",
   "keywords": ["flova", "iot", "datastream", "embedded"],
   "license": "MIT",
   "frameworks": "*",

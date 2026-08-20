@@ -1,5 +1,5 @@
 #pragma once
-#include "FlovaCore.h"
+#include "FlovaDevice.h"
 
 namespace flova {
 

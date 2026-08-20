@@ -5,9 +5,27 @@ The portable SDK keeps datastream state, safety rules, persistence hooks,
 offline delivery, scheduling, provisioning, and board-independent protocol
 contracts separate from Arduino and ESP implementation details.
 
-This repository is currently an MVP/development codebase. Applications use an
-explicit `FlovaEsp32` or `FlovaEsp8266`; board ports compose the same
-`flova::Device` runtime without a second SDK layer or platform-selection macros.
+This repository is currently an MVP/development codebase. Choose one public
+entry point for the way your firmware is built: `FlovaEsp32` or `FlovaEsp8266`
+for an existing Arduino application, `FlovaUniversalEsp32` or
+`FlovaUniversalEsp8266` for full-device firmware, and `flova::Device` for a
+non-Arduino board.
+
+## Choose an integration
+
+| Your firmware | Package | Include |
+| --- | --- | --- |
+| Existing ESP32 Arduino application | Flova ESP32 | `<FlovaEsp32.h>` |
+| Existing ESP8266 Arduino application | Flova ESP8266 | `<FlovaEsp8266.h>` |
+| Full-device ESP32 firmware | Flova ESP32 | `<FlovaUniversalEsp32.h>` |
+| Full-device ESP8266 firmware | Flova ESP8266 | `<FlovaUniversalEsp8266.h>` |
+| Custom board, RTOS, PLC, or gateway | Flova Embedded SDK | `<FlovaDevice.h>` |
+
+`Arduino.h`, `WiFi.h`, and `ESP8266WiFi.h` belong to the Arduino application
+and remain normal platform includes. Flova's transport, provisioning, and
+adapter headers are implementation details of the board entry points. Direct
+Arduino service composition is an advanced escape hatch documented in
+`.docs/custom-boards.md` and starts with `<FlovaArduino.h>`.
 
 ## Quickstart
 
@@ -40,7 +58,7 @@ automatic restart.
 ## Architecture
 
 ```text
-flova-device-sdk   portable C++11 runtime and domain contracts
+flova-embedded-sdk portable C++11 runtime and domain contracts
         ↓
 flova-arduino      Arduino services and Device Link adapter
         ↓
@@ -55,7 +73,7 @@ anchor; each environment selects its application from `examples/*/src`.
 
 ## Repository layout
 
-- `packages/flova-device-sdk`: portable `flova::Device` SDK.
+- `packages/flova-embedded-sdk`: portable `flova::Device` SDK for custom boards.
 - `packages/flova-arduino`: Arduino clock, storage, logging, TLS, OTA, and
   Device Link services.
 - `packages/flova-esp32`, `packages/flova-esp8266`: board-specific wrappers.
@@ -90,11 +108,11 @@ with 16,384-byte RX and 512-byte TX buffers.
 
 ## Portable board integration
 
-A new board should include `FlovaCore.h`, implement four bounded services, and
+A new board should include `FlovaDevice.h`, implement four bounded services, and
 compose the runtime in its own application:
 
 ```cpp
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 
 flova::Device device(link, storage, clock, logger);
 auto relay = device.datastream<bool>("relay");

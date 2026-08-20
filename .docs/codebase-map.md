@@ -6,7 +6,7 @@ source anchor; it contains no firmware implementation. Environments select an
 application under `examples/*/src` with `build_src_filter`.
 
 ```text
-packages/flova-device-sdk   portable C++11 domain runtime
+packages/flova-embedded-sdk portable C++11 domain runtime
 packages/flova-arduino      Arduino services and Device Link adapter
 packages/flova-esp32        passive ESP32 SDK and universal composition
 packages/flova-esp8266      passive ESP8266 SDK and universal composition
@@ -37,7 +37,7 @@ ESP32 / ESP8266 board packages
 selected example application
 ```
 
-`FlovaCore.h` and the `flova::` namespace are the canonical portable SDK
+`FlovaDevice.h` and the `flova::` namespace are the canonical portable SDK
 surface. Arduino applications select passive `FlovaEsp32` or `FlovaEsp8266`
 facades explicitly. No-code applications select `FlovaUniversalEsp32` or
 `FlovaUniversalEsp8266` to transfer whole-device ownership. The portable core

@@ -1,6 +1,6 @@
 #include <assert.h>
 #include <string.h>
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 #include <FlovaFactoryResetGesture.h>
 #include <FlovaProvisioning.h>
 #include <FlovaScheduler.h>

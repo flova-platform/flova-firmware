@@ -16,7 +16,7 @@ fi
 # out of board facades prevents direct SDK compositions from silently using an
 # unmounted filesystem, while also preventing board wrappers from mounting it
 # twice.
-storage_starts=$(rg -o 'storage_\.begin\(\)' packages/flova-arduino/include/Flova.h | wc -l | tr -d ' ')
+storage_starts=$(rg -o 'storage_\.begin\(\)' packages/flova-arduino/include/FlovaArduino.h | wc -l | tr -d ' ')
 if [ "$storage_starts" -ne 1 ]; then
   echo "error: FlovaClient must initialize storage exactly once" >&2
   exit 1

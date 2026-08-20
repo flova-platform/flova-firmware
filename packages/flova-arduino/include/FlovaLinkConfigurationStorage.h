@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 #include <FlovaConfigurationInstaller.h>
 
 // Shared fixed-key A/B adapter. Board storage supplies atomic bounded binary

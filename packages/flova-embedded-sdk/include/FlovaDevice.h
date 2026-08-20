@@ -9,7 +9,7 @@
 #include "FlovaDatastreamId.h"
 #include "FlovaResources.h"
 
-// Canonical standalone SDK runtime. This header intentionally owns only
+// Canonical standalone embedded SDK runtime. This header intentionally owns only
 // bounded domain state and service seams; board code supplies Link, Storage,
 // Clock, and Logger implementations. Keep Arduino, ESP, GPIO, networking,
 // filesystem, exceptions, RTTI, and unbounded containers out of this include

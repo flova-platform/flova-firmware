@@ -1,6 +1,6 @@
 #pragma once
 
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 #include <FlovaHardware.h>
 
 // The developer SDK never claims GPIO from cloud configuration. Applications

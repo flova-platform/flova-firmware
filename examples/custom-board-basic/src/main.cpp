@@ -1,4 +1,4 @@
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 
 // Portable custom-board contract. Replace the four services below with your
 // MCU HAL, RTOS, PLC SDK, Ethernet/cellular modem, or gateway transport.

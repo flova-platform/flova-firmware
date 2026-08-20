@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <time.h>
 
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 
 class ArduinoFlovaClock : public flova::Clock {
  public:

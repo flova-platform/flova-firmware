@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 #include <FlovaConfiguration.h>
 
 enum class FlovaProvisioningResponse : uint8_t {

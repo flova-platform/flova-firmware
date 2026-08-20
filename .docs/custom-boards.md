@@ -1,8 +1,8 @@
 # Custom boards and industrial targets
 
-`FlovaCore.h` is the canonical header-only C++11 runtime with no Arduino, ESP, Wi-Fi, WebSocket, exception, or RTTI dependency. It can run on an STM32 HAL/FreeRTOS application, another MCU SDK, an industrial Linux controller, or a PLC runtime that supports C++ integration.
+`FlovaDevice.h` is the canonical header-only C++11 runtime with no Arduino, ESP, Wi-Fi, WebSocket, exception, or RTTI dependency. It can run on an STM32 HAL/FreeRTOS application, another MCU SDK, an industrial Linux controller, or a PLC runtime that supports C++ integration.
 
-New board code includes `FlovaCore.h` and composes the portable
+New board code includes `FlovaDevice.h` and composes the portable
 `flova::Device` with its own services. There is no compatibility runtime or
 transport base class to inherit.
 
@@ -82,6 +82,12 @@ It never opens a setup AP. `startProvisioning()` remains available for a
 deliberate factory reset, but the application decides how its setup channel and
 network behave.
 
+The normal application path stops at the board header. Advanced Arduino ports
+that need to provide their own Link or provisioning adapter may include
+`<FlovaArduino.h>` and compose `FlovaClient` directly. The individual transport,
+TLS, codec, and adapter headers are implementation seams for that advanced path,
+not beginner entry points.
+
 To replace the setup channel, implement the small `FlovaProvisioningAdapter`
 callbacks and use the borrowed-service runtime:
 
@@ -126,7 +132,7 @@ Those macros describe fixed memory layout only; runtime behavior belongs in
 composed service classes.
 
 Install `Flova ESP32` or `Flova ESP8266` for a board-specific package; both
-expose the same typed API through explicit board classes. `flova-device-sdk` remains the portable option
+expose the same typed API through explicit board classes. `flova-embedded-sdk` remains the portable option
 for non-Arduino boards, where the application supplies its own four services.
 
 For a production custom board, implement `flova::LinkBootstrapClient` and use

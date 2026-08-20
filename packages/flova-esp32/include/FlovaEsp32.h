@@ -3,7 +3,7 @@
 #include <WebServer.h>
 #include <esp_system.h>
 
-#include <Flova.h>
+#include <FlovaArduino.h>
 #include <FlovaEsp32Services.h>
 #include <FlovaWifiProvisioning.h>
 #include <adapters/ArduinoFlovaApplicationHardware.h>

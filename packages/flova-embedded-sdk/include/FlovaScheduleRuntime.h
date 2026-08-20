@@ -2,7 +2,7 @@
 
 #include <stdlib.h>
 
-#include "FlovaCore.h"
+#include "FlovaDevice.h"
 
 namespace flova {
 

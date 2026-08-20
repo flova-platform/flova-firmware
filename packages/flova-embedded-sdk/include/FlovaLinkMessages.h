@@ -9,7 +9,7 @@
 #include "FlovaDatastreamId.h"
 
 // Internal wire-record transport used by the Arduino codec implementation.
-// Public applications implement flova::Link from FlovaCore.h instead.
+// Public applications implement flova::Link from FlovaDevice.h instead.
 // The SDK deliberately exposes domain records, never a route or serialized
 // payload.  A platform Link implementation owns CBOR and the outer frame.
 static const size_t FLOVA_LINK_TEXT_BYTES = FLOVA_TEXT_CAPACITY;

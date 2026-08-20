@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 #include <FlovaWifiProvisioning.h>
 #include <unity.h>
 

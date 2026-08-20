@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <Flova.h>
+#include <FlovaArduino.h>
 #include <FlovaEsp8266.h>
 #include <FlovaEsp8266Provisioning.h>
 #include <FlovaEsp8266Services.h>

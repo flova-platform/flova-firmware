@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-#include <FlovaCore.h>
+#include <FlovaDevice.h>
 #include <FlovaLinkMessages.h>
 
 namespace flova {
