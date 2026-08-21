@@ -17,7 +17,9 @@ only when it cannot consume another feature's guarantee. Retention can bound
 bytes, records, age, and sampling interval; overflow drops oldest by default or
 newest when explicitly configured. Reconnect synchronizes time, publishes dirty
 state, then removes history oldest-first only after transport acceptance. Cloud
-commands are never stored or replayed.
+commands are never stored or replayed. After a heartbeat uptime reset, Engine
+may re-dispatch the latest durable desired value for state datastreams as
+reconciliation; one-shot command datastreams are not replayed.
 
 Storage adapters report usable application bytes after credentials, filesystem
 metadata, and safety headroom. Raw flash size is never treated as available

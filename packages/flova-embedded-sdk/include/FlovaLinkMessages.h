@@ -42,7 +42,7 @@ enum class FlovaLinkMessageType : uint8_t {
   FlowControl
 };
 
-enum class FlovaLinkResultStatus : uint8_t { Ok, Error, Duplicate };
+enum class FlovaLinkResultStatus : uint8_t { Ok = 0, Accepted = 1, Duplicate = 2, Error = 3 };
 enum class FlovaLinkConfigurationPhase : uint8_t { Begin, Record, End };
 // Stable CBOR scalar discriminator. The transport encodes this as the first
 // item of a fixed array; text is the only variable-size alternative and is

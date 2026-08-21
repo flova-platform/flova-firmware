@@ -9,7 +9,9 @@ class FlovaUniversalEsp32 final {
  public:
   FlovaUniversalEsp32()
       : link_(entropy_), provisioning_(storage_),
-        client_(link_, provisioning_, storage_, clock_, logger_, entropy_, hardware_) {
+        network_(storage_), identity_("universal_esp32"),
+        client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
+                clock_, logger_, entropy_, hardware_) {
     client_.setFirmwareTarget("universal_esp32");
     client_.setOtaEnabled(true);
     client_.setRestartHandler(scheduleRestart, this);
@@ -28,6 +30,11 @@ class FlovaUniversalEsp32 final {
   bool ready() const { return client_.ready(); }
   const char* lastError() const { return client_.lastError(); }
   flova::Device& device() { return client_.device(); }
+
+  template <typename T>
+  flova::Datastream<T> datastream(const char* key) {
+    return client_.datastream<T>(key);
+  }
  private:
   static void scheduleRestart(void* context, FlovaRestartReason) {
     FlovaUniversalEsp32* self = static_cast<FlovaUniversalEsp32*>(context);
@@ -41,6 +48,9 @@ class FlovaUniversalEsp32 final {
   ArduinoFlovaLogger logger_;
   ArduinoFlovaHardware hardware_;
   FlovaEsp32Provisioning provisioning_;
+  FlovaEsp32StoredNetwork network_;
+  ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock_;
+  FlovaEsp32Identity identity_;
   FlovaClient client_;
   uint32_t restartRequestedAt_ = 0;
 };

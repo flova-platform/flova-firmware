@@ -172,7 +172,10 @@ void appendAll(Installer& installer, uint32_t generation, uint32_t count) {
 }
 
 void finish(Installer& installer, const Begin& transaction) {
-  assert(installer.end(end(transaction)).status == Status::Accepted);
+  const Ack acknowledgement = installer.end(end(transaction));
+  assert(acknowledgement.status == Status::Accepted);
+  assert(acknowledgement.generation == transaction.generation);
+  assert(acknowledgement.sequence == transaction.recordCount);
   assert(installer.promote(transaction.generation));
 }
 

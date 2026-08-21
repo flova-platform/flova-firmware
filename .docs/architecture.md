@@ -126,8 +126,11 @@ This is the required architecture, not evidence that a particular build has
 completed every acceptance test. Release claims require measured results.
 
 ESP applications use explicit board classes composed over `flova::Device`.
-The passive board header owns only Flova-private identity, entropy, storage,
-TLS, UTC bootstrap, and bounded runtime services. Universal classes add
-full-device provisioning, hardware, OTA, and restart ownership. Shared runtime
+The passive board header composes application-owned network observation with
+Flova-private identity, entropy, storage, TLS, UTC bootstrap, and bounded
+runtime services. Universal classes replace observation with a board-owned
+network runtime and add temporary provisioning, hardware, OTA, and restart
+ownership. Provisioning, runtime networking, TLS clock readiness, and identity
+remain separate service contracts. Shared runtime
 code does not select a board with preprocessor branches. New board integrations use the service seams described in
 `.docs/custom-boards.md`.

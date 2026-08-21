@@ -6,7 +6,7 @@
 #include <FlovaArduino.h>
 #include <FlovaEsp32Services.h>
 #include <FlovaWifiProvisioning.h>
-#include <adapters/ArduinoFlovaApplicationHardware.h>
+#include <adapters/ArduinoFlovaManualHardware.h>
 
 class FlovaEsp32Entropy : public FlovaEntropySource {
  public:
@@ -17,7 +17,9 @@ class FlovaEsp32 final {
  public:
   FlovaEsp32()
       : link_(entropy_),
-        client_(link_, runtime_, storage_, clock_, logger_, entropy_, hardware_) {}
+        identity_("custom_arduino_esp32"),
+        client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
+                clock_, logger_, entropy_, hardware_) {}
 
   bool begin() { return client_.begin(false); }
   void run() { client_.run(); }
@@ -84,8 +86,11 @@ class FlovaEsp32 final {
   FlovaEsp32Storage storage_;
   ArduinoFlovaClock clock_;
   ArduinoFlovaLogger logger_;
-  ArduinoFlovaApplicationHardware hardware_;
-  FlovaEsp32Runtime runtime_;
+  ArduinoFlovaManualHardware hardware_;
+  FlovaProvisioningAdapter provisioning_;
+  FlovaEsp32ObservedNetwork network_;
+  ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock_;
+  FlovaEsp32Identity identity_;
   FlovaClient client_;
   WebServer* provisioningServer_ = nullptr;
   flova::ProvisioningHandoff provisioningInput_;

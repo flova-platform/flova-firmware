@@ -15,18 +15,16 @@ enum class FlovaProvisioningResponse : uint8_t {
 typedef FlovaProvisioningResponse (*FlovaProvisioningHandler)(
     void* context, const flova::ProvisioningHandoff& input);
 
-// Board runtime prerequisites and an optional setup-channel owner. The normal
-// SDK implementation only observes connectivity; universal firmware supplies
-// the concrete SoftAP owner.
+// Temporary setup-channel ownership only. Runtime networking, TLS clock
+// readiness, and board identity use separate service contracts.
 class FlovaProvisioningAdapter {
  public:
   virtual ~FlovaProvisioningAdapter() {}
   virtual bool begin(FlovaProvisioningHandler, void*) { return true; }
   virtual void loop() {}
   virtual bool startProvisioning() { return false; }
-  virtual bool beginRuntime() { return true; }
-  virtual bool runtimeConnected() const { return true; }
-  virtual bool clockReady() const { return true; }
-  virtual bool defaultHardwareId(char*, size_t) const { return false; }
-  virtual const char* defaultFirmwareTarget() const { return nullptr; }
+  virtual bool stopProvisioning() { return true; }
+  // Some setup transports release resources that can only be reacquired after
+  // a board restart. The board composition, not the adapter, owns that restart.
+  virtual bool requiresRestartBeforeProvisioning() const { return false; }
 };

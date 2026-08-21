@@ -6,8 +6,9 @@
 #include <stdio.h>
 #include <time.h>
 
-#include <FlovaProvisioningAdapter.h>
+#include <FlovaRuntimeServices.h>
 #include <FlovaStorageKey.h>
+#include <FlovaWifiProvisioning.h>
 #include <adapters/ArduinoFlovaUtcBootstrap.h>
 
 class FlovaEsp32Storage : public flova::Storage {
@@ -21,6 +22,7 @@ class FlovaEsp32Storage : public flova::Storage {
     char physical[16] = {};
     return ready_ && output && size <= kMaximumRecordBytes &&
            flova::makeNvsStorageKey(key, physical, sizeof(physical)) &&
+           preferences_.isKey(physical) &&
            preferences_.getBytesLength(physical) == size &&
            preferences_.getBytes(physical, output, size) == size;
   }
@@ -52,12 +54,61 @@ class FlovaEsp32Storage : public flova::Storage {
   bool ready_ = false;
 };
 
-class FlovaEsp32Runtime : public FlovaProvisioningAdapter {
+class FlovaEsp32ObservedNetwork final : public FlovaNetworkRuntime {
  public:
-  void loop() override { utc_.run(runtimeConnected()); }
-  bool runtimeConnected() const override { return WiFi.status() == WL_CONNECTED; }
-  bool clockReady() const override { return utc_.ready(); }
-  bool defaultHardwareId(char* output, size_t capacity) const override {
+  bool connected() const override { return WiFi.status() == WL_CONNECTED; }
+};
+
+class FlovaEsp32StoredNetwork final : public FlovaNetworkRuntime {
+ public:
+  explicit FlovaEsp32StoredNetwork(FlovaEsp32Storage& storage)
+      : storage_(storage) {}
+
+  bool begin() override {
+    flova::WifiRuntimeData wifi = {};
+    if (!storage_.read("wifi", &wifi, sizeof(wifi)) ||
+        !flova::validWifiRuntimeData(wifi))
+      return false;
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(wifi.ssid, wifi.password);
+    return true;
+  }
+
+  bool stop() override {
+    if (WiFi.getMode() & WIFI_MODE_STA) WiFi.disconnect(false, false);
+    return true;
+  }
+
+  bool connected() const override { return WiFi.status() == WL_CONNECTED; }
+
+ private:
+  FlovaEsp32Storage& storage_;
+};
+
+class FlovaEsp32PlatformNetwork final : public FlovaNetworkRuntime {
+ public:
+  bool begin() override {
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    const wl_status_t status = WiFi.begin();
+    return status != WL_CONNECT_FAILED && status != WL_NO_SHIELD;
+  }
+
+  bool stop() override {
+    if (WiFi.getMode() & WIFI_MODE_STA) WiFi.disconnect(false, false);
+    return true;
+  }
+
+  bool connected() const override { return WiFi.status() == WL_CONNECTED; }
+};
+
+class FlovaEsp32Identity final : public FlovaBoardIdentity {
+ public:
+  explicit FlovaEsp32Identity(const char* firmwareTarget)
+      : firmwareTarget_(firmwareTarget) {}
+
+  bool hardwareId(char* output, size_t capacity) const override {
     if (!output || capacity < 25) return false;
     const uint64_t mac = ESP.getEfuseMac();
     const int written = snprintf(output, capacity, "esp32-%04lx%08lx",
@@ -65,10 +116,9 @@ class FlovaEsp32Runtime : public FlovaProvisioningAdapter {
         static_cast<unsigned long>(mac & 0xffffffffUL));
     return written > 0 && static_cast<size_t>(written) < capacity;
   }
-  const char* defaultFirmwareTarget() const override {
-    return "custom_arduino_esp32";
-  }
+
+  const char* firmwareTarget() const override { return firmwareTarget_; }
 
  private:
-  ArduinoFlovaUtcBootstrap<WiFiUDP> utc_;
+  const char* firmwareTarget_;
 };

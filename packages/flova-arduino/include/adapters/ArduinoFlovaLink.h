@@ -109,6 +109,11 @@ class ArduinoFlovaLink : public FlovaClientLink {
     transport_.setConfigurationGeneration(generation);
   }
 
+  void setHardwareCapabilities(
+      const flova::HardwareCapabilities& capabilities) override {
+    transport_.setHardwareCapabilities(capabilities);
+  }
+
   uint32_t configurationGeneration() const override {
     return configurationGeneration_;
   }
@@ -168,9 +173,11 @@ class ArduinoFlovaLink : public FlovaClientLink {
     result.desiredVersion = message.revision;
     result.datastreamId = message.datastreamId;
     result.status = message.kind == flova::MessageKind::Acknowledgement
-                        ? FlovaLinkResultStatus::Ok
+                        ? message.resultStatus == 2
+                              ? FlovaLinkResultStatus::Duplicate
+                              : FlovaLinkResultStatus::Ok
                         : FlovaLinkResultStatus::Error;
-    result.duplicate = false;
+    result.duplicate = result.status == FlovaLinkResultStatus::Duplicate;
     if (!toLinkValue(result.value, message.value)) return false;
     strncpy(result.errorCode, message.reason, sizeof(result.errorCode) - 1);
     result.errorCode[sizeof(result.errorCode) - 1] = 0;

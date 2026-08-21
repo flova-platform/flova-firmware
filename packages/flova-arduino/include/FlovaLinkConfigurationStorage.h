@@ -77,6 +77,7 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
 
   bool beginInactive(const flova::config::GenerationManifest& manifest) override {
     if (!manifest.generation || manifest.recordCount > maximumRecords_ ||
+        manifest.recordCount > kMaximumRecordSlots ||
         manifest.maximumRecordBytes > flova::config::kMaximumRecordBytes)
       return false;
     StoredManifest stored = {};
@@ -86,6 +87,7 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
 
   bool writeRecord(uint32_t generation, const flova::config::Record& record) override {
     if (!generation || record.sequence >= maximumRecords_ ||
+        record.sequence >= kMaximumRecordSlots ||
         record.length > flova::config::kMaximumRecordBytes)
       return false;
     memset(&storedWorkspace_, 0, sizeof(storedWorkspace_));
@@ -103,6 +105,7 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
 
   bool readRecord(uint32_t generation, uint32_t sequence,
                   flova::config::Record& record) const override {
+    if (sequence >= maximumRecords_ || sequence >= kMaximumRecordSlots) return false;
     memset(&storedWorkspace_, 0, sizeof(storedWorkspace_));
     StoredRecord& stored = storedWorkspace_;
     if (!load(recordKey(generation, sequence), stored) || stored.magic != kRecordMagic ||
@@ -144,6 +147,7 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
   static const uint32_t kManifestMagic = 0x46434D31UL;
   static const uint32_t kRecordMagic = 0x46435231UL;
   static const uint32_t kPointerMagic = 0x46435031UL;
+  static const uint32_t kMaximumRecordSlots = 1000UL;
 
   struct StoredManifest {
     uint32_t magic;
@@ -220,17 +224,20 @@ class FlovaLinkConfigurationStorage : public flova::config::ConfigurationStorage
     manifestKey_[4] = 'a';
     manifestKey_[5] = '_';
     manifestKey_[6] = 'l';
-    manifestKey_[7] = (generation & 1U) ? '1' : '0';
-    manifestKey_[8] = '_';
-    manifestKey_[9] = 'm';
-    manifestKey_[10] = 0;
+    manifestKey_[7] = '_';
+    manifestKey_[8] = (generation & 1U) ? '1' : '0';
+    manifestKey_[9] = '_';
+    manifestKey_[10] = 'm';
+    manifestKey_[11] = 0;
     return manifestKey_;
   }
 
   const char* recordKey(uint32_t generation, uint32_t sequence) const {
-    snprintf(recordKey_, sizeof(recordKey_), "flova_l_%u_r_%03lu",
-             static_cast<unsigned>(generation & 1U),
-             static_cast<unsigned long>(sequence));
+    memcpy(recordKey_, "flova_l_0_r_000", sizeof(recordKey_));
+    recordKey_[8] = (generation & 1U) ? '1' : '0';
+    recordKey_[12] = static_cast<char>('0' + sequence / 100U);
+    recordKey_[13] = static_cast<char>('0' + (sequence / 10U) % 10U);
+    recordKey_[14] = static_cast<char>('0' + sequence % 10U);
     return recordKey_;
   }
 

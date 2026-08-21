@@ -2,28 +2,14 @@
 
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
-#include <WiFiUdp.h>
-#include <time.h>
-
 #include <FlovaConfiguration.h>
 #include <FlovaProvisioningAdapter.h>
 #include <FlovaWifiProvisioning.h>
 #include <FlovaEsp8266Services.h>
-#include <adapters/ArduinoFlovaUtcBootstrap.h>
 
 class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
  public:
   explicit FlovaEsp8266Provisioning(FlovaEsp8266Storage& storage) : storage_(storage) {}
-
-  bool defaultHardwareId(char* output, size_t capacity) const override {
-    return output && capacity >= 24 &&
-           snprintf(output, capacity, "esp8266-%06lx",
-                    static_cast<unsigned long>(ESP.getChipId())) > 0;
-  }
-
-  const char* defaultFirmwareTarget() const override {
-    return "custom_arduino_esp8266";
-  }
 
   bool begin(FlovaProvisioningHandler handler, void* context) override {
     handler_ = handler;
@@ -38,7 +24,6 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
 
   void loop() override {
     if (provisioning_) server_.handleClient();
-    utc_.run(runtimeConnected());
   }
 
   bool startProvisioning() override {
@@ -57,22 +42,12 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
     return true;
   }
 
-  bool beginRuntime() override {
-    flova::WifiRuntimeData wifi = {};
-    if (!storage_.read("wifi", &wifi, sizeof(wifi)) ||
-        !flova::validWifiRuntimeData(wifi)) return false;
+  bool stopProvisioning() override {
     provisioning_ = false;
     server_.stop();
     WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(wifi.ssid, wifi.password);
     return true;
   }
-
-  bool runtimeConnected() const override { return WiFi.status() == WL_CONNECTED; }
-
-  bool clockReady() const override { return utc_.ready(); }
 
  private:
   void handleStatus() {
@@ -123,5 +98,4 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
   flova::WifiRuntimeData wifi_ = {};
   bool routesRegistered_ = false;
   bool provisioning_ = false;
-  ArduinoFlovaUtcBootstrap<WiFiUDP> utc_;
 };

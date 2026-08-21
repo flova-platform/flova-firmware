@@ -62,7 +62,6 @@ struct Datastream {
   Value maximum;
   Value defaultValue;
   HardwareMapping mapping;
-
 };
 
 struct System {

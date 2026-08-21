@@ -146,6 +146,14 @@ inline void markProvisioningFailure(ProvisioningHandoffImage& image, const char*
   sanitizeProvisioningError(code, image.lastError);
 }
 
+inline bool terminalProvisioningError(const char* code) {
+  return code &&
+         (!strcmp(code, "invalid_provision_token") ||
+          !strcmp(code, "provision_token_expired") ||
+          !strcmp(code, "provision_token_attempts_exceeded") ||
+          !strcmp(code, "provisioning_secret_mismatch"));
+}
+
 template <size_t N>
 inline void sanitizeProvisioningError(const char* input, char (&output)[N]) {
   if (!N) return;

@@ -5,6 +5,7 @@
 #include <FlovaLinkCbor.h>
 #include <FlovaLinkCodec.h>
 #include <FlovaConfigurationInstaller.h>
+#include <FlovaHardware.h>
 #include <FlovaWs.h>
 #include <FlovaTlsProfile.h>
 #include <FlovaTlsRoots.h>
@@ -175,6 +176,11 @@ class ArduinoDeviceLink final {
 
   void setConfigurationGeneration(uint32_t generation) {
     configurationGeneration_ = generation;
+  }
+
+  void setHardwareCapabilities(
+      const flova::HardwareCapabilities& capabilities) {
+    hardwareCapabilities_ = capabilities;
   }
 
   bool publishState(const FlovaLinkStateBatch& message) {
@@ -360,7 +366,7 @@ class ArduinoDeviceLink final {
     bootstrapErrorPending_ = false;
     return pending;
   }
-  void disconnect() {
+  void disconnect(bool notifyPeer = true) {
     if (disconnecting_) return;
     disconnecting_ = true;
     const bool hadConnection = active_ || authenticated_ || bootstrap_ ||
@@ -378,7 +384,8 @@ class ArduinoDeviceLink final {
     txOffset_ = 0;
 #endif
     pendingCallback_ = false;
-    websocket_.close();
+    if (notifyPeer) websocket_.close();
+    else websocket_.abort();
     tls_.stop();
 #if defined(ESP8266)
     if (hadConnection) flova::logTlsHeap("after Link disconnect");
@@ -404,7 +411,10 @@ class ArduinoDeviceLink final {
       }
     }
 #else
-    flova::configureLinkTls(tls_);
+    if (!tlsConfigured_) {
+      flova::configureLinkTls(tls_);
+      tlsConfigured_ = true;
+    }
     if (!tls_.connect(host_, port_)) {
       Serial.printf("[flova] Link TLS connect failed host=%s port=%u\n",
                     host_, static_cast<unsigned>(port_));
@@ -452,7 +462,7 @@ class ArduinoDeviceLink final {
       connectionAttemptFailed_ = true;
       Serial.printf("[flova] Link websocket error code=%u\n",
                     static_cast<unsigned>(websocket_.error()));
-      disconnect();
+      disconnect(false);
       return;
     }
     pendingFrameLength_ += static_cast<size_t>(length);
@@ -576,8 +586,14 @@ class ArduinoDeviceLink final {
         !setText(value.bootstrap_auth_firmware_target, bootstrapFirmwareTarget_, sizeof(bootstrapFirmwareTarget_)))
       return false;
     value.bootstrap_auth_bootstrap_capabilities.capabilities_datastream_slots = FLOVA_DATASTREAM_CAPACITY;
-    value.bootstrap_auth_bootstrap_capabilities.capabilities_input_slots = FLOVA_HARDWARE_INPUT_CAPACITY;
-    value.bootstrap_auth_bootstrap_capabilities.capabilities_output_slots = FLOVA_HARDWARE_OUTPUT_CAPACITY;
+    value.bootstrap_auth_bootstrap_capabilities.capabilities_input_slots =
+        hardwareCapabilities_.automaticMapping
+            ? hardwareCapabilities_.inputSlots
+            : 0;
+    value.bootstrap_auth_bootstrap_capabilities.capabilities_output_slots =
+        hardwareCapabilities_.automaticMapping
+            ? hardwareCapabilities_.outputSlots
+            : 0;
     value.bootstrap_auth_bootstrap_capabilities.capabilities_command_slots = FLOVA_COMMAND_DEDUP_CAPACITY;
     value.bootstrap_auth_bootstrap_capabilities.capabilities_schedule_slots = FLOVA_SCHEDULE_RUNTIME_ENABLED ? FLOVA_SCHEDULE_CAPACITY : 0;
     value.bootstrap_auth_bootstrap_capabilities.capabilities_manifest_bytes = 0;
@@ -637,7 +653,7 @@ class ArduinoDeviceLink final {
                       static_cast<int>(reason.len),
                       reinterpret_cast<const char*>(reason.value));
       }
-      disconnect();
+      disconnect(false);
       return;
     }
     if (!authenticated_ && !bootstrap_) return;
@@ -1201,6 +1217,7 @@ class ArduinoDeviceLink final {
   bool active_ = false;
   bool authenticated_ = false;
   bool bootstrap_ = false;
+  bool tlsConfigured_ = false;
   LinkTlsClient tls_;
   FlovaWs websocket_;
   uint8_t deviceId_[16] = {};
@@ -1223,6 +1240,7 @@ class ArduinoDeviceLink final {
   uint8_t bindingCount_ = 0;
   bool bindingPending_ = false;
   uint32_t configurationGeneration_ = 0;
+  flova::HardwareCapabilities hardwareCapabilities_;
   FlovaMessageCallback callback_ = nullptr;
   FlovaMessageCallbackWithContext callbackWithContext_ = nullptr;
   void* callbackContext_ = nullptr;

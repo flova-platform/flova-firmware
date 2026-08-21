@@ -2,32 +2,14 @@
 
 #include <WebServer.h>
 #include <WiFi.h>
-#include <WiFiUdp.h>
-#include <time.h>
-
 #include <FlovaConfiguration.h>
 #include <FlovaProvisioningAdapter.h>
 #include <FlovaWifiProvisioning.h>
 #include <FlovaEsp32Services.h>
-#include <adapters/ArduinoFlovaUtcBootstrap.h>
 
 class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
  public:
   explicit FlovaEsp32Provisioning(FlovaEsp32Storage& storage) : storage_(storage) {}
-
-  bool defaultHardwareId(char* output, size_t capacity) const override {
-    if (!output || capacity < 25) return false;
-    const uint64_t mac = ESP.getEfuseMac();
-    const int written = snprintf(
-        output, capacity, "esp32-%04lx%08lx",
-        static_cast<unsigned long>((mac >> 32) & 0xffffUL),
-        static_cast<unsigned long>(mac & 0xffffffffUL));
-    return written > 0 && static_cast<size_t>(written) < capacity;
-  }
-
-  const char* defaultFirmwareTarget() const override {
-    return "custom_arduino_esp32";
-  }
 
   bool begin(FlovaProvisioningHandler handler, void* context) override {
     handler_ = handler;
@@ -42,7 +24,6 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
 
   void loop() override {
     if (provisioning_) server_.handleClient();
-    utc_.run(runtimeConnected());
   }
 
   bool startProvisioning() override {
@@ -59,22 +40,12 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
     return true;
   }
 
-  bool beginRuntime() override {
-    flova::WifiRuntimeData wifi = {};
-    if (!storage_.read("wifi", &wifi, sizeof(wifi)) ||
-        !flova::validWifiRuntimeData(wifi)) return false;
+  bool stopProvisioning() override {
     provisioning_ = false;
     server_.stop();
     WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(wifi.ssid, wifi.password);
     return true;
   }
-
-  bool runtimeConnected() const override { return WiFi.status() == WL_CONNECTED; }
-
-  bool clockReady() const override { return utc_.ready(); }
 
  private:
   void handleStatus() {
@@ -122,5 +93,4 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
   flova::WifiRuntimeData wifi_ = {};
   bool routesRegistered_ = false;
   bool provisioning_ = false;
-  ArduinoFlovaUtcBootstrap<WiFiUDP> utc_;
 };

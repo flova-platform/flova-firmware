@@ -6,12 +6,14 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include <FlovaRuntimeServices.h>
+
 // Supplies UTC for TLS without installing a global SNTP configuration or
 // changing the application's timezone. Network ownership remains external.
 template <typename Udp>
-class ArduinoFlovaUtcBootstrap {
+class ArduinoFlovaUtcBootstrap final : public FlovaTlsClockBootstrap {
  public:
-  void run(bool networkConnected) {
+  void loop(bool networkConnected) override {
     if (ready()) {
       stop();
       return;
@@ -47,7 +49,7 @@ class ArduinoFlovaUtcBootstrap {
     lastRequestAt_ = now ? now : 1;
   }
 
-  bool ready() const { return time(nullptr) >= 1700000000; }
+  bool ready() const override { return time(nullptr) >= 1700000000; }
 
  private:
   void applyResponse() {

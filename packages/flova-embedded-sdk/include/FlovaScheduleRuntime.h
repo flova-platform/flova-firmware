@@ -42,6 +42,25 @@ struct ScheduleManifest {
   ScheduleManifest()
       : magic(0x46534D31UL), revision(0), generatedAt(0), validUntil(0), renewBefore(0),
         scheduleCount(0), checksum(0) {}
+
+  // Reset the live workspace in place. Assigning ScheduleManifest() here would
+  // materialize a 15 KiB temporary on the Arduino loop stack at the ESP32
+  // profile, which is smaller than the 8 KiB loop-task stack.
+  void reset() {
+    magic = 0x46534D31UL;
+    revision = 0;
+    generatedAt = 0;
+    validUntil = 0;
+    renewBefore = 0;
+    scheduleCount = 0;
+    checksum = 0;
+    for (size_t i = 0; i < kMaxSchedules; ++i) {
+      schedules[i].id[0] = 0;
+      schedules[i].enabled = false;
+      schedules[i].actionCount = 0;
+      schedules[i].occurrenceCount = 0;
+    }
+  }
 };
 
 typedef WriteResult (*ScheduleApply)(void* context, const char* scheduleId,
@@ -144,7 +163,7 @@ class ScheduleRuntime {
     storage_.remove("schedule.staging");
     storage_.remove("schedule.active");
     storage_.remove("schedule.progress");
-    manifest_ = ScheduleManifest();
+    manifest_.reset();
     progress_ = Progress();
     expiredReported_ = false;
   }
@@ -293,7 +312,7 @@ class ScheduleChunkCompiler {
 
  private:
   void reset() {
-    manifest_ = ScheduleManifest();
+    manifest_.reset();
     memset(occurrenceChunkCount_, 0, sizeof(occurrenceChunkCount_));
     memset(occurrenceChunkTotals_, 0, sizeof(occurrenceChunkTotals_));
     scheduleCount_ = 0;

@@ -23,9 +23,9 @@
 #include "adapters/ArduinoDeviceLink.h"
 #include "adapters/ArduinoOtaInstaller.h"
 #include "adapters/ArduinoFlovaHardware.h"
-#include "adapters/ArduinoFlovaApplicationHardware.h"
-#include "adapters/ArduinoFlovaUtcBootstrap.h"
+#include "adapters/ArduinoFlovaManualHardware.h"
 #include "FlovaProvisioningAdapter.h"
+#include "FlovaRuntimeServices.h"
 
 #ifndef FLOVA_FIRMWARE_VERSION
 #define FLOVA_FIRMWARE_VERSION "0.1.0"
@@ -36,6 +36,7 @@ enum class FlovaLifecycle : uint8_t {
   AwaitingProvisioning,
   Setup,
   WaitingForNetwork,
+  RestoringConfiguration,
   Bootstrapping,
   RestartRequired,
   RestartScheduled,
@@ -48,6 +49,7 @@ enum class FlovaRestartReason : uint8_t {
   ConfigurationActivation,
   OtaActivation,
   ResourceRecovery,
+  ProvisioningRecovery,
 };
 
 typedef void (*FlovaRestartHandler)(void* context, FlovaRestartReason reason);
@@ -61,11 +63,14 @@ class FlovaClient {
 
  public:
   FlovaClient(FlovaClientLink& link, FlovaProvisioningAdapter& provisioning,
-                       flova::Storage& storage, flova::Clock& clock,
-                       flova::Logger& logger, FlovaEntropySource& entropy,
-                       flova::Hardware& hardware)
+              FlovaNetworkRuntime& network,
+              FlovaTlsClockBootstrap& tlsClock,
+              FlovaBoardIdentity& identity, flova::Storage& storage,
+              flova::Clock& clock, flova::Logger& logger,
+              FlovaEntropySource& entropy, flova::Hardware& hardware)
       : provisioningConfig_{nullptr, nullptr},
-        link_(link), provisioning_(provisioning),
+        link_(link), provisioning_(provisioning), network_(network),
+        tlsClock_(tlsClock), identity_(identity),
         storage_(storage), clock_(clock), logger_(logger), entropy_(entropy),
         configurationStorage_(storage_, kMaximumConfigurationRecords),
         configurationInstaller_(configurationStorage_, kMaximumConfigurationRecords),
@@ -73,6 +78,7 @@ class FlovaClient {
         scheduleRuntime_(storage_, clock_),
         scheduleCompiler_(scheduleRuntime_.workspace()) {
     hardware_.attach(device_);
+    link_.setHardwareCapabilities(hardware_.capabilities());
     scheduleRuntime_.handlers(applyScheduledWrite, requestScheduleRenewal,
                               reportScheduleStatus, this);
   }
@@ -127,7 +133,7 @@ class FlovaClient {
       }
       lifecycle_ = FlovaLifecycle::WaitingForNetwork;
       bootstrapStartedAt_ = millis();
-      if (!provisioning_.beginRuntime()) {
+      if (!network_.begin()) {
         failBootstrap("network_start_failed");
       }
       return true;
@@ -135,12 +141,8 @@ class FlovaClient {
 
     if (hasConfiguration) {
       runtimeConfiguration_ = configurationImageWorkspace_.configuration;
-      if (!restoreActiveConfiguration()) {
-        writeError("configuration_restore_failed");
-        lifecycle_ = FlovaLifecycle::Failed;
-        return false;
-      }
-      return beginSavedRuntime();
+      startConfigurationRestore(ConfigurationWorkMode::BootRestore);
+      return true;
     }
 
     return managedProvisioning_ ? beginSetup() : awaitProvisioning();
@@ -157,7 +159,11 @@ class FlovaClient {
   }
 
   void run() {
-    provisioning_.loop();
+    if (lifecycle_ == FlovaLifecycle::Setup ||
+        lifecycle_ == FlovaLifecycle::AwaitingProvisioning)
+      provisioning_.loop();
+    network_.loop();
+    tlsClock_.loop(network_.connected());
     if (lifecycle_ == FlovaLifecycle::Setup ||
         lifecycle_ == FlovaLifecycle::AwaitingProvisioning) {
       if (!handoffAccepted_) return;
@@ -169,7 +175,9 @@ class FlovaClient {
       }
       lifecycle_ = FlovaLifecycle::WaitingForNetwork;
       bootstrapStartedAt_ = millis();
-      if (!provisioning_.beginRuntime())
+      if (!provisioning_.stopProvisioning())
+        failBootstrap("provisioning_stop_failed");
+      else if (!network_.begin())
         failBootstrap("network_start_failed");
       return;
     }
@@ -177,13 +185,19 @@ class FlovaClient {
         lifecycle_ == FlovaLifecycle::RestartScheduled ||
         lifecycle_ == FlovaLifecycle::Failed || lifecycle_ == FlovaLifecycle::Idle) return;
 
+    if (lifecycle_ == FlovaLifecycle::RestoringConfiguration) {
+      stepConfigurationWork();
+      return;
+    }
+
     if (lifecycle_ == FlovaLifecycle::WaitingForNetwork) {
       if (pending_.handoff.token[0]) {
         if (millis() - bootstrapStartedAt_ >= kBootstrapTimeoutMs) {
-          failBootstrap(provisioning_.runtimeConnected() ? "clock_sync_failed" : "network_timeout");
+          failBootstrap(network_.connected() ? "clock_sync_failed"
+                                             : "network_timeout");
           return;
         }
-        if (!provisioning_.runtimeConnected() || !provisioning_.clockReady()) return;
+        if (!network_.connected() || !tlsClock_.ready()) return;
         if (!link_.beginBootstrap(pending_.handoff.linkUrl, pending_.handoff.token,
                                   provisioningConfig_.hardwareId,
                                   provisioningConfig_.firmwareTarget,
@@ -205,13 +219,17 @@ class FlovaClient {
         bootstrapStartedAt_ = millis();
         return;
       }
-      if (!provisioning_.runtimeConnected() || !provisioning_.clockReady()) return;
+      if (!network_.connected() || !tlsClock_.ready()) return;
       beginDeviceRuntime();
       return;
     }
 
     if (lifecycle_ == FlovaLifecycle::Bootstrapping) {
       link_.pollBootstrap();
+      if (configurationWork_.mode != ConfigurationWorkMode::None) {
+        stepConfigurationWork();
+        return;
+      }
       drainConfiguration(true);
       FlovaLinkBootstrapCommitted committed = {};
       if (link_.takeBootstrapCommitted(committed)) {
@@ -244,6 +262,10 @@ class FlovaClient {
       hardware_.run();
       device_.run();
       scheduleRuntime_.run();
+      if (configurationWork_.mode != ConfigurationWorkMode::None) {
+        stepConfigurationWork();
+        return;
+      }
       drainConfiguration(false);
       processOta();
       reportRuntimeStatus();
@@ -260,7 +282,8 @@ class FlovaClient {
     }
     memset(&runtimeConfiguration_, 0, sizeof(runtimeConfiguration_));
     memset(&pending_, 0, sizeof(pending_));
-    if (managedProvisioning_) return beginSetup();
+    configurationVerifiedGeneration_ = 0;
+    if (managedProvisioning_) return provisioningFallback();
     awaitProvisioning();
     return true;
   }
@@ -305,6 +328,51 @@ class FlovaClient {
   static const uint32_t kMaximumConfigurationRecords =
       FLOVA_DATASTREAM_CAPACITY + FLOVA_SCHEDULE_CAPACITY + 8;
 
+  enum class ConfigurationWorkMode : uint8_t {
+    None,
+    BootRestore,
+    BootstrapRestore,
+    BootstrapApply,
+    TransferVerify,
+  };
+
+  enum class ConfigurationWorkPhase : uint8_t {
+    Idle,
+    SelectCandidate,
+    Digest,
+    Semantic,
+    KeyScan,
+    References,
+    PrepareSchedules,
+    ApplyInit,
+    Apply,
+    Finish,
+  };
+
+  struct ConfigurationWork {
+    ConfigurationWorkMode mode = ConfigurationWorkMode::None;
+    ConfigurationWorkPhase phase = ConfigurationWorkPhase::Idle;
+    uint32_t candidates[2] = {};
+    uint8_t candidateIndex = 0;
+    uint32_t generation = 0;
+    flova::config::GenerationManifest manifest = {};
+    uint32_t sequence = 0;
+    uint32_t priorSequence = 0;
+    char keyTarget[FLOVA_TEXT_CAPACITY] = {};
+    uint16_t mappedPins[FLOVA_HARDWARE_INPUT_CAPACITY +
+                       FLOVA_HARDWARE_OUTPUT_CAPACITY] = {};
+    size_t mappedPinCount = 0;
+    size_t inputMappingCount = 0;
+    size_t outputMappingCount = 0;
+    uint16_t statusLedPin = UINT16_MAX;
+    bool systemSeen = false;
+    bool scheduleAlreadyInstalled = false;
+    uint8_t scheduleCount = 0;
+    uint64_t generatedAt = 0;
+    uint64_t validUntil = 0;
+    bool bootstrapping = false;
+  };
+
   static FlovaProvisioningResponse handleProvisioning(
       void* context, const flova::ProvisioningHandoff& input) {
     if (!context) return FlovaProvisioningResponse::Invalid;
@@ -341,6 +409,11 @@ class FlovaClient {
   }
 
   bool beginSetup() {
+    if (!network_.stop()) {
+      writeError("network_stop_failed");
+      lifecycle_ = FlovaLifecycle::Failed;
+      return false;
+    }
     if (!provisioning_.startProvisioning()) {
       writeError("provisioning_start_failed");
       lifecycle_ = FlovaLifecycle::Failed;
@@ -358,7 +431,12 @@ class FlovaClient {
   }
 
   bool provisioningFallback() {
-    return managedProvisioning_ ? beginSetup() : awaitProvisioning();
+    if (!managedProvisioning_) return awaitProvisioning();
+    if (provisioning_.requiresRestartBeforeProvisioning()) {
+      requestRestart(FlovaRestartReason::ProvisioningRecovery);
+      return true;
+    }
+    return beginSetup();
   }
 
   bool beginSavedRuntime() {
@@ -370,7 +448,7 @@ class FlovaClient {
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
-    if (!provisioning_.beginRuntime()) {
+    if (!network_.begin()) {
       writeError("runtime_network_start_failed");
       logger_.log("[flova] lifecycle failed reason=runtime_network_start_failed");
       lifecycle_ = FlovaLifecycle::Failed;
@@ -450,83 +528,609 @@ class FlovaClient {
     return configurationInstaller_.end(end);
   }
 
+  const char* configurationErrorCode(flova::config::Status status) const {
+    if (status == flova::config::Status::InvalidRecord &&
+        hardware_.configurationError()[0])
+      return hardware_.configurationError();
+    switch (status) {
+      case flova::config::Status::InvalidBegin:
+        return "configuration_invalid_begin";
+      case flova::config::Status::InvalidRecord:
+        return "configuration_invalid_record";
+      case flova::config::Status::InvalidEnd:
+        return "configuration_invalid_end";
+      case flova::config::Status::TransferActive:
+        return "configuration_transfer_active";
+      case flova::config::Status::StaleGeneration:
+        return "configuration_stale_generation";
+      case flova::config::Status::OutOfOrder:
+        return "configuration_out_of_order";
+      case flova::config::Status::DuplicateMismatch:
+        return "configuration_duplicate_mismatch";
+      case flova::config::Status::ChecksumMismatch:
+        return "configuration_checksum_mismatch";
+      case flova::config::Status::StorageFailure:
+        return "configuration_storage_failed";
+      case flova::config::Status::VerificationFailure:
+        return "configuration_verification_failed";
+      case flova::config::Status::Accepted:
+      case flova::config::Status::Duplicate:
+      case flova::config::Status::AlreadyCommitted:
+        return "";
+    }
+    return "configuration_rejected";
+  }
+
   void drainConfiguration(bool bootstrapping) {
+    if (configurationWork_.mode != ConfigurationWorkMode::None) return;
     configurationDecodeWorkspace_ = FlovaLinkConfigurationRecord();
     if (!link_.takeConfigurationRecord(configurationDecodeWorkspace_)) return;
-    flova::config::Ack ack =
-        applyConfiguration(configurationDecodeWorkspace_);
-    if (ack.accepted() && ack.status == flova::config::Status::Accepted &&
-        configurationDecodeWorkspace_.phase ==
-            FlovaLinkConfigurationPhase::End) {
-      flova::config::GenerationManifest manifest;
-      if (!configurationStorage_.generationManifest(ack.generation, manifest) ||
-          !validateGeneration(ack.generation, manifest)) {
-        ack.status = configurationStorage_.discardGeneration(ack.generation)
-                         ? flova::config::Status::VerificationFailure
-                         : flova::config::Status::StorageFailure;
-        configurationInstaller_.reset();
-      } else if (!configurationInstaller_.promote(ack.generation)) {
-        ack.status = flova::config::Status::StorageFailure;
-      }
-    }
+    const FlovaLinkConfigurationPhase phase =
+        configurationDecodeWorkspace_.phase;
     configurationReportWorkspace_ = FlovaLinkConfigurationReport();
-    configurationReportWorkspace_.messageId = ack.messageId;
-    configurationReportWorkspace_.generation = ack.generation;
-    configurationReportWorkspace_.sequence = ack.sequence;
+    configurationReportWorkspace_.messageId =
+        configurationDecodeWorkspace_.messageId;
+    configurationReportWorkspace_.generation =
+        configurationDecodeWorkspace_.generation;
+    configurationReportWorkspace_.sequence =
+        configurationDecodeWorkspace_.sequence;
     memcpy(configurationReportWorkspace_.checksum,
            configurationDecodeWorkspace_.checksum,
            sizeof(configurationReportWorkspace_.checksum));
-    configurationReportWorkspace_.status =
-        ack.accepted() ? FlovaLinkResultStatus::Ok
-                       : FlovaLinkResultStatus::Error;
-    if (!ack.accepted()) {
-      strncpy(configurationReportWorkspace_.errorCode,
-              "configuration_rejected",
-              sizeof(configurationReportWorkspace_.errorCode) - 1);
+    flova::config::Ack ack =
+        applyConfiguration(configurationDecodeWorkspace_);
+    // The CONFIG_END input has a record_count, not a sequence. The installer
+    // returns the protocol acknowledgement sequence for each phase, so copy
+    // all acknowledgement identity before verification can defer the report.
+    configurationReportWorkspace_.messageId = ack.messageId;
+    configurationReportWorkspace_.generation = ack.generation;
+    configurationReportWorkspace_.sequence = ack.sequence;
+    if (ack.accepted() && ack.status == flova::config::Status::Accepted &&
+        phase == FlovaLinkConfigurationPhase::End) {
+      flova::config::GenerationManifest manifest;
+      if (configurationStorage_.generationManifest(ack.generation, manifest)) {
+        beginConfigurationVerification(ack.generation, manifest, bootstrapping);
+        return;
+      }
+      ack.status = flova::config::Status::StorageFailure;
     }
-    link_.publishConfigurationReport(configurationReportWorkspace_);
-    if (!ack.accepted() ||
-        configurationDecodeWorkspace_.phase != FlovaLinkConfigurationPhase::End)
+    publishConfigurationReport(ack.status, phase, bootstrapping);
+    if (phase == FlovaLinkConfigurationPhase::End && ack.accepted() &&
+        !bootstrapping) {
+      link_.disconnect();
+      requestRestart(FlovaRestartReason::ConfigurationActivation);
+    }
+  }
+
+  void startConfigurationRestore(ConfigurationWorkMode mode,
+                                 uint32_t generation = 0) {
+    configurationWork_ = ConfigurationWork();
+    configurationWork_.mode = mode;
+    configurationWork_.scheduleAlreadyInstalled = false;
+    configurationWork_.bootstrapping = mode == ConfigurationWorkMode::BootstrapRestore ||
+                                        mode == ConfigurationWorkMode::BootstrapApply;
+    if (mode == ConfigurationWorkMode::BootstrapRestore) {
+      configurationWork_.candidates[0] = generation;
+      configurationWork_.candidateIndex = 0;
+      configurationWork_.phase = ConfigurationWorkPhase::SelectCandidate;
+    } else if (mode == ConfigurationWorkMode::BootstrapApply) {
+      configurationWork_.generation = generation;
+      configurationWork_.scheduleAlreadyInstalled =
+          scheduleRuntime_.revision() == generation;
+      configurationWork_.phase = ConfigurationWorkPhase::PrepareSchedules;
+      if (!configurationStorage_.generationManifest(
+              generation, configurationWork_.manifest)) {
+        failConfigurationWork(false);
+        return;
+      }
+    } else {
+      configurationStorage_.generations(configurationWork_.candidates[0],
+                                        configurationWork_.candidates[1]);
+      configurationWork_.phase = ConfigurationWorkPhase::SelectCandidate;
+    }
+    lifecycle_ = FlovaLifecycle::RestoringConfiguration;
+  }
+
+  void beginConfigurationVerification(
+      uint32_t generation, const flova::config::GenerationManifest& manifest,
+      bool bootstrapping) {
+    configurationWork_ = ConfigurationWork();
+    configurationWork_.mode = ConfigurationWorkMode::TransferVerify;
+    configurationWork_.phase = ConfigurationWorkPhase::Digest;
+    configurationWork_.generation = generation;
+    configurationWork_.manifest = manifest;
+    configurationWork_.bootstrapping = bootstrapping;
+    configurationWork_.sequence = 0;
+    configurationDigest_.reset();
+    logger_.log("[flova] configuration verification started");
+  }
+
+  void stepConfigurationWork() {
+    switch (configurationWork_.phase) {
+      case ConfigurationWorkPhase::SelectCandidate:
+        stepConfigurationCandidate();
+        return;
+      case ConfigurationWorkPhase::Digest:
+        stepConfigurationDigest();
+        return;
+      case ConfigurationWorkPhase::Semantic:
+        stepConfigurationSemantic();
+        return;
+      case ConfigurationWorkPhase::KeyScan:
+        stepConfigurationKeyScan();
+        return;
+      case ConfigurationWorkPhase::References:
+        stepConfigurationReferences();
+        return;
+      case ConfigurationWorkPhase::PrepareSchedules:
+        stepConfigurationSchedules();
+        return;
+      case ConfigurationWorkPhase::ApplyInit:
+        hardware_.resetConfiguration();
+        configurationWork_.sequence = 0;
+        configurationWork_.phase = ConfigurationWorkPhase::Apply;
+        return;
+      case ConfigurationWorkPhase::Apply:
+        stepConfigurationApply();
+        return;
+      case ConfigurationWorkPhase::Finish:
+        finishConfigurationApply();
+        return;
+      case ConfigurationWorkPhase::Idle:
+        return;
+    }
+  }
+
+  void stepConfigurationCandidate() {
+    while (configurationWork_.candidateIndex < 2) {
+      const uint32_t generation =
+          configurationWork_.candidates[configurationWork_.candidateIndex++];
+      if (!generation) continue;
+      configurationWork_.generation = generation;
+      if (!configurationStorage_.generationManifest(
+              generation, configurationWork_.manifest) ||
+          !configurationWork_.manifest.finalized ||
+          configurationWork_.manifest.recordCount > kMaximumConfigurationRecords) {
+        if (!configurationStorage_.discardGeneration(generation)) {
+          failConfigurationWork(false);
+          return;
+        }
+        return;
+      }
+      configurationWork_.scheduleAlreadyInstalled =
+          scheduleRuntime_.revision() == generation;
+      configurationWork_.sequence = 0;
+      configurationDigest_.reset();
+      configurationWork_.phase = ConfigurationWorkPhase::Digest;
+      logger_.log("[flova] configuration restore candidate");
       return;
-    configurationCommitted_ = true;
-    activeConfigurationGeneration_ = configurationDecodeWorkspace_.generation;
-    memcpy(activeConfigurationChecksum_, configurationDecodeWorkspace_.checksum,
+    }
+    completeConfigurationRestore();
+  }
+
+  void stepConfigurationDigest() {
+    if (configurationWork_.sequence < configurationWork_.manifest.recordCount) {
+      if (!configurationInstaller_.loadWorkspace(
+              configurationWork_.generation, configurationWork_.sequence)) {
+        failConfigurationWork(true);
+        return;
+      }
+      configurationDigest_.addRecord(configurationInstaller_.workspace());
+      ++configurationWork_.sequence;
+      return;
+    }
+    flova::config::Checksum checksum;
+    configurationDigest_.finish(checksum);
+    if (!checksum.equals(configurationWork_.manifest.checksum)) {
+      failConfigurationWork(true);
+      return;
+    }
+    configurationWork_.sequence = 0;
+    configurationWork_.priorSequence = 0;
+    validationDatastreamCount_ = 0;
+    validationScheduleCount_ = 0;
+    configurationWork_.mappedPinCount = 0;
+    configurationWork_.inputMappingCount = 0;
+    configurationWork_.outputMappingCount = 0;
+    configurationWork_.statusLedPin = UINT16_MAX;
+    configurationWork_.systemSeen = false;
+    memset(&configurationImageWorkspace_, 0,
+           sizeof(configurationImageWorkspace_));
+    configurationWork_.phase = ConfigurationWorkPhase::Semantic;
+  }
+
+  bool validateConfigurationUnit(const flova::config::Unit& unit) {
+    if (!device_.validateConfigurationUnit(unit) || !hardware_.validate(unit))
+      return false;
+    const flova::HardwareCapabilities capabilities = hardware_.capabilities();
+    if (unit.kind == flova::config::UnitKind::Datastream) {
+      if (validationDatastreamCount_ >= FLOVA_DATASTREAM_CAPACITY)
+        return false;
+      for (size_t i = 0; i < validationDatastreamCount_; ++i)
+        if (validatedDatastreamId(i) == unit.data.datastream.id) return false;
+      setValidatedDatastreamId(validationDatastreamCount_,
+                               unit.data.datastream.id);
+      ++validationDatastreamCount_;
+      if (capabilities.automaticMapping && unit.data.datastream.hasMapping) {
+        const flova::config::MappingKind kind =
+            unit.data.datastream.mapping.kind;
+        if (kind == flova::config::MappingKind::DigitalInput ||
+            kind == flova::config::MappingKind::AnalogInput) {
+          if (++configurationWork_.inputMappingCount > capabilities.inputSlots)
+            return false;
+        } else if (kind == flova::config::MappingKind::DigitalOutput ||
+                   kind == flova::config::MappingKind::PwmOutput) {
+          if (++configurationWork_.outputMappingCount > capabilities.outputSlots)
+            return false;
+        }
+        const uint16_t pin = unit.data.datastream.mapping.pin;
+        if ((configurationWork_.statusLedPin != UINT16_MAX &&
+             configurationWork_.statusLedPin == pin) ||
+            configurationWork_.mappedPinCount >=
+                sizeof(configurationWork_.mappedPins) /
+                    sizeof(configurationWork_.mappedPins[0]))
+          return false;
+        for (size_t i = 0; i < configurationWork_.mappedPinCount; ++i)
+          if (configurationWork_.mappedPins[i] == pin) return false;
+        configurationWork_.mappedPins[configurationWork_.mappedPinCount++] = pin;
+      }
+      return flova::copyBounded(unit.data.datastream.key,
+                                configurationWork_.keyTarget, true);
+    }
+    if (unit.kind == flova::config::UnitKind::System) {
+      if (configurationWork_.systemSeen) return false;
+      configurationWork_.systemSeen = true;
+      if (capabilities.automaticMapping && capabilities.statusIndicator &&
+          unit.data.system.hasStatusLedPin) {
+        configurationWork_.statusLedPin = unit.data.system.statusLedPin;
+        for (size_t i = 0; i < configurationWork_.mappedPinCount; ++i)
+          if (configurationWork_.mappedPins[i] == configurationWork_.statusLedPin)
+            return false;
+      }
+      return true;
+    }
+    if (unit.kind == flova::config::UnitKind::Schedule) {
+      if (validationScheduleCount_ >= FLOVA_SCHEDULE_CAPACITY ||
+          !unit.data.schedule.id || !unit.data.schedule.validUntil ||
+          !unit.data.schedule.actionCount ||
+          unit.data.schedule.actionCount >
+              flova::config::kConfigurationScheduleActions)
+        return false;
+      for (size_t i = 0; i < validationScheduleCount_; ++i)
+        if (validationSchedule(i).id == unit.data.schedule.id) return false;
+      ValidationSchedule schedule = {};
+      schedule.id = unit.data.schedule.id;
+      setValidationSchedule(validationScheduleCount_++, schedule);
+      return true;
+    }
+    if (unit.kind != flova::config::UnitKind::ScheduleOccurrences)
+      return true;
+    size_t index = validationScheduleCount_;
+    for (size_t i = 0; i < validationScheduleCount_; ++i)
+      if (validationSchedule(i).id == unit.data.occurrences.scheduleId) {
+        index = i;
+        break;
+      }
+    ValidationSchedule schedule =
+        index < validationScheduleCount_ ? validationSchedule(index)
+                                         : ValidationSchedule();
+    if (index == validationScheduleCount_ ||
+        !unit.data.occurrences.chunkCount ||
+        unit.data.occurrences.chunkIndex >= unit.data.occurrences.chunkCount ||
+        unit.data.occurrences.chunkIndex != schedule.nextChunk ||
+        (schedule.chunkCount &&
+         schedule.chunkCount != unit.data.occurrences.chunkCount) ||
+        !unit.data.occurrences.occurrenceCount ||
+        unit.data.occurrences.occurrenceCount >
+            flova::config::kConfigurationOccurrenceChunk ||
+        schedule.occurrences + unit.data.occurrences.occurrenceCount >
+            FLOVA_SCHEDULE_OCCURRENCE_CAPACITY)
+      return false;
+    schedule.chunkCount = unit.data.occurrences.chunkCount;
+    ++schedule.nextChunk;
+    schedule.occurrences += unit.data.occurrences.occurrenceCount;
+    setValidationSchedule(index, schedule);
+    return true;
+  }
+
+  void stepConfigurationSemantic() {
+    if (configurationWork_.sequence >= configurationWork_.manifest.recordCount) {
+      for (size_t i = 0; i < validationScheduleCount_; ++i) {
+        const ValidationSchedule schedule = validationSchedule(i);
+        if (!schedule.chunkCount || schedule.nextChunk != schedule.chunkCount) {
+          failConfigurationWork(true);
+          return;
+        }
+      }
+      configurationWork_.sequence = 0;
+      configurationWork_.phase = ConfigurationWorkPhase::References;
+      return;
+    }
+    if (!decodeGenerationUnit(configurationWork_.generation,
+                              configurationWork_.sequence) ||
+        !validateConfigurationUnit(configurationDecodeWorkspace_.typedUnit)) {
+      failConfigurationWork(true);
+      return;
+    }
+    if (configurationDecodeWorkspace_.typedUnit.kind ==
+        flova::config::UnitKind::Datastream) {
+      configurationWork_.priorSequence = 0;
+      configurationWork_.phase = ConfigurationWorkPhase::KeyScan;
+      return;
+    }
+    ++configurationWork_.sequence;
+  }
+
+  void stepConfigurationKeyScan() {
+    if (configurationWork_.priorSequence < configurationWork_.sequence) {
+      if (!decodeGenerationUnit(configurationWork_.generation,
+                                configurationWork_.priorSequence)) {
+        failConfigurationWork(true);
+        return;
+      }
+      const flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
+      if (unit.kind == flova::config::UnitKind::Datastream &&
+          strcmp(unit.data.datastream.key, configurationWork_.keyTarget) == 0) {
+        failConfigurationWork(true);
+        return;
+      }
+      ++configurationWork_.priorSequence;
+      return;
+    }
+    ++configurationWork_.sequence;
+    configurationWork_.phase = ConfigurationWorkPhase::Semantic;
+  }
+
+  void stepConfigurationReferences() {
+    if (configurationWork_.sequence >= configurationWork_.manifest.recordCount) {
+      if (configurationWork_.mode == ConfigurationWorkMode::TransferVerify) {
+        finishConfigurationVerification();
+        return;
+      }
+      logger_.log("[flova] configuration generation validated");
+      configurationWork_.sequence = 0;
+      configurationWork_.phase = ConfigurationWorkPhase::PrepareSchedules;
+      configurationWork_.scheduleCount = 0;
+      configurationWork_.generatedAt = 0;
+      configurationWork_.validUntil = 0;
+      compilingSchedules_ = false;
+      return;
+    }
+    if (!decodeGenerationUnit(configurationWork_.generation,
+                              configurationWork_.sequence)) {
+      failConfigurationWork(true);
+      return;
+    }
+    const flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
+    if (unit.kind == flova::config::UnitKind::Safety &&
+        !hasValidatedDatastream(unit.data.safety.datastreamId)) {
+      failConfigurationWork(true);
+      return;
+    }
+    if (unit.kind == flova::config::UnitKind::Schedule)
+      for (uint8_t action = 0; action < unit.data.schedule.actionCount; ++action)
+        if (!hasValidatedDatastream(
+                unit.data.schedule.actions[action].datastreamId)) {
+          failConfigurationWork(true);
+          return;
+        }
+    ++configurationWork_.sequence;
+  }
+
+  void stepConfigurationSchedules() {
+    if (configurationWork_.sequence < configurationWork_.manifest.recordCount) {
+      if (!configurationInstaller_.loadWorkspace(
+              configurationWork_.generation, configurationWork_.sequence)) {
+        failConfigurationWork(true);
+        return;
+      }
+      const flova::config::Record& stored = configurationInstaller_.workspace();
+      configurationDecodeWorkspace_ = FlovaLinkConfigurationRecord();
+      if (!link_.decodeStoredConfigurationRecord(
+              stored.body, stored.length, configurationDecodeWorkspace_) ||
+          !configurationDecodeWorkspace_.hasTypedUnit) {
+        failConfigurationWork(true);
+        return;
+      }
+      const flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
+      if (unit.kind == flova::config::UnitKind::Schedule) {
+        if (configurationWork_.scheduleCount >= FLOVA_SCHEDULE_CAPACITY ||
+            !unit.data.schedule.validUntil) {
+          failConfigurationWork(true);
+          return;
+        }
+        ++configurationWork_.scheduleCount;
+        if (!configurationWork_.generatedAt ||
+            unit.data.schedule.validFrom < configurationWork_.generatedAt)
+          configurationWork_.generatedAt = unit.data.schedule.validFrom;
+        if (!configurationWork_.validUntil ||
+            unit.data.schedule.validUntil < configurationWork_.validUntil)
+          configurationWork_.validUntil = unit.data.schedule.validUntil;
+      }
+      ++configurationWork_.sequence;
+      return;
+    }
+    compilingSchedules_ = configurationWork_.scheduleCount != 0;
+    if (compilingSchedules_) {
+      static const uint64_t kRenewBeforeMs =
+          14ULL * 24ULL * 60ULL * 60ULL * 1000ULL;
+      const uint64_t renewBefore = configurationWork_.validUntil > kRenewBeforeMs
+                                       ? configurationWork_.validUntil - kRenewBeforeMs
+                                       : configurationWork_.validUntil;
+      if (!scheduleCompiler_.begin(
+              configurationWork_.generation, configurationWork_.generatedAt,
+              configurationWork_.validUntil, renewBefore,
+              configurationWork_.scheduleCount)) {
+        failConfigurationWork(false);
+        return;
+      }
+    }
+    configurationWork_.phase = ConfigurationWorkPhase::ApplyInit;
+  }
+
+  void stepConfigurationApply() {
+    if (configurationWork_.sequence >= configurationWork_.manifest.recordCount) {
+      configurationWork_.phase = ConfigurationWorkPhase::Finish;
+      return;
+    }
+    if (!decodeGenerationUnit(configurationWork_.generation,
+                              configurationWork_.sequence)) {
+      hardware_.failSafe();
+      failConfigurationWork(false);
+      return;
+    }
+    const flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
+    if (!device_.applyConfigurationUnit(unit) || !hardware_.apply(unit) ||
+        !applyScheduleUnit(unit)) {
+      hardware_.failSafe();
+      failConfigurationWork(false);
+      return;
+    }
+    ++configurationWork_.sequence;
+  }
+
+  void finishConfigurationApply() {
+    if (compilingSchedules_ &&
+        (!scheduleCompiler_.finish() ||
+         (!configurationWork_.scheduleAlreadyInstalled &&
+          !scheduleRuntime_.installPrepared()))) {
+      hardware_.failSafe();
+      failConfigurationWork(false);
+      return;
+    }
+    if (!compilingSchedules_) scheduleRuntime_.clear();
+    logger_.log("[flova] configuration generation applied");
+    const ConfigurationWorkMode mode = configurationWork_.mode;
+    activeConfigurationGeneration_ = configurationWork_.generation;
+    memcpy(activeConfigurationChecksum_, configurationWork_.manifest.checksum.bytes,
            sizeof(activeConfigurationChecksum_));
-    link_.setConfigurationGeneration(activeConfigurationGeneration_);
+    configurationCommitted_ = configurationWork_.generation != 0;
+    link_.setConfigurationGeneration(configurationWork_.generation);
+    configurationWork_ = ConfigurationWork();
+    if (mode == ConfigurationWorkMode::BootstrapRestore ||
+        mode == ConfigurationWorkMode::BootstrapApply) {
+      finishBootstrapConfiguration();
+      return;
+    }
+    lifecycle_ = FlovaLifecycle::WaitingForNetwork;
+    beginSavedRuntime();
+  }
+
+  void failConfigurationWork(bool validationFailure) {
+    const ConfigurationWorkMode mode = configurationWork_.mode;
+    const uint32_t generation = configurationWork_.generation;
+    const bool canTryPrevious =
+        validationFailure &&
+        (mode == ConfigurationWorkMode::BootRestore ||
+         mode == ConfigurationWorkMode::BootstrapRestore) &&
+        configurationWork_.candidateIndex < 2;
+    if (canTryPrevious) {
+      configurationStorage_.discardGeneration(generation);
+      configurationWork_.phase = ConfigurationWorkPhase::SelectCandidate;
+      return;
+    }
+    if (mode == ConfigurationWorkMode::TransferVerify) {
+      const flova::config::Status status =
+          configurationStorage_.discardGeneration(generation)
+              ? flova::config::Status::VerificationFailure
+              : flova::config::Status::StorageFailure;
+      configurationInstaller_.reset();
+      publishConfigurationReport(status, FlovaLinkConfigurationPhase::End,
+                                 configurationWork_.bootstrapping);
+      configurationWork_ = ConfigurationWork();
+      return;
+    }
+    configurationWork_ = ConfigurationWork();
+    writeError("configuration_restore_failed");
+    lifecycle_ = FlovaLifecycle::Failed;
+  }
+
+  void finishConfigurationVerification() {
+    const bool bootstrapping = configurationWork_.bootstrapping;
+    const uint32_t generation = configurationWork_.generation;
+    if (!configurationInstaller_.promote(generation)) {
+      configurationStorage_.discardGeneration(generation);
+      configurationInstaller_.reset();
+      publishConfigurationReport(flova::config::Status::StorageFailure,
+                                 FlovaLinkConfigurationPhase::End,
+                                 bootstrapping);
+      configurationWork_ = ConfigurationWork();
+      return;
+    }
+    activeConfigurationGeneration_ = generation;
+    memcpy(activeConfigurationChecksum_, configurationWork_.manifest.checksum.bytes,
+           sizeof(activeConfigurationChecksum_));
+    configurationVerifiedGeneration_ = generation;
+    configurationCommitted_ = true;
+    link_.setConfigurationGeneration(generation);
+    logger_.log("[flova] configuration generation committed");
+    publishConfigurationReport(flova::config::Status::Accepted,
+                               FlovaLinkConfigurationPhase::End,
+                               bootstrapping);
+    configurationWork_ = ConfigurationWork();
     if (!bootstrapping) {
       link_.disconnect();
       requestRestart(FlovaRestartReason::ConfigurationActivation);
     }
   }
 
-  bool restoreActiveConfiguration() {
-    uint32_t newest = 0;
-    uint32_t previous = 0;
-    configurationStorage_.generations(newest, previous);
-    const uint32_t candidates[2] = {newest, previous};
-    for (size_t candidate = 0; candidate < 2; ++candidate) {
-      const uint32_t generation = candidates[candidate];
-      if (!generation) continue;
-      flova::config::GenerationManifest manifest;
-      if (!configurationStorage_.generationManifest(generation, manifest) ||
-          !manifest.finalized ||
-          manifest.recordCount > kMaximumConfigurationRecords) {
-        if (!configurationStorage_.discardGeneration(generation)) return false;
-        continue;
-      }
-      if (!validateGeneration(generation, manifest)) {
-        if (!configurationStorage_.discardGeneration(generation)) return false;
-        continue;
-      }
-      if (!applyGeneration(generation, manifest.recordCount)) return false;
-      activeConfigurationGeneration_ = generation;
-      memcpy(activeConfigurationChecksum_, manifest.checksum.bytes,
-             sizeof(activeConfigurationChecksum_));
-      configurationCommitted_ = true;
-      link_.setConfigurationGeneration(generation);
-      return true;
+  void publishConfigurationReport(flova::config::Status status,
+                                  FlovaLinkConfigurationPhase phase,
+                                  bool bootstrapping) {
+    configurationReportWorkspace_.status =
+        status == flova::config::Status::Accepted ||
+                status == flova::config::Status::Duplicate ||
+                status == flova::config::Status::AlreadyCommitted
+            ? FlovaLinkResultStatus::Ok
+            : FlovaLinkResultStatus::Error;
+    if (configurationReportWorkspace_.status == FlovaLinkResultStatus::Error) {
+      const char* errorCode = configurationErrorCode(status);
+      strncpy(configurationReportWorkspace_.errorCode, errorCode,
+              sizeof(configurationReportWorkspace_.errorCode) - 1);
+      configurationReportWorkspace_
+          .errorCode[sizeof(configurationReportWorkspace_.errorCode) - 1] = 0;
+      char message[128] = {};
+      snprintf(message, sizeof(message),
+               "[flova] configuration rejected phase=%u generation=%lu sequence=%lu status=%u",
+               static_cast<unsigned>(phase),
+               static_cast<unsigned long>(configurationReportWorkspace_.generation),
+               static_cast<unsigned long>(configurationReportWorkspace_.sequence),
+               static_cast<unsigned>(status));
+      logger_.log(message);
     }
-    return true;
+    link_.publishConfigurationReport(configurationReportWorkspace_);
+    if (phase == FlovaLinkConfigurationPhase::End &&
+        configurationReportWorkspace_.status == FlovaLinkResultStatus::Ok) {
+      configurationCommitted_ = true;
+      activeConfigurationGeneration_ = configurationReportWorkspace_.generation;
+      memcpy(activeConfigurationChecksum_, configurationReportWorkspace_.checksum,
+             sizeof(activeConfigurationChecksum_));
+      link_.setConfigurationGeneration(activeConfigurationGeneration_);
+    }
+    (void)bootstrapping;
+  }
+
+  void completeConfigurationRestore() {
+    const ConfigurationWorkMode mode = configurationWork_.mode;
+    configurationWork_ = ConfigurationWork();
+    if (mode == ConfigurationWorkMode::BootstrapRestore ||
+        mode == ConfigurationWorkMode::BootstrapApply) {
+      finishBootstrapConfiguration();
+      return;
+    }
+    lifecycle_ = FlovaLifecycle::WaitingForNetwork;
+    beginSavedRuntime();
+  }
+
+  void finishBootstrapConfiguration() {
+    if (!link_.configure(runtimeConfiguration_.linkUrl,
+                         runtimeConfiguration_.deviceId,
+                         runtimeConfiguration_.linkSecret)) {
+      writeError("runtime_link_configuration_failed");
+      lifecycle_ = FlovaLifecycle::Failed;
+      return;
+    }
+    beginDeviceRuntime();
   }
 
   bool decodeGenerationUnit(uint32_t generation, uint32_t sequence) {
@@ -555,6 +1159,10 @@ class FlovaClient {
   static const size_t kValidationDatastreamBytes =
       FLOVA_DATASTREAM_CAPACITY * sizeof(DatastreamId);
   static const size_t kValidationScheduleOffset = kValidationDatastreamBytes;
+  static_assert(kValidationScheduleOffset +
+                        FLOVA_SCHEDULE_CAPACITY * sizeof(ValidationSchedule) <=
+                    sizeof(flova::ConfigurationImage),
+                "configuration validation workspace exceeds the shared image buffer");
 
   uint8_t* validationWorkspace() {
     return reinterpret_cast<uint8_t*>(&configurationImageWorkspace_);
@@ -583,203 +1191,6 @@ class FlovaClient {
     memcpy(validationWorkspace() + kValidationScheduleOffset +
                index * sizeof(value),
            &value, sizeof(value));
-  }
-
-  bool uniqueDatastreamKey(uint32_t generation, uint32_t sequence,
-                           const char* key) {
-    char target[FLOVA_TEXT_CAPACITY] = {};
-    if (!flova::copyBounded(key, target, true)) return false;
-    for (uint32_t prior = 0; prior < sequence; ++prior) {
-      if (!decodeGenerationUnit(generation, prior)) return false;
-      const flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
-      if (unit.kind == flova::config::UnitKind::Datastream &&
-          strcmp(unit.data.datastream.key, target) == 0)
-        return false;
-    }
-    return true;
-  }
-
-  bool validateGeneration(
-      uint32_t generation,
-      const flova::config::GenerationManifest& manifest) {
-    configurationDigest_.reset();
-    for (uint32_t sequence = 0; sequence < manifest.recordCount; ++sequence) {
-      if (!configurationInstaller_.loadWorkspace(generation, sequence))
-        return false;
-      configurationDigest_.addRecord(configurationInstaller_.workspace());
-    }
-    flova::config::Checksum checksum;
-    configurationDigest_.finish(checksum);
-    if (!checksum.equals(manifest.checksum)) return false;
-
-    validationDatastreamCount_ = 0;
-    validationScheduleCount_ = 0;
-    static_assert(kValidationScheduleOffset +
-                          FLOVA_SCHEDULE_CAPACITY *
-                              sizeof(ValidationSchedule) <=
-                      sizeof(flova::ConfigurationImage),
-                  "configuration validation workspace exceeds the shared image buffer");
-    memset(&configurationImageWorkspace_, 0,
-           sizeof(configurationImageWorkspace_));
-    size_t mappingCount = 0;
-    bool systemSeen = false;
-
-    for (uint32_t sequence = 0; sequence < manifest.recordCount; ++sequence) {
-      if (!decodeGenerationUnit(generation, sequence)) return false;
-      const flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
-      if (!device_.validateConfigurationUnit(unit) || !hardware_.validate(unit))
-        return false;
-      if (unit.kind == flova::config::UnitKind::Datastream) {
-        if (validationDatastreamCount_ >= FLOVA_DATASTREAM_CAPACITY)
-          return false;
-        for (size_t i = 0; i < validationDatastreamCount_; ++i)
-          if (validatedDatastreamId(i) == unit.data.datastream.id) return false;
-        setValidatedDatastreamId(validationDatastreamCount_,
-                                 unit.data.datastream.id);
-        ++validationDatastreamCount_;
-        if (unit.data.datastream.hasMapping &&
-            ++mappingCount > FLOVA_HARDWARE_INPUT_CAPACITY +
-                                 FLOVA_HARDWARE_OUTPUT_CAPACITY)
-          return false;
-        if (!uniqueDatastreamKey(generation, sequence,
-                                 unit.data.datastream.key))
-          return false;
-      } else if (unit.kind == flova::config::UnitKind::System) {
-        if (systemSeen) return false;
-        systemSeen = true;
-      } else if (unit.kind == flova::config::UnitKind::Schedule) {
-        if (validationScheduleCount_ >= FLOVA_SCHEDULE_CAPACITY ||
-            !unit.data.schedule.id || !unit.data.schedule.validUntil ||
-            !unit.data.schedule.actionCount ||
-            unit.data.schedule.actionCount >
-                flova::config::kConfigurationScheduleActions)
-          return false;
-        for (size_t i = 0; i < validationScheduleCount_; ++i)
-          if (validationSchedule(i).id == unit.data.schedule.id) return false;
-        ValidationSchedule schedule = {};
-        schedule.id = unit.data.schedule.id;
-        setValidationSchedule(validationScheduleCount_++, schedule);
-      } else if (unit.kind ==
-                 flova::config::UnitKind::ScheduleOccurrences) {
-        size_t index = validationScheduleCount_;
-        for (size_t i = 0; i < validationScheduleCount_; ++i)
-          if (validationSchedule(i).id == unit.data.occurrences.scheduleId) {
-            index = i;
-            break;
-          }
-        ValidationSchedule schedule =
-            index < validationScheduleCount_
-                ? validationSchedule(index)
-                : ValidationSchedule();
-        if (index == validationScheduleCount_ ||
-            !unit.data.occurrences.chunkCount ||
-            unit.data.occurrences.chunkIndex >=
-                unit.data.occurrences.chunkCount ||
-            unit.data.occurrences.chunkIndex !=
-                schedule.nextChunk ||
-            (schedule.chunkCount &&
-             schedule.chunkCount !=
-                 unit.data.occurrences.chunkCount) ||
-            !unit.data.occurrences.occurrenceCount ||
-            unit.data.occurrences.occurrenceCount >
-                flova::config::kConfigurationOccurrenceChunk ||
-            schedule.occurrences +
-                    unit.data.occurrences.occurrenceCount >
-                FLOVA_SCHEDULE_OCCURRENCE_CAPACITY)
-          return false;
-        schedule.chunkCount = unit.data.occurrences.chunkCount;
-        ++schedule.nextChunk;
-        schedule.occurrences += unit.data.occurrences.occurrenceCount;
-        setValidationSchedule(index, schedule);
-      }
-    }
-
-    for (size_t i = 0; i < validationScheduleCount_; ++i) {
-      const ValidationSchedule schedule = validationSchedule(i);
-      if (!schedule.chunkCount || schedule.nextChunk != schedule.chunkCount)
-        return false;
-    }
-
-    for (uint32_t sequence = 0; sequence < manifest.recordCount; ++sequence) {
-      if (!decodeGenerationUnit(generation, sequence)) return false;
-      const flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
-      if (unit.kind == flova::config::UnitKind::Safety &&
-          !hasValidatedDatastream(unit.data.safety.datastreamId))
-        return false;
-      if (unit.kind == flova::config::UnitKind::Schedule)
-        for (uint8_t action = 0; action < unit.data.schedule.actionCount;
-             ++action)
-          if (!hasValidatedDatastream(
-                  unit.data.schedule.actions[action].datastreamId))
-            return false;
-    }
-    return true;
-  }
-
-  bool applyGeneration(uint32_t generation, uint32_t recordCount) {
-    const bool scheduleAlreadyInstalled =
-        scheduleRuntime_.revision() == generation;
-    if (!prepareScheduleCompiler(generation, recordCount)) return false;
-    for (uint32_t sequence = 0; sequence < recordCount; ++sequence) {
-      if (!decodeGenerationUnit(generation, sequence)) {
-        hardware_.failSafe();
-        return false;
-      }
-      const flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
-      if (!device_.applyConfigurationUnit(unit) || !hardware_.apply(unit) ||
-          !applyScheduleUnit(unit)) {
-        hardware_.failSafe();
-        return false;
-      }
-    }
-    if (compilingSchedules_) {
-      if (!scheduleCompiler_.finish() ||
-          (!scheduleAlreadyInstalled && !scheduleRuntime_.installPrepared())) {
-        hardware_.failSafe();
-        return false;
-      }
-    } else {
-      scheduleRuntime_.clear();
-    }
-    return true;
-  }
-
-  bool prepareScheduleCompiler(uint32_t generation, uint32_t recordCount) {
-    uint8_t scheduleCount = 0;
-    uint64_t generatedAt = 0;
-    uint64_t validUntil = 0;
-    for (uint32_t sequence = 0; sequence < recordCount; ++sequence) {
-      if (!configurationInstaller_.loadWorkspace(generation, sequence))
-        return false;
-      const flova::config::Record& stored = configurationInstaller_.workspace();
-      configurationDecodeWorkspace_ = FlovaLinkConfigurationRecord();
-      if (!link_.decodeStoredConfigurationRecord(
-              stored.body, stored.length, configurationDecodeWorkspace_) ||
-          !configurationDecodeWorkspace_.hasTypedUnit) {
-        return false;
-      }
-      const flova::config::Unit& unit =
-          configurationDecodeWorkspace_.typedUnit;
-      if (unit.kind != flova::config::UnitKind::Schedule) continue;
-      if (scheduleCount == FLOVA_SCHEDULE_CAPACITY ||
-          !unit.data.schedule.validUntil) {
-        return false;
-      }
-      ++scheduleCount;
-      if (!generatedAt || unit.data.schedule.validFrom < generatedAt)
-        generatedAt = unit.data.schedule.validFrom;
-      if (!validUntil || unit.data.schedule.validUntil < validUntil)
-        validUntil = unit.data.schedule.validUntil;
-    }
-    compilingSchedules_ = scheduleCount != 0;
-    if (!compilingSchedules_) return true;
-    static const uint64_t kRenewBeforeMs =
-        14ULL * 24ULL * 60ULL * 60ULL * 1000ULL;
-    const uint64_t renewBefore = validUntil > kRenewBeforeMs
-                                     ? validUntil - kRenewBeforeMs
-                                     : validUntil;
-    return scheduleCompiler_.begin(generation, generatedAt, validUntil,
-                                   renewBefore, scheduleCount);
   }
 
   bool applyScheduleUnit(const flova::config::Unit& unit) {
@@ -930,20 +1341,41 @@ class FlovaClient {
   void failBootstrap(const char* error) {
     flova::markProvisioningFailure(pending_, error);
     writeError(error);
+    char retryReason[flova::kProvisioningErrorBytes] = {};
+    strncpy(retryReason, pending_.lastError, sizeof(retryReason) - 1);
     link_.disconnect();
-    if (pending_.attempts >= kMaximumBootstrapAttempts) {
+    if (flova::terminalProvisioningError(error) ||
+        pending_.attempts >= kMaximumBootstrapAttempts) {
+      resetPendingConfiguration();
       if (!storage_.remove("prov_pending")) writeError("storage_failed");
-      managedProvisioning_ ? beginSetup() : awaitProvisioning();
+      provisioningFallback();
       return;
     }
     if (!storage_.write("prov_pending", &pending_, sizeof(pending_)) ||
         !markBootstrapAttempt()) {
       writeError("storage_failed");
-      managedProvisioning_ ? beginSetup() : awaitProvisioning();
+      provisioningFallback();
       return;
     }
+    char retryMessage[128] = {};
+    snprintf(retryMessage, sizeof(retryMessage),
+             "[flova] bootstrap retry attempt=%u/%u reason=%s",
+             static_cast<unsigned>(pending_.attempts),
+             static_cast<unsigned>(kMaximumBootstrapAttempts),
+             retryReason);
+    logger_.log(retryMessage);
     lifecycle_ = FlovaLifecycle::WaitingForNetwork;
     bootstrapStartedAt_ = millis();
+  }
+
+  void resetPendingConfiguration() {
+    flova::config::GenerationManifest pending = {};
+    uint32_t active = 0;
+    if (configurationStorage_.pendingManifest(pending) &&
+        configurationStorage_.activeGeneration(active) &&
+        pending.generation > active)
+      configurationStorage_.discardGeneration(pending.generation);
+    configurationInstaller_.reset();
   }
 
   void completeBootstrap(const FlovaLinkBootstrapCommitted& committed) {
@@ -971,7 +1403,7 @@ class FlovaClient {
     if (!storage_.read("config", &configurationImageWorkspace_,
                        sizeof(configurationImageWorkspace_)) ||
         !flova::verifyConfigurationImage(configurationImageWorkspace_)) {
-      failBootstrap("configuration_verify_failed");
+      failBootstrap("configuration_verification_failed");
       return;
     }
     if (!storage_.remove("prov_pending") || !storage_.remove("prov_error")) {
@@ -980,19 +1412,13 @@ class FlovaClient {
     }
     link_.disconnect();
     memset(&pending_, 0, sizeof(pending_));
-    if (!restoreActiveConfiguration()) {
-      writeError("configuration_restore_failed");
-      lifecycle_ = FlovaLifecycle::Failed;
-      return;
+    if (configurationVerifiedGeneration_ == committed.generation) {
+      startConfigurationRestore(ConfigurationWorkMode::BootstrapApply,
+                                committed.generation);
+    } else {
+      startConfigurationRestore(ConfigurationWorkMode::BootstrapRestore,
+                                committed.generation);
     }
-    if (!link_.configure(runtimeConfiguration_.linkUrl,
-                         runtimeConfiguration_.deviceId,
-                         runtimeConfiguration_.linkSecret)) {
-      writeError("runtime_link_configuration_failed");
-      lifecycle_ = FlovaLifecycle::Failed;
-      return;
-    }
-    beginDeviceRuntime();
   }
 
   void requestRestart(FlovaRestartReason reason) {
@@ -1038,17 +1464,20 @@ class FlovaClient {
 
   void prepareProvisioningIdentity() {
     if (!provisioningConfig_.hardwareId || !provisioningConfig_.hardwareId[0]) {
-      if (provisioning_.defaultHardwareId(hardwareIdWorkspace_, sizeof(hardwareIdWorkspace_)))
+      if (identity_.hardwareId(hardwareIdWorkspace_, sizeof(hardwareIdWorkspace_)))
         provisioningConfig_.hardwareId = hardwareIdWorkspace_;
     }
     if (!provisioningConfig_.firmwareTarget || !provisioningConfig_.firmwareTarget[0]) {
-      provisioningConfig_.firmwareTarget = provisioning_.defaultFirmwareTarget();
+      provisioningConfig_.firmwareTarget = identity_.firmwareTarget();
     }
   }
 
   ProvisioningConfig provisioningConfig_;
   FlovaClientLink& link_;
   FlovaProvisioningAdapter& provisioning_;
+  FlovaNetworkRuntime& network_;
+  FlovaTlsClockBootstrap& tlsClock_;
+  FlovaBoardIdentity& identity_;
   flova::Storage& storage_;
   flova::Clock& clock_;
   flova::Logger& logger_;
@@ -1068,6 +1497,7 @@ class FlovaClient {
   char firmwareTargetWorkspace_[65] = {};
   uint32_t bootstrapStartedAt_ = 0;
   uint32_t activeConfigurationGeneration_ = 0;
+  uint32_t configurationVerifiedGeneration_ = 0;
   uint8_t activeConfigurationChecksum_[32] = {};
   bool configurationCommitted_ = false;
   FlovaLinkConfigurationRecord configurationDecodeWorkspace_ = {};
@@ -1082,6 +1512,7 @@ class FlovaClient {
   bool otaEnabled_ = false;
   size_t validationDatastreamCount_ = 0;
   size_t validationScheduleCount_ = 0;
+  ConfigurationWork configurationWork_ = {};
   FlovaRestartHandler restartHandler_ = nullptr;
   void* restartContext_ = nullptr;
   FlovaRestartReason restartReason_ = FlovaRestartReason::None;

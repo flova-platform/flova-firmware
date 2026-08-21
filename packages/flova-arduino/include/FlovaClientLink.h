@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include <FlovaDevice.h>
+#include <FlovaHardware.h>
 #include <FlovaLinkMessages.h>
 
 namespace flova {
@@ -46,6 +47,8 @@ class FlovaClientLink : public flova::Link {
       FlovaLinkConfigurationRecord& output) = 0;
   virtual void setConfigurationGeneration(uint32_t generation) = 0;
   virtual uint32_t configurationGeneration() const = 0;
+  virtual void setHardwareCapabilities(
+      const flova::HardwareCapabilities& capabilities) = 0;
   virtual bool resourceRecoveryRequired() const { return false; }
   virtual void disconnect() = 0;
 };

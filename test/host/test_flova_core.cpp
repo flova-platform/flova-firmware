@@ -8,10 +8,10 @@
 
 class TestLink : public flova::Link {
  public:
-  bool online = true; int sends = 0, stateSends = 0; double stateValues[64]; flova::Message last; flova::MessageReceiver receiver = 0; void* context = 0;
+  bool online = true; int sends = 0, stateSends = 0, errorSends = 0; double stateValues[64]; flova::Message last, lastError; flova::MessageReceiver receiver = 0; void* context = 0;
   bool begin() override { return true; }
   bool connected() const override { return online; }
-  bool send(const flova::Message& message) override { sends++; last = message; if (message.kind == flova::MessageKind::StateUpdate) { if (message.value.type == flova::ValueType::Float) stateValues[stateSends] = message.value.scalar.floating; stateSends++; } return online; }
+  bool send(const flova::Message& message) override { sends++; last = message; if (message.kind == flova::MessageKind::StateUpdate) { if (message.value.type == flova::ValueType::Float) stateValues[stateSends] = message.value.scalar.floating; stateSends++; } if (message.kind == flova::MessageKind::Error) { errorSends++; lastError = message; } return online; }
   bool bindDatastreams(const char* const*, size_t count, DatastreamId* ids) override { boundCount = count; for (size_t i = 0; i < count; ++i) ids[i] = static_cast<DatastreamId>(i + 1); return count <= FLOVA_MAX_ACTIVE_DATASTREAMS; }
   void poll() override {}
   void setReceiver(flova::MessageReceiver callback, void* value) override { receiver = callback; context = value; }
@@ -45,6 +45,28 @@ class AsyncBindingLink : public TestLink {
   DatastreamId pendingIds[FLOVA_MAX_ACTIVE_DATASTREAMS] = {};
 };
 class TestStorage : public flova::Storage { public: bool read(const char*, void*, size_t) override { return false; } bool write(const char*, const void*, size_t) override { return true; } bool remove(const char*) override { return true; } flova::StorageCapabilities capabilities() const override { flova::StorageCapabilities value; value.usableBytes = 65536; value.availableBytes = 65536; value.persistent = true; return value; } };
+class PersistentTestStorage : public TestStorage {
+ public:
+  bool read(const char* key, void* output, size_t size) override {
+    if (strcmp(key, "dsid:1") || !present || size != recordSize) return false;
+    memcpy(output, record, size);
+    return true;
+  }
+
+  bool write(const char* key, const void* input, size_t size) override {
+    if (!strcmp(key, "dsid:1") && size <= sizeof(record)) {
+      memcpy(record, input, size);
+      recordSize = size;
+      present = true;
+    }
+    return true;
+  }
+
+ private:
+  uint8_t record[256] = {};
+  size_t recordSize = 0;
+  bool present = false;
+};
 class TestClock : public flova::Clock { public: uint64_t now = 1, utc = 0; uint64_t milliseconds() const override { return now; } bool utcValid() const override { return utc != 0; } uint64_t utcMilliseconds() const override { return utc + now; } void setUtc(uint64_t value, uint64_t) override { utc = value - now; } };
 class TestLogger : public flova::Logger { public: void log(const char*) override {} };
 
@@ -55,7 +77,7 @@ static bool reject;
 static bool noChange;
 static flova::WriteResult writeRelay(bool) { writes++; return reject ? flova::WriteResult::reject("safety_lock") : noChange ? flova::WriteResult::noChange() : flova::WriteResult::accept(); }
 static flova::WriteResult writeSetpoint(double) { numericWrites++; return flova::WriteResult::accept(); }
-static void writeCounter(int64_t) { voidWrites++; }
+  static void writeCounter(int64_t) { voidWrites++; }
 
 class SessionStorage : public flova::Storage { public: flova::ProvisioningSession session; bool present = false; bool read(const char* key, void* out, size_t size) override { if (!present || strcmp(key, "session") || size != sizeof(session)) return false; memcpy(out, &session, size); return true; } bool write(const char* key, const void* value, size_t size) override { if (!strcmp(key, "session") && size == sizeof(session)) { memcpy(&session, value, size); present = true; } return true; } bool remove(const char*) override { return true; } };
 class TestEngine : public flova::LinkBootstrapClient { public: bool beginBootstrap(const flova::ProvisioningRequest&) override { return true; } flova::ProvisioningPoll poll(flova::ProvisioningSession& out) override { out.schemaVersion = 1; flova::Value::copy(out.deviceId, "device-1"); flova::Value::copy(out.linkUrl, "wss://link.example/api/device-link"); flova::Value::copy(out.secret, "device-secret"); out.serverUtcMs = 100000; return flova::ProvisioningPoll::Complete; } };
@@ -113,6 +135,64 @@ int main() {
   assert(resourceTest.reserve(flova::ResourceKind::History, 40));
   assert(resourceTest.reserve(flova::ResourceKind::Schedules, 60));
 
+  PersistentTestStorage persistentStorage;
+  TestLink seedLink;
+  TestClock seedClock;
+  TestLogger seedLogger;
+  flova::Device seedDevice(seedLink, persistentStorage, seedClock, seedLogger);
+  flova::Datastream<bool> seedRelay = seedDevice.datastream<bool>("relay");
+  seedRelay.onWrite(writeRelay)
+      .persist(flova::PersistencePolicy::Persistent);
+  assert(seedDevice.begin());
+  reject = false;
+  noChange = false;
+  const int writesBeforePersist = writes;
+  assert(seedRelay.write(true).accepted());
+  assert(writes == writesBeforePersist + 1);
+
+  TestLink restoreLink;
+  restoreLink.online = false;
+  TestClock restoreClock;
+  TestLogger restoreLogger;
+  flova::Device restoreDevice(restoreLink, persistentStorage, restoreClock,
+                              restoreLogger);
+  flova::Datastream<bool> restoredRelay = restoreDevice.datastream<bool>("relay");
+  restoredRelay.onWrite(writeRelay)
+      .persist(flova::PersistencePolicy::Persistent);
+  assert(restoreDevice.begin());
+  const int writesBeforeRestore = writes;
+  restoreDevice.run();
+  assert(writes == writesBeforeRestore + 1);
+  assert(restoredRelay.hasValue() && restoredRelay.value());
+  assert(restoredRelay.snapshot().quality == flova::Quality::Good);
+
+  TestLink failedRestoreLink;
+  failedRestoreLink.online = false;
+  TestClock failedRestoreClock;
+  TestLogger failedRestoreLogger;
+  flova::Device failedRestoreDevice(failedRestoreLink, persistentStorage,
+                                    failedRestoreClock, failedRestoreLogger);
+  flova::Datastream<bool> failedRelay =
+      failedRestoreDevice.datastream<bool>("relay");
+  failedRelay.onWrite(writeRelay)
+      .persist(flova::PersistencePolicy::Persistent);
+  assert(failedRestoreDevice.begin());
+  reject = true;
+  const int writesBeforeFailedRestore = writes;
+  failedRestoreDevice.run();
+  assert(writes == writesBeforeFailedRestore + 1);
+  assert(failedRelay.snapshot().quality == flova::Quality::HardwareError);
+  failedRestoreLink.online = true;
+  reject = false;
+  flova::Message retryRestore;
+  retryRestore.kind = flova::MessageKind::WriteRequest;
+  retryRestore.datastreamId = 1;
+  retryRestore.value = flova::Value::from(true);
+  retryRestore.revision = 1;
+  flova::Value::copy(retryRestore.commandId, "retry-restore");
+  failedRestoreLink.inject(retryRestore);
+  assert(writes == writesBeforeFailedRestore + 2);
+
   TestLink link; TestStorage storage; TestClock clock; TestLogger logger; flova::Device device(link, storage, clock, logger);
   flova::ResourceBudget budgets[static_cast<size_t>(flova::ResourceKind::Count)];
   budgets[static_cast<size_t>(flova::ResourceKind::History)].reservedBytes = 4096;
@@ -148,7 +228,7 @@ int main() {
 
   link.online = false; relay.offline(flova::OfflinePolicy::Reject); assert(!relay.write(false).accepted()); assert(!relay.write(true).accepted()); int sends = link.sends;
   assert(relay.value());
-  link.online = true; device.run(); assert(link.sends > sends);
+  link.online = true; clock.now += 5000; device.run(); assert(link.sends > sends);
   link.acknowledge(link.last.messageId);
 
   flova::HistoryRetentionPolicy retention; retention.maximumRecords = 2;
@@ -208,5 +288,14 @@ int main() {
   flova::config::Unit chunk = {}; chunk.kind = flova::config::UnitKind::ScheduleOccurrences; chunk.data.occurrences.scheduleId = 42; chunk.data.occurrences.chunkIndex = 0; chunk.data.occurrences.chunkCount = 2; chunk.data.occurrences.occurrenceCount = 1; chunk.data.occurrences.occurrences[0] = 3000; assert(compiler.addOccurrences(chunk.data.occurrences));
   chunk.data.occurrences.chunkIndex = 1; chunk.data.occurrences.occurrences[0] = 4000; assert(compiler.addOccurrences(chunk.data.occurrences));
   assert(compiler.finish()); assert(compiled.schedules[0].occurrenceCount == 2 && compiled.schedules[0].actionCount == 1 && compiled.schedules[0].actions[0].offsetMs == 500);
+  compiled.reset();
+  assert(compiled.magic == 0x46534D31UL && compiled.revision == 0 &&
+         compiled.generatedAt == 0 && compiled.validUntil == 0 &&
+         compiled.renewBefore == 0 && compiled.scheduleCount == 0 &&
+         compiled.checksum == 0 && compiled.schedules[0].id[0] == 0 &&
+         !compiled.schedules[0].enabled && compiled.schedules[0].actionCount == 0 &&
+         compiled.schedules[0].occurrenceCount == 0);
+  scheduleRuntime.clear();
+  assert(scheduleRuntime.revision() == 0);
   return 0;
 }

@@ -55,6 +55,11 @@ value must be distinguished from the type's default. `snapshot()` adds origin,
 quality, revision, update time, and unsynchronized-state metadata. `bound()`
 reports whether the key has a numeric runtime binding.
 
+Remote writes return an `applied` command result automatically after the
+handler accepts. Developers do not send acknowledgements themselves. If
+hardware later observes a different value, call `report()` on the same
+datastream and Flova reconciles cloud state to the device report.
+
 ## Offline and custom logic
 
 Local `write()` and `report()` calls normally continue to work without
@@ -75,9 +80,25 @@ should use the configuration installed by Engine and only call `write()`,
 ## Hardware mappings
 
 Universal ESP32 and ESP8266 firmware binds template mappings for
-`digital_input`, `digital_output`, `analog_input`, and `pwm_output`. Custom
-applications and board ports keep ownership of their HAL and bind behavior with
-`onWrite()` or report externally applied state with `report()`.
+`digital_input`, `digital_output`, `analog_input`, and `pwm_output`. The
+universal firmware configures those pins and routes their reads and writes
+automatically. Custom applications keep ownership of their HAL and connect
+their own hardware with `onWrite()` or `report()`.
+
+The Link bootstrap advertises this distinction automatically. Universal
+firmware reports its bounded input/output mapping slots; custom facades report
+zero slots, so Engine removes template mappings and status-indicator GPIO
+configuration from new custom transfers. Older mapped configurations remain
+bootable on custom firmware because the manual adapter accepts and ignores
+those records. Advanced board ports can implement `flova::Hardware` directly
+and advertise their own mapping profile when they want automatic mapping.
+
+```cpp
+pinMode(RELAY_PIN, OUTPUT);
+relay.onWrite([](bool enabled) {
+  digitalWrite(RELAY_PIN, enabled ? HIGH : LOW);
+});
+```
 
 - Analog inputs publish the board's raw ADC count at `sample_interval_ms`.
 - PWM outputs accept the configured numeric range and map it to native duty.

@@ -7,38 +7,73 @@
 
 class ArduinoFlovaHardware final : public flova::Hardware {
  public:
+  flova::HardwareCapabilities capabilities() const override {
+    return flova::HardwareCapabilities(
+        true, FLOVA_HARDWARE_INPUT_CAPACITY, FLOVA_HARDWARE_OUTPUT_CAPACITY,
+        true);
+  }
+
   void attach(flova::Device& device) override { device_ = &device; }
 
   bool validate(const flova::config::Unit& unit) override {
-    if (unit.kind == flova::config::UnitKind::System)
-      return !unit.data.system.hasStatusLedPin ||
-             unit.data.system.statusLedPin <= 255;
+    configurationError_[0] = 0;
+    if (unit.kind == flova::config::UnitKind::System) {
+      if (!unit.data.system.hasStatusLedPin ||
+          validOutputPin(unit.data.system.statusLedPin))
+        return true;
+      return reject("hardware_pin_invalid");
+    }
     if (unit.kind != flova::config::UnitKind::Datastream ||
         !unit.data.datastream.hasMapping)
       return true;
-    if (unit.data.datastream.mapping.pin > 255) return false;
+    if (unit.data.datastream.mapping.pin > 255)
+      return reject("hardware_pin_invalid");
     flova::ValueType type;
-    if (!valueType(unit.data.datastream.valueType, type)) return false;
+    if (!valueType(unit.data.datastream.valueType, type))
+      return reject("hardware_type_mismatch");
     const flova::config::MappingKind kind =
         unit.data.datastream.mapping.kind;
-    if (kind == flova::config::MappingKind::DigitalInput ||
-        kind == flova::config::MappingKind::DigitalOutput)
-      return type == flova::ValueType::Boolean;
-    if (kind == flova::config::MappingKind::AnalogInput ||
-        kind == flova::config::MappingKind::PwmOutput) {
-      if (!numeric(type)) return false;
+    if (kind == flova::config::MappingKind::DigitalInput) {
+      if (type != flova::ValueType::Boolean ||
+          !validInputPin(unit.data.datastream.mapping.pin))
+        return reject(type != flova::ValueType::Boolean
+                          ? "hardware_type_mismatch"
+                          : "hardware_pin_invalid");
+      return true;
+    }
+    if (kind == flova::config::MappingKind::DigitalOutput) {
+      if (type != flova::ValueType::Boolean ||
+          !validOutputPin(unit.data.datastream.mapping.pin))
+        return reject(type != flova::ValueType::Boolean
+                          ? "hardware_type_mismatch"
+                          : "hardware_pin_invalid");
+      return true;
+    }
+    if (kind == flova::config::MappingKind::AnalogInput) {
+      if (!numeric(type) || !validAnalogPin(unit.data.datastream.mapping.pin))
+        return reject(!numeric(type) ? "hardware_type_mismatch"
+                                     : "hardware_pin_invalid");
       const double minimum = number(unit.data.datastream.minimum, 0);
       const double maximum = number(unit.data.datastream.maximum, 100);
-      return minimum < maximum;
+      return minimum < maximum ? true : reject("hardware_range_invalid");
     }
-    return false;
+    if (kind == flova::config::MappingKind::PwmOutput) {
+      if (!numeric(type) || !validOutputPin(unit.data.datastream.mapping.pin))
+        return reject(!numeric(type) ? "hardware_type_mismatch"
+                                     : "hardware_pin_invalid");
+      const double minimum = number(unit.data.datastream.minimum, 0);
+      const double maximum = number(unit.data.datastream.maximum, 100);
+      return minimum < maximum ? true : reject("hardware_range_invalid");
+    }
+    return reject("hardware_mapping_invalid");
   }
 
   bool apply(const flova::config::Unit& unit) override {
     if (!validate(unit)) return false;
     if (unit.kind == flova::config::UnitKind::System) {
       if (!unit.data.system.hasStatusLedPin) return true;
-      if (unit.data.system.statusLedPin > 255) return false;
+      if (!validOutputPin(unit.data.system.statusLedPin))
+        return reject("hardware_pin_invalid");
       statusLedPin_ = unit.data.system.statusLedPin;
       statusLedActiveLow_ = unit.data.system.hasStatusLedActiveLow &&
                             unit.data.system.statusLedActiveLow;
@@ -50,10 +85,11 @@ class ArduinoFlovaHardware final : public flova::Hardware {
         !unit.data.datastream.hasMapping) {
       return true;
     }
-    if (!device_ || unit.data.datastream.mapping.pin > 255) return false;
+    if (!device_) return reject("hardware_mapping_missing");
     Mapping* mapping = find(unit.data.datastream.id);
     if (!mapping) {
-      if (mappingCount_ >= kMaximumMappings) return false;
+      if (mappingCount_ >= kMaximumMappings)
+        return reject("hardware_mapping_capacity");
       mapping = &mappings_[mappingCount_++];
     }
     *mapping = Mapping();
@@ -61,7 +97,7 @@ class ArduinoFlovaHardware final : public flova::Hardware {
     mapping->id = unit.data.datastream.id;
     mapping->kind = unit.data.datastream.mapping.kind;
     if (!valueType(unit.data.datastream.valueType, mapping->valueType))
-      return false;
+      return reject("hardware_type_mismatch");
     mapping->pin = static_cast<uint8_t>(unit.data.datastream.mapping.pin);
     mapping->activeHigh = !unit.data.datastream.mapping.hasActiveHigh ||
                           unit.data.datastream.mapping.activeHigh;
@@ -77,10 +113,12 @@ class ArduinoFlovaHardware final : public flova::Hardware {
             : 300;
     mapping->minimum = number(unit.data.datastream.minimum, 0);
     mapping->maximum = number(unit.data.datastream.maximum, 100);
-    if (mapping->minimum >= mapping->maximum) return false;
+    if (mapping->minimum >= mapping->maximum)
+      return reject("hardware_range_invalid");
 
     if (mapping->kind == flova::config::MappingKind::DigitalInput) {
-      if (mapping->valueType != flova::ValueType::Boolean) return false;
+      if (mapping->valueType != flova::ValueType::Boolean)
+        return reject("hardware_type_mismatch");
       const uint8_t mode = unit.data.datastream.mapping.hasPull &&
                                    unit.data.datastream.mapping.pull == 1
                                ? INPUT_PULLUP
@@ -89,17 +127,18 @@ class ArduinoFlovaHardware final : public flova::Hardware {
       mapping->lastRaw = readDigital(*mapping);
       mapping->changedAt = millis();
     } else if (mapping->kind == flova::config::MappingKind::AnalogInput) {
-      if (!numeric(mapping->valueType)) return false;
+      if (!numeric(mapping->valueType))
+        return reject("hardware_type_mismatch");
       pinMode(mapping->pin, INPUT);
     } else {
       if ((mapping->kind == flova::config::MappingKind::DigitalOutput &&
            mapping->valueType != flova::ValueType::Boolean) ||
           (mapping->kind == flova::config::MappingKind::PwmOutput &&
            !numeric(mapping->valueType)))
-        return false;
+        return reject("hardware_type_mismatch");
       pinMode(mapping->pin, OUTPUT);
       if (!device_->setWriteHandler(mapping->id, writeMapped, mapping))
-        return false;
+        return reject("hardware_mapping_missing");
     }
 
     if (unit.data.datastream.hasDefault &&
@@ -109,11 +148,25 @@ class ArduinoFlovaHardware final : public flova::Hardware {
       if (!value(unit.data.datastream.defaultValue, initial) ||
           !device_->write(mapping->id, initial, flova::Origin::DeviceRestore)
                .accepted()) {
-        return false;
+        return reject("hardware_default_rejected");
       }
     }
     return true;
   }
+
+  void resetConfiguration() override {
+    if (device_) {
+      for (size_t i = 0; i < mappingCount_; ++i)
+        device_->clearWriteHandler(mappings_[i].id, writeMapped, &mappings_[i]);
+    }
+    failSafe();
+    mappingCount_ = 0;
+    statusLedPin_ = 255;
+    statusLedActiveLow_ = false;
+    configurationError_[0] = 0;
+  }
+
+  const char* configurationError() const override { return configurationError_; }
 
   void run() override {
     if (!device_) return;
@@ -281,6 +334,44 @@ class ArduinoFlovaHardware final : public flova::Hardware {
            type == flova::ValueType::Double;
   }
 
+  bool reject(const char* error) {
+    strncpy(configurationError_, error, sizeof(configurationError_) - 1);
+    configurationError_[sizeof(configurationError_) - 1] = 0;
+    return false;
+  }
+
+  static bool validInputPin(uint16_t pin) {
+#if defined(ESP32)
+    return pin <= 39 && !(pin >= 6 && pin <= 11);
+#elif defined(ESP8266)
+    return pin == 0 || pin == 2 || pin == 4 || pin == 5 ||
+           (pin >= 12 && pin <= 16);
+#else
+    return pin <= 255;
+#endif
+  }
+
+  static bool validOutputPin(uint16_t pin) {
+#if defined(ESP32)
+    return pin <= 33 && !(pin >= 6 && pin <= 11);
+#elif defined(ESP8266)
+    return pin == 0 || pin == 2 || pin == 4 || pin == 5 ||
+           (pin >= 12 && pin <= 16);
+#else
+    return pin <= 255;
+#endif
+  }
+
+  static bool validAnalogPin(uint16_t pin) {
+#if defined(ESP32)
+    return pin >= 32 && pin <= 39;
+#elif defined(ESP8266)
+    return pin == A0;
+#else
+    return pin <= 255;
+#endif
+  }
+
   Mapping* find(DatastreamId id) {
     for (size_t i = 0; i < mappingCount_; ++i)
       if (mappings_[i].id == id) return &mappings_[i];
@@ -299,4 +390,5 @@ class ArduinoFlovaHardware final : public flova::Hardware {
   uint8_t statusLedPin_ = 255;
   bool statusLedActiveLow_ = false;
   bool connected_ = false;
+  char configurationError_[48] = {};
 };

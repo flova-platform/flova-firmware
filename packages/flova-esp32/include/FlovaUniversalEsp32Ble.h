@@ -1,25 +1,27 @@
 #pragma once
 
 #include <FlovaArduino.h>
-#include <FlovaEsp8266.h>
-#include <FlovaEsp8266Provisioning.h>
+#include <FlovaEsp32.h>
+#include <FlovaEsp32BleProvisioning.h>
 #include <adapters/ArduinoFlovaHardware.h>
 
-// Full-device composition used by the no-code universal firmware.
-class FlovaUniversalEsp8266 final {
+class FlovaUniversalEsp32Ble final {
  public:
-  FlovaUniversalEsp8266()
-      : link_(entropy_), provisioning_(storage_),
-        network_(storage_), identity_("universal_esp8266"),
+  explicit FlovaUniversalEsp32Ble(const char* proofOfPossession = nullptr)
+      : link_(entropy_), provisioning_(proofOfPossession),
+        identity_("universal_esp32_ble"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
-    analogWriteRange(255);
-    client_.setFirmwareTarget("universal_esp8266");
-    client_.setOtaEnabled(true);
+    client_.setFirmwareTarget("universal_esp32_ble");
+    // The BLE/BTDM image does not fit either 1.28 MiB OTA slot on the 4 MiB
+    // DevKit. This MVP uses the 2 MiB single-app partition; production OTA
+    // needs a larger-flash board or a deliberately larger partition layout.
+    client_.setOtaEnabled(false);
     client_.setRestartHandler(scheduleRestart, this);
   }
 
   bool begin() { return client_.begin(true); }
+
   void run() {
     client_.run();
     if (restartRequestedAt_ && millis() - restartRequestedAt_ >= 1000UL) {
@@ -35,28 +37,23 @@ class FlovaUniversalEsp8266 final {
   const char* lastError() const { return client_.lastError(); }
   flova::Device& device() { return client_.device(); }
 
-  template <typename T>
-  flova::Datastream<T> datastream(const char* key) {
-    return client_.datastream<T>(key);
-  }
-
  private:
   static void scheduleRestart(void* context, FlovaRestartReason) {
-    FlovaUniversalEsp8266* self = static_cast<FlovaUniversalEsp8266*>(context);
+    FlovaUniversalEsp32Ble* self = static_cast<FlovaUniversalEsp32Ble*>(context);
     const uint32_t now = millis();
     self->restartRequestedAt_ = now ? now : 1;
   }
 
-  FlovaEsp8266Entropy entropy_;
+  FlovaEsp32Entropy entropy_;
   ArduinoFlovaLink link_;
-  FlovaEsp8266Storage storage_;
+  FlovaEsp32Storage storage_;
   ArduinoFlovaClock clock_;
   ArduinoFlovaLogger logger_;
   ArduinoFlovaHardware hardware_;
-  FlovaEsp8266Provisioning provisioning_;
-  FlovaEsp8266StoredNetwork network_;
+  FlovaEsp32BleProvisioning provisioning_;
+  FlovaEsp32PlatformNetwork network_;
   ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock_;
-  FlovaEsp8266Identity identity_;
+  FlovaEsp32Identity identity_;
   FlovaClient client_;
   uint32_t restartRequestedAt_ = 0;
 };

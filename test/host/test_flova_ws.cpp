@@ -375,6 +375,17 @@ static void verifyPeerCloseReconnect() {
   assert(websocket.connected());
 }
 
+static void verifyAbortDoesNotWriteCloseFrame() {
+  FakeClient client;
+  client.includeProtocol = false;
+  FlovaWs websocket(client, entropy);
+  assert(websocket.handshake("engine.example", "/"));
+  client.writtenLength = 0;
+  websocket.abort();
+  assert(client.writtenLength == 0);
+  assert(!websocket.connected());
+}
+
 static void verifyCoalescedWrite() {
   FakeClient client;
   client.includeProtocol = false;
@@ -415,6 +426,7 @@ int main() {
   verifyRejection();
   verifyReconnectCycles();
   verifyPeerCloseReconnect();
+  verifyAbortDoesNotWriteCloseFrame();
   verifyCoalescedWrite();
   return 0;
 }

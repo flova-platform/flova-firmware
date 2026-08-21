@@ -1,7 +1,7 @@
 # ESP8266 touch/LED offline test
 
-This is a flashable integration test for the current ESP8266 SDK and mobile
-provisioning flow.
+This is a small flashable ESP8266 custom touch/LED example. The sketch owns its
+fixed GPIOs, Wi-Fi connection, and HTTP provisioning routes.
 
 Wiring:
 
@@ -17,8 +17,8 @@ LED          = boolean read/write
 TOUCH_SENSOR = boolean read-only
 ```
 
-If your template uses different keys, change `LED_DATASTREAM_KEY` and
-`TOUCH_DATASTREAM_KEY` in `src/main.cpp`. The keys must match Engine exactly.
+If your template uses different keys, change the two string literals in
+`src/main.cpp`. The keys must match Engine exactly.
 
 Build and flash:
 
@@ -27,18 +27,17 @@ pio run -e esp8266-touch-test -t upload
 pio device monitor -b 115200
 ```
 
-On a fresh device:
+Set `WIFI_SSID` and `WIFI_PASSWORD` in `src/main.cpp`. On a fresh device:
 
-1. The firmware starts a `Flova-Setup-...` SoftAP.
-2. Use the native mobile provisioning flow to send Wi-Fi credentials and the
-   device's short-lived Link provisioning handoff.
+1. Connect the device to the configured Wi-Fi network.
+2. Use the app's custom provisioning request against the device HTTP server to
+   send the short-lived Link handoff.
 3. Wait for the device to finish bootstrap and appear online.
 4. Open the device dashboard and verify the LED and Touch Sensor datastreams.
 
-Touching the sensor produces a rising-edge event on `TOUCH_SENSOR` and toggles `LED`
-through `led.write(...)`. The LED callback is also used for mobile commands,
-schedules, and automations, so the test exercises one consistent datastream
-path.
+Touching the sensor produces a rising-edge event on `TOUCH_SENSOR` and toggles
+`LED` through `led.write(...)`. Mobile commands, schedules, automations, and
+local writes use the same datastream path.
 
 For the offline test, temporarily turn off or disconnect the Wi-Fi access
 point after the device is provisioned. Touch the sensor several times. The LED
@@ -52,6 +51,6 @@ Engine automation to write the LED, which can produce two toggles or a race.
 After testing the local behavior, re-enable the automation separately to test
 the cloud-controlled path.
 
-This example intentionally ignores template GPIO mappings so the physical test
-always uses D1/D2. It is suitable for testing the SDK/protocol/mobile flow,
-not for validating universal firmware hardware-mapping behavior.
+This custom example intentionally does not use template pin mappings. The
+sketch owns D1/D2 directly; advanced applications can change those constants
+or replace the hardware behavior entirely.

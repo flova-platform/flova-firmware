@@ -116,6 +116,7 @@ struct Message {
   uint64_t expiresAtUtcMs;
   uint32_t retryAfterMs;
   Origin origin;
+  uint8_t resultStatus;
   Message()
       : kind(MessageKind::StateUpdate),
         datastreamId(FLOVA_INVALID_DATASTREAM_ID),
@@ -125,7 +126,8 @@ struct Message {
         monotonic(0),
         expiresAtUtcMs(0),
         retryAfterMs(0),
-        origin(Origin::Unknown) {
+        origin(Origin::Unknown),
+        resultStatus(0) {
     commandId[0] = correlationId[0] = reason[0] = 0;
   }
 };
@@ -198,14 +200,14 @@ class Device {
  public:
   typedef WriteResult (*ValueWriteHandler)(void* context, const Value& value);
   Device(Link& link, Storage& storage, Clock& clock, Logger& logger)
-      : link_(link), storage_(storage), clock_(clock), logger_(logger), count_(0), recentCursor_(0), historyHead_(0), historyCount_(0), lastTimeRequest_(0), timeRequestStarted_(0), timeSequence_(0), nextMessageId_(static_cast<uint64_t>(link.messageNonce()) << 32), retryNotBefore_(0), historyLastSentAt_(0), started_(false), bindingPending_(false), bindingFailed_(false), resourcePlanConfigured_(false) {
+      : link_(link), storage_(storage), clock_(clock), logger_(logger), count_(0), recentCursor_(0), historyHead_(0), historyCount_(0), lastTimeRequest_(0), timeRequestStarted_(0), timeSequence_(0), nextMessageId_(static_cast<uint64_t>(link.messageNonce()) << 32), retryNotBefore_(0), historyLastSentAt_(0), started_(false), bindingPending_(false), bindingFailed_(false), resourcePlanConfigured_(false), restoreAttempted_(false) {
     for (size_t i = 0; i < 4; ++i) recentCommands_[i][0] = 0;
     pendingTimeId_[0] = 0;
   }
 
   // Bind names once, restore bounded state, and start the board-supplied link.
-  // A remote binding may complete after begin(); no hardware is touched until
-  // run() observes a complete, validated binding.
+  // A remote binding may complete after begin(); persisted hardware values are
+  // applied from run() after the binding is complete.
   bool begin() {
     if (started_) return false;
     if (!link_.messageNonce()) return false;
@@ -223,6 +225,7 @@ class Device {
     if (!bindingPending_) {
       restore();
       restoreHistory();
+      restoreResults();
     }
     if (!link_.begin()) return false;
     started_ = true;
@@ -244,8 +247,14 @@ class Device {
       bindingPending_ = false;
       restore();
       restoreHistory();
+      restoreResults();
+    }
+    if (!restoreAttempted_) {
+      applyRestoredHardware();
+      restoreAttempted_ = true;
     }
     if (!started_ || bindingFailed_ || !link_.connected()) return;
+    flushResults();
     if (retryNotBefore_ && clock_.milliseconds() < retryNotBefore_) return;
     syncTime();
     for (size_t i = 0; i < count_; ++i) if (states_[i].dirty) publish(states_[i]);
@@ -271,6 +280,19 @@ class Device {
     current->writeHandler.valueResult = handler;
     current->writeKind = WriteHandlerKind::ValueResult;
     current->writeContext = context;
+    return true;
+  }
+
+  bool clearWriteHandler(DatastreamId id, ValueWriteHandler handler,
+                         void* context) {
+    State* current = stateForId(id);
+    if (!current || current->writeKind != WriteHandlerKind::ValueResult ||
+        current->writeHandler.valueResult != handler ||
+        current->writeContext != context)
+      return false;
+    current->writeHandler.valueResult = nullptr;
+    current->writeContext = nullptr;
+    current->writeKind = WriteHandlerKind::None;
     return true;
   }
 
@@ -416,6 +438,7 @@ class Device {
     Origin origin;
     Quality quality;
     bool dirty;
+    bool restorePending;
     uint32_t revision;
     uint32_t lastCloudRevision;
     uint64_t pendingMessageId;
@@ -431,8 +454,9 @@ class Device {
     void* writeContext;
     WriteHandlerKind writeKind;
     WriteHandler writeHandler;
-    State() : runtime{FLOVA_INVALID_DATASTREAM_ID, 0, 0}, hasValue(false), mode(Mode::State), offline(OfflinePolicy::KeepLatest), persistence(PersistencePolicy::None), origin(Origin::Unknown), quality(Quality::Stale), dirty(false), revision(0), lastCloudRevision(0), pendingMessageId(0), pendingSentAt(0), safetyPolicy(0), hasSafetyMinimum(false), hasSafetyMaximum(false), updatedAt(0), lastHistoryAt(0), writeContext(0), writeKind(WriteHandlerKind::None), writeHandler() { key[0] = 0; }
+    State() : runtime{FLOVA_INVALID_DATASTREAM_ID, 0, 0}, hasValue(false), mode(Mode::State), offline(OfflinePolicy::KeepLatest), persistence(PersistencePolicy::None), origin(Origin::Unknown), quality(Quality::Stale), dirty(false), restorePending(false), revision(0), lastCloudRevision(0), pendingMessageId(0), pendingSentAt(0), safetyPolicy(0), hasSafetyMinimum(false), hasSafetyMaximum(false), updatedAt(0), lastHistoryAt(0), writeContext(0), writeKind(WriteHandlerKind::None), writeHandler() { key[0] = 0; }
   };
+  struct PendingResult { uint32_t magic; bool active; uint64_t sentAt; Message message; PendingResult() : magic(0x43524553UL), active(false), sentAt(0) {} };
   struct Persisted { uint32_t magic; DatastreamId datastreamId; Value value; uint32_t revision; };
   struct HistoryRecord { DatastreamId datastreamId; Value value; uint64_t messageId; uint64_t timestamp; uint64_t monotonic; uint64_t expiresAt; Origin origin; uint32_t revision; };
   struct HistoryMeta { uint32_t magic; uint16_t head; uint16_t count; };
@@ -529,7 +553,16 @@ class Device {
     if (!safe(state, value)) return WriteResult::reject(state.safetyPolicy == 1 || state.safetyPolicy == 3 ? "safety_minimum" : "safety_maximum");
     if (!link_.connected() && state.offline == OfflinePolicy::Reject)
       return WriteResult::reject("offline_delivery_required");
-    if (state.hasValue && state.value == value) return WriteResult::noChange();
+    if (state.hasValue && state.value == value && !state.restorePending)
+      return WriteResult::noChange();
+    if (state.hasValue && state.value == value && state.restorePending) {
+      WriteResult result = invoke(state, value);
+      if (result.accepted()) {
+        state.restorePending = false;
+        state.quality = Quality::Good;
+      }
+      return result;
+    }
     WriteResult result = invoke(state, value);
     // A rejected hardware write is authoritative: do not update cache,
     // persistence, revision, or outbound state until the handler accepts it.
@@ -541,7 +574,8 @@ class Device {
     if (state.value.type != value.type) return WriteResult::reject("type_mismatch");
     if (!link_.connected() && state.offline == OfflinePolicy::Reject)
       return WriteResult::reject("offline_delivery_required");
-    update(state, value, origin); return WriteResult::accept();
+    update(state, value, origin);
+    return WriteResult::accept();
   }
 
   WriteResult invoke(State& s, const Value& v) {
@@ -633,7 +667,7 @@ class Device {
   void setWrite(State* s, void (*h)(void*, Text), void* c) { if (s) { s->writeHandler.textVoidContext = h; s->writeKind = WriteHandlerKind::TextVoidContext; s->writeContext = c; } }
 
   void update(State& state, const Value& value, Origin origin) {
-    state.value = value; state.hasValue = true; state.origin = origin; state.quality = Quality::Good; state.revision++; state.updatedAt = clock_.milliseconds();
+    state.value = value; state.hasValue = true; state.origin = origin; state.quality = Quality::Good; state.restorePending = false; state.revision++; state.updatedAt = clock_.milliseconds();
     const bool bound = flovaValidDatastreamId(state.runtime.id);
     state.dirty = bound && (link_.connected() || state.offline == OfflinePolicy::KeepLatest);
     state.pendingMessageId = 0;
@@ -644,7 +678,10 @@ class Device {
       queueHistory(state);
       state.lastHistoryAt = clock_.milliseconds();
     }
-    if (state.persistence == PersistencePolicy::Persistent) persist(state);
+    if (state.persistence == PersistencePolicy::Persistent && !persist(state)) {
+      state.quality = Quality::HardwareError;
+      diagnostics_.storageFailures++;
+    }
     if (bound && link_.connected()) publish(state);
   }
 
@@ -658,20 +695,67 @@ class Device {
   }
 
   void acknowledge(const Message& request, const WriteResult& result, const State* state) {
-    Message reply; reply.kind = result.accepted() ? MessageKind::Acknowledgement : MessageKind::Error; reply.messageId = originateMessageId(); reply.datastreamId = request.datastreamId; Value::copy(reply.commandId, request.commandId); Value::copy(reply.correlationId, request.correlationId); Value::copy(reply.reason, result.reason); reply.revision = request.revision; if (state && state->hasValue) reply.value = state->value; link_.send(reply);
+    Message reply; reply.kind = result.accepted() ? MessageKind::Acknowledgement : MessageKind::Error; reply.messageId = originateMessageId(); reply.datastreamId = request.datastreamId; Value::copy(reply.commandId, request.commandId); Value::copy(reply.correlationId, request.correlationId); Value::copy(reply.reason, result.reason); reply.revision = request.revision; reply.resultStatus = result.status == WriteStatus::NoChange ? 2 : result.accepted() ? 0 : 3; if (state && state->hasValue) reply.value = state->value; queueResult(reply);
   }
 
-  void persist(const State& state) {
-    if (!flovaValidDatastreamId(state.runtime.id)) return;
+  void queueResult(const Message& message) {
+    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
+      if (pendingResults_[i].active) continue;
+      pendingResults_[i].active = true;
+      pendingResults_[i].sentAt = 0;
+      pendingResults_[i].message = message;
+      char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
+      if (!storage_.write(key, &pendingResults_[i], sizeof(PendingResult)))
+        diagnostics_.storageFailures++;
+      sendResult(pendingResults_[i]);
+      return;
+    }
+    diagnostics_.queueOverflow++;
+    link_.send(message);
+  }
+
+  void sendResult(PendingResult& result) {
+    const uint64_t now = clock_.milliseconds();
+    if (result.sentAt && now - result.sentAt < 5000) return;
+    if (link_.send(result.message)) result.sentAt = now ? now : 1;
+  }
+
+  void flushResults() {
+    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i)
+      if (pendingResults_[i].active) sendResult(pendingResults_[i]);
+  }
+
+  bool persist(const State& state) {
+    if (!flovaValidDatastreamId(state.runtime.id)) return false;
     Persisted record; record.magic = 0x464C4F56UL; record.datastreamId = state.runtime.id; record.value = state.value; record.revision = state.revision;
-    char key[24]; snprintf(key, sizeof(key), "dsid:%u", static_cast<unsigned>(state.runtime.id)); storage_.write(key, &record, sizeof(record));
+    char key[24]; snprintf(key, sizeof(key), "dsid:%u", static_cast<unsigned>(state.runtime.id)); return storage_.write(key, &record, sizeof(record));
   }
 
   void restore() {
     for (size_t i = 0; i < count_; ++i) if (states_[i].persistence == PersistencePolicy::Persistent) {
       if (!flovaValidDatastreamId(states_[i].runtime.id)) continue;
       char key[24]; snprintf(key, sizeof(key), "dsid:%u", static_cast<unsigned>(states_[i].runtime.id)); Persisted restored;
-      if (storage_.read(key, &restored, sizeof(restored)) && restored.magic == 0x464C4F56UL && restored.datastreamId == states_[i].runtime.id && restored.value.type == states_[i].value.type) { states_[i].value = restored.value; states_[i].revision = restored.revision; states_[i].hasValue = true; states_[i].origin = Origin::DeviceRestore; states_[i].quality = Quality::Good; }
+      if (storage_.read(key, &restored, sizeof(restored)) && restored.magic == 0x464C4F56UL && restored.datastreamId == states_[i].runtime.id && restored.value.type == states_[i].value.type) { states_[i].value = restored.value; states_[i].revision = restored.revision; states_[i].hasValue = true; states_[i].origin = Origin::DeviceRestore; states_[i].quality = Quality::Good; states_[i].restorePending = states_[i].writeKind != WriteHandlerKind::None; }
+    }
+  }
+
+  void applyRestoredHardware() {
+    for (size_t i = 0; i < count_; ++i) {
+      State& state = states_[i];
+      if (!state.restorePending) continue;
+      WriteResult result = invoke(state, state.value);
+      if (result.accepted()) {
+        state.restorePending = false;
+        state.quality = Quality::Good;
+        state.dirty = flovaValidDatastreamId(state.runtime.id) &&
+                      (link_.connected() ||
+                       state.offline == OfflinePolicy::KeepLatest);
+        state.pendingMessageId = 0;
+        state.pendingSentAt = 0;
+      } else {
+        state.quality = Quality::HardwareError;
+        state.dirty = false;
+      }
     }
   }
 
@@ -711,6 +795,17 @@ class Device {
     historyHead_ = meta.head; historyCount_ = 0;
     for (size_t i = 0; i < meta.count; ++i) { size_t slot = (meta.head + i) % FLOVA_HISTORY_CAPACITY; char key[24]; snprintf(key, sizeof(key), "history:%u", (unsigned)slot); if (!storage_.read(key, &history_[slot], sizeof(HistoryRecord)) || !resources_.reserve(ResourceKind::History, sizeof(HistoryRecord))) { diagnostics_.storageFailures++; break; } historyCount_++; }
   }
+  void restoreResults() {
+    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
+      char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
+      PendingResult restored;
+      if (storage_.read(key, &restored, sizeof(restored)) &&
+          restored.magic == 0x43524553UL && restored.active) {
+        pendingResults_[i] = restored;
+        pendingResults_[i].sentAt = 0;
+      }
+    }
+  }
   void syncTime() {
     uint64_t now = clock_.milliseconds();
     if (timeRequestStarted_ && now - timeRequestStarted_ > 30000) { timeRequestStarted_ = 0; diagnostics_.clockSyncFailures++; }
@@ -724,6 +819,14 @@ class Device {
 
   void acknowledgeDelivery(uint64_t messageId) {
     if (!messageId) return;
+    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i) {
+      if (!pendingResults_[i].active || pendingResults_[i].message.messageId != messageId)
+        continue;
+      pendingResults_[i].active = false;
+      char key[16]; snprintf(key, sizeof(key), "cmd:%u", static_cast<unsigned>(i));
+      if (!storage_.remove(key)) diagnostics_.storageFailures++;
+      return;
+    }
     for (size_t i = 0; i < count_; ++i) {
       if (states_[i].pendingMessageId != messageId) continue;
       states_[i].pendingMessageId = 0;
@@ -756,9 +859,10 @@ class Device {
 
   Link& link_; Storage& storage_; Clock& clock_; Logger& logger_; State states_[kMaxDatastreams]; size_t count_;
   char recentCommands_[4][kMaxText]; size_t recentCursor_;
+  PendingResult pendingResults_[FLOVA_COMMAND_DEDUP_CAPACITY];
   HistoryRecord history_[FLOVA_HISTORY_CAPACITY]; size_t historyHead_, historyCount_; ResourceManager resources_;
   uint64_t lastTimeRequest_, timeRequestStarted_; uint32_t timeSequence_; uint64_t nextMessageId_; uint64_t retryNotBefore_; uint64_t historyLastSentAt_; char pendingTimeId_[kMaxText]; Diagnostics diagnostics_;
-  bool started_, bindingPending_, bindingFailed_, resourcePlanConfigured_;
+  bool started_, bindingPending_, bindingFailed_, resourcePlanConfigured_, restoreAttempted_;
 };
 
 template <typename T> struct Codec;

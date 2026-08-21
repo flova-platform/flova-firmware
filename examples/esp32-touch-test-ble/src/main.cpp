@@ -1,17 +1,11 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <FlovaEsp8266.h>
+#include <FlovaEsp32Ble.h>
 
-const uint8_t TOUCH_PIN = D1;
-const uint8_t LED_PIN = D2;
+const uint8_t TOUCH_PIN = 4;
+const uint8_t LED_PIN = 2;
 const uint32_t DEBOUNCE_MS = 60;
 
-const char* WIFI_SSID = "your-wifi";
-const char* WIFI_PASSWORD = "your-password";
-
-FlovaEsp8266 device;
-ESP8266WebServer server(80);
+FlovaEsp32Ble device;
 flova::Datastream<bool> led = device.datastream<bool>("LED");
 flova::Datastream<bool> touch = device.datastream<bool>("TOUCH_SENSOR");
 
@@ -40,19 +34,16 @@ void pollTouch() {
 
 void setup() {
   Serial.begin(115200);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   pinMode(TOUCH_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
   led.onWrite(writeLed);
+  led.persist(flova::PersistencePolicy::Persistent);
   led.offline(flova::OfflinePolicy::KeepLatest);
   touch.offline(flova::OfflinePolicy::KeepLatest);
-  device.attachProvisioning(server);
-  server.begin();
-  if (!device.begin()) Serial.println("[flova] startup failed");
+  if (!device.begin()) Serial.println("[flova] BLE startup failed");
 }
 
 void loop() {
-  server.handleClient();
   device.run();
   pollTouch();
   yield();

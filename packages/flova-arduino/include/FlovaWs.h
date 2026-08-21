@@ -319,6 +319,8 @@ class FlovaWs {
     state_ = State::Closed;
   }
 
+  void abort() { state_ = State::Closed; }
+
   bool connected() const { return state_ == State::Open && transport_.connected(); }
   Error error() const { return error_; }
   HandshakeFailure handshakeFailure() const { return handshakeFailure_; }

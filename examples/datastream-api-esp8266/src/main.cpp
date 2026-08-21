@@ -2,13 +2,11 @@
 #include <ESP8266WiFi.h>
 #include <FlovaEsp8266.h>
 
-namespace {
 // ESP8266 version of the datastream API example. The SDK surface is the same;
 // only board-owned Arduino includes and active-low LED behavior differ.
 const char* WIFI_SSID = "your-wifi";
 const char* WIFI_PASSWORD = "your-password";
 const uint8_t RELAY_PIN = LED_BUILTIN;
-const uint8_t WATER_PIN = D5;
 
 FlovaEsp8266 client;
 // Keys are developer-facing names. The server resolves them to stable compact
@@ -18,14 +16,7 @@ flova::Datastream<bool> relay = client.datastream<bool>("relay");
 flova::Datastream<flova::Text> cookMode = client.datastream<flova::Text>("cook_mode");
 uint32_t lastSampleMs = 0;
 
-flova::WriteResult writeRelay(void*, bool enabled) {
-  // Dashboard actions, user commands, schedules, and cloud automations all
-  // reach this one callback. Safety is checked before touching the relay.
-  if (enabled && digitalRead(WATER_PIN) == LOW)
-    return flova::reject("insufficient_water");
-  digitalWrite(RELAY_PIN, enabled ? LOW : HIGH);
-  return flova::accept();
-}
+void writeRelay(bool enabled) { digitalWrite(RELAY_PIN, enabled ? LOW : HIGH); }
 
 flova::WriteResult writeCookMode(void*, flova::Text mode) {
   // Returning reject() keeps the previous value and revision authoritative.
@@ -35,7 +26,6 @@ flova::WriteResult writeCookMode(void*, flova::Text mode) {
              ? flova::accept()
              : flova::reject("mode_not_supported");
 }
-}
 
 void setup() {
   Serial.begin(115200);
@@ -44,9 +34,9 @@ void setup() {
   // its bounded private TLS/UTC work without taking over Wi-Fi mode.
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   pinMode(RELAY_PIN, OUTPUT);
-  pinMode(WATER_PIN, INPUT);
-  // onWrite() is the command handler. Register it before client.begin().
-  relay.onWrite(writeRelay, nullptr);
+  relay.onWrite(writeRelay);
+  // Custom handlers remain available for application-specific validation such
+  // as the bounded cook-mode values.
   cookMode.onWrite(writeCookMode, nullptr);
   if (!client.begin()) Serial.println("[flova] client startup failed");
 }

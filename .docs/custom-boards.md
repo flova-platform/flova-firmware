@@ -83,7 +83,7 @@ deliberate factory reset, but the application decides how its setup channel and
 network behave.
 
 The normal application path stops at the board header. Advanced Arduino ports
-that need to provide their own Link or provisioning adapter may include
+that need to provide their own Link or board services may include
 `<FlovaArduino.h>` and compose `FlovaClient` directly. The individual transport,
 TLS, codec, and adapter headers are implementation seams for that advanced path,
 not beginner entry points.
@@ -99,14 +99,20 @@ ArduinoFlovaClock clock;
 ArduinoFlovaLogger logger;
 ArduinoFlovaHardware hardware;
 MyProvisioningAdapter provisioning;
-FlovaClient flova(link, provisioning, storage, clock, logger, entropy, hardware);
+MyNetworkRuntime network;
+MyTlsClockBootstrap tlsClock;
+MyBoardIdentity identity;
+FlovaClient flova(link, provisioning, network, tlsClock, identity, storage,
+                  clock, logger, entropy, hardware);
 ```
 
 The adapter calls the supplied `FlovaProvisioningHandler` after decoding its
-channel into `flova::ProvisioningHandoff`. Channel-specific runtime data stays
-inside that adapter rather than being interpreted by the core.
+channel into `flova::ProvisioningHandoff`. It owns only the temporary setup
+channel. Normal connectivity, TLS clock readiness, and immutable board identity
+are supplied by the separate services shown above.
 
-`FlovaClient` owns no default Link, SoftAP, or provisioning implementation.
+`FlovaClient` owns no default Link, SoftAP, provisioning, network, clock
+bootstrap, or identity implementation.
 The application initializes its storage service before `flova.begin()` and
 keeps every borrowed service alive for the lifetime of the client. A custom
 Link implements `FlovaClientLink`; no second transport abstraction is required.
@@ -165,6 +171,12 @@ owned by that board's firmware, such as `PWM_A`, `ADC_BATTERY`, or `relay:1`.
 Flova validates only that the identifier is non-empty and bounded. Unlike the
 universal ESP32 and ESP8266 targets, the custom-board runtime does not
 automatically call GPIO APIs.
+
+Custom board profiles should advertise zero hardware input/output slots unless
+the board deliberately implements automatic template mapping. That keeps
+template mappings and status-indicator settings out of custom configuration
+transfers while preserving the option for advanced ports to expose a bounded
+mapping adapter and its real capacities.
 
 Use `onWrite()` to bind the typed datastream to the board HAL, or control the
 HAL independently and call `report()` afterward. This

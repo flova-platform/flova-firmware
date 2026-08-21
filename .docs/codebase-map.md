@@ -45,8 +45,9 @@ remains unchanged in either composition.
 
 Portable core code must not include Arduino, ESP, GPIO, Wi-Fi, WebSocket, TLS,
 or filesystem headers. A board supplies `Link`, `Storage`, `Clock`, and
-`Logger`, then optionally composes provisioning, configuration installation,
-OTA, scheduling, and hardware-mapping services.
+`Logger`, then explicitly composes setup-channel provisioning, runtime network,
+TLS clock bootstrap, and identity services. Configuration installation, OTA,
+scheduling, and hardware mapping remain separate optional services.
 
 Generated zcbor and third-party files are protocol/build inputs, not hand-edited
 SDK source. Keep protocol schema changes in `protocol/flova-link-v1.cddl` and

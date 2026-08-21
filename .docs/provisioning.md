@@ -9,12 +9,17 @@ Provisioning has two responsibilities:
    secret locally, receives deterministic-CBOR configuration records, and
    commits them transactionally.
 
-The SDK separates the setup channel from Device Link. Every channel produces
+The SDK separates the temporary setup channel, normal network runtime, TLS
+clock bootstrap, immutable board identity, and Device Link. Every channel produces
 the same bounded `flova::ProvisioningHandoff { linkUrl, token }` and calls
 `flova.provision(handoff)`. Wi-Fi credentials belong only to the universal
 Wi-Fi composition; they are not embedded in or replayed through the portable
 handoff. BLE, serial, Ethernet, cellular, radio gateways, factory tooling, and
 application-owned HTTP servers therefore use the same runtime entry point.
+Stopping BLE or SoftAP provisioning cannot start station mode, gate reconnect,
+synchronize UTC, or supply identity. Those responsibilities are explicit
+services in the board composition and continue to work when no provisioning
+channel exists.
 
 The normal ESP SDK is passive: it observes whether the application's network
 is connected, supplies private persistent storage and UTC bootstrap for TLS,
@@ -32,8 +37,8 @@ bounded material that transport needs to start.
 There is no device-facing `POST /api/device/provision` compatibility path.
 ESP wrappers expose only local `/status` and `/provision` setup endpoints. The
 local request is bounded; universal ESP8266 returns
-`202 {"ok":true,"status":"accepted"}`, persists the handoff, then stops the
-setup server and changes from SoftAP to station mode. Bootstrap joins Wi-Fi,
+`202 {"ok":true,"status":"accepted"}` and persists the handoff. The client
+then stops the setup channel and starts the independent network runtime. Bootstrap joins Wi-Fi,
 synchronizes UTC for certificate validation without blocking the main loop,
 and uses the bounded `link_url` supplied by the provisioning handoff.
 
@@ -42,6 +47,12 @@ preface or second bootstrap wire format. Its `bootstrap_auth` frame carries
 the one-time token, device-generated raw secret, hardware identity, firmware
 target, and board capabilities. Engine validates but does not redeem the token
 at this point.
+
+Hardware capability fields are explicit: nonzero input/output slots mean the
+firmware supports automatic template mapping, while `0/0` means the
+application owns hardware and Engine omits template mappings and status-LED
+pin settings from that transfer. Missing fields are treated as legacy unknown
+capabilities so existing mapped devices remain compatible.
 
 After authentication, Engine uses the normal Link transaction:
 
@@ -91,6 +102,10 @@ failure returns universal firmware to its setup AP, while passive SDK firmware
 returns to `AwaitingProvisioning`. Both expose only a sanitized
 `last_error_code` and `can_retry`. The product app treats Engine's
 provisioning-status endpoint as authoritative.
+
+An ESP32 BLE setup channel that releases BTDM memory schedules a board restart
+before advertising again; released controller memory cannot be reacquired in
+the same boot. Other setup channels may return directly to setup mode.
 
 Once committed credentials exist, the board always boots into runtime and the
 setup AP stays disabled. Wi-Fi, UTC bootstrap, TLS, and Link outages are

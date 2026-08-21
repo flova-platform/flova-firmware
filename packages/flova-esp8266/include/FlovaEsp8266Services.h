@@ -7,7 +7,8 @@
 #include <string.h>
 #include <time.h>
 
-#include <FlovaProvisioningAdapter.h>
+#include <FlovaRuntimeServices.h>
+#include <FlovaWifiProvisioning.h>
 #include <adapters/ArduinoFlovaUtcBootstrap.h>
 
 class FlovaEsp8266Storage : public flova::Storage {
@@ -258,22 +259,51 @@ class FlovaEsp8266Storage : public flova::Storage {
   const char* lastError_ = "none";
 };
 
-class FlovaEsp8266Runtime : public FlovaProvisioningAdapter {
+class FlovaEsp8266ObservedNetwork final : public FlovaNetworkRuntime {
  public:
-  void loop() override { utc_.run(runtimeConnected()); }
-  bool runtimeConnected() const override { return WiFi.status() == WL_CONNECTED; }
-  bool clockReady() const override { return utc_.ready(); }
+  bool connected() const override { return WiFi.status() == WL_CONNECTED; }
+};
 
-  bool defaultHardwareId(char* output, size_t capacity) const override {
+class FlovaEsp8266StoredNetwork final : public FlovaNetworkRuntime {
+ public:
+  explicit FlovaEsp8266StoredNetwork(FlovaEsp8266Storage& storage)
+      : storage_(storage) {}
+
+  bool begin() override {
+    flova::WifiRuntimeData wifi = {};
+    if (!storage_.read("wifi", &wifi, sizeof(wifi)) ||
+        !flova::validWifiRuntimeData(wifi))
+      return false;
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(wifi.ssid, wifi.password);
+    return true;
+  }
+
+  bool stop() override {
+    if (WiFi.getMode() & WIFI_STA) WiFi.disconnect(false);
+    return true;
+  }
+
+  bool connected() const override { return WiFi.status() == WL_CONNECTED; }
+
+ private:
+  FlovaEsp8266Storage& storage_;
+};
+
+class FlovaEsp8266Identity final : public FlovaBoardIdentity {
+ public:
+  explicit FlovaEsp8266Identity(const char* firmwareTarget)
+      : firmwareTarget_(firmwareTarget) {}
+
+  bool hardwareId(char* output, size_t capacity) const override {
     return output && capacity >= 24 &&
            snprintf(output, capacity, "esp8266-%06lx",
                     static_cast<unsigned long>(ESP.getChipId())) > 0;
   }
 
-  const char* defaultFirmwareTarget() const override {
-    return "custom_arduino_esp8266";
-  }
+  const char* firmwareTarget() const override { return firmwareTarget_; }
 
  private:
-  ArduinoFlovaUtcBootstrap<WiFiUDP> utc_;
+  const char* firmwareTarget_;
 };
