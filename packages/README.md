@@ -5,9 +5,9 @@ These directories are reusable libraries, not application entry points.
 | Package | Owns | Must not own |
 | --- | --- | --- |
 | `flova-embedded-sdk` | Portable `flova::Device`, datastream semantics, bounded configuration and scheduling | Arduino, ESP, GPIO, Wi-Fi, WebSocket, TLS, or filesystem APIs |
-| `flova-arduino` | Arduino clocks, storage, logging, TLS, OTA, Device Link, and separate setup/network/clock/identity contracts | Product-specific GPIO mappings or a second domain runtime |
-| `flova-esp32` | ESP32 setup provisioning, runtime network, boot/storage policy, identity, and board composition | Portable SDK semantics or provisioning-owned runtime connectivity |
-| `flova-esp8266` | ESP8266 setup provisioning, runtime network, TLS/resource policy, boot/storage, identity, and board composition | Portable SDK semantics or provisioning-owned runtime connectivity |
+| `flova-arduino` | Generic Arduino clocks, storage, logging, bounded Device Link framing, and the board-platform seam | ESP/TLS/updater APIs, product-specific GPIO mappings, or a second domain runtime |
+| `flova-esp32` | ESP32 socket/TLS/OTA, setup provisioning, runtime network, boot/storage policy, identity, pin policy, and board composition | Portable SDK semantics or provisioning-owned runtime connectivity |
+| `flova-esp8266` | ESP8266 BearSSL/socket/OTA, resource policy, setup provisioning, runtime network, boot/storage, identity, pin policy, and board composition | Portable SDK semantics or provisioning-owned runtime connectivity |
 
 Arduino users who want to keep their own application code should install the
 matching board package and include `<FlovaEsp32.h>` or `<FlovaEsp8266.h>`.

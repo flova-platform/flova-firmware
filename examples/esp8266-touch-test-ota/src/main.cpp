@@ -1,11 +1,17 @@
 #include <Arduino.h>
-#include <FlovaEsp32Ble.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <FlovaEsp8266.h>
 
-const uint8_t TOUCH_PIN = 4;
-const uint8_t LED_PIN = 2;
+const uint8_t TOUCH_PIN = D1;
+const uint8_t LED_PIN = D2;
 const uint32_t DEBOUNCE_MS = 60;
 
-FlovaEsp32Ble device;
+const char* WIFI_SSID = "your-wifi";
+const char* WIFI_PASSWORD = "your-password";
+
+FlovaEsp8266 device;
+ESP8266WebServer server(80);
 flova::Datastream<bool> led = device.datastream<bool>("LED");
 flova::Datastream<bool> touch = device.datastream<bool>("TOUCH_SENSOR");
 
@@ -40,20 +46,25 @@ void pollTouch() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.printf("[flova] OTA test build %s\n", FLOVA_FIRMWARE_VERSION);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   pinMode(TOUCH_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
-  device.enableOta(true);
-  device.setOtaProfile(FlovaOtaStrategy::Ab, "esp32-ab-4m-v1", true);
-  device.setRestartHandler(scheduleRestart);
   led.onWrite(writeLed);
-  led.persist(flova::PersistencePolicy::Persistent);
   led.offline(flova::OfflinePolicy::KeepLatest);
   touch.offline(flova::OfflinePolicy::KeepLatest);
-  if (!device.begin()) Serial.println("[flova] BLE startup failed");
+
+  device.setFirmwareTarget("esp8266-touch-test-ota");
+  device.enableOta(true);
+  device.setOtaProfile(FlovaOtaStrategy::Ab, "esp8266-staged-copy", false);
+  device.setRestartHandler(scheduleRestart);
+
+  device.attachProvisioning(server);
+  server.begin();
+  if (!device.begin()) Serial.println("[flova] startup failed");
 }
 
 void loop() {
+  server.handleClient();
   device.run();
   if (restartRequestedAt && millis() - restartRequestedAt >= 1000UL) {
     restartRequestedAt = 0;

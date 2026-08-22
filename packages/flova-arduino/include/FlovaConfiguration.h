@@ -16,7 +16,7 @@ static const size_t kChecksumTextBytes = 65;
 static const size_t kProvisionTokenBytes = 65;
 static const size_t kProvisioningErrorBytes = 48;
 // Fits the built-in 32-byte SSID plus 64-byte password representation while
-// keeping every persisted/runtime copy bounded on ESP8266.
+// keeping every persisted/runtime copy bounded on constrained boards.
 static const uint16_t kConfigurationImageVersion = 3;
 
 inline bool formatUuidText(const uint8_t (&bytes)[16], char* output,
@@ -117,7 +117,7 @@ inline bool provisioningValid(const ProvisioningState& handoff) {
 inline void makeProvisioningImage(const ProvisioningState& handoff,
                                    ProvisioningHandoffImage& image) {
   // The facade may parse directly into image.handoff to avoid another
-  // maximum-sized provisioning object on the ESP8266 stack.
+  // maximum-sized provisioning object on a constrained board stack.
   if (&handoff != &image.handoff) image.handoff = handoff;
   image.version = kConfigurationImageVersion;
   image.attempts = 0;

@@ -13,23 +13,21 @@
 #include <FlovaDevice.h>
 #include <FlovaConfiguration.h>
 #include <FlovaClientLink.h>
+#include <FlovaArduinoPlatform.h>
 #include <FlovaProvisioningHandoff.h>
 #include <FlovaWifiProvisioning.h>
 #include <FlovaLinkConfigurationStorage.h>
 #include <FlovaHardware.h>
 #include <FlovaScheduleRuntime.h>
-#include "adapters/ArduinoFlovaLink.h"
 #include "adapters/ArduinoFlovaServices.h"
-#include "adapters/ArduinoDeviceLink.h"
-#include "adapters/ArduinoOtaInstaller.h"
-#include "adapters/ArduinoFlovaHardware.h"
-#include "adapters/ArduinoFlovaManualHardware.h"
 #include "FlovaProvisioningAdapter.h"
 #include "FlovaRuntimeServices.h"
 
 #ifndef FLOVA_FIRMWARE_VERSION
 #define FLOVA_FIRMWARE_VERSION "0.1.0"
 #endif
+
+#include "FlovaFirmwareMetadata.h"
 
 enum class FlovaLifecycle : uint8_t {
   Idle,
@@ -84,6 +82,9 @@ class FlovaClient {
   }
 
   bool begin(bool allowProvisioning = false) {
+#if defined(FLOVA_OTA_METADATA_ENABLED)
+    flovaFirmwareMetadataRuntimePointer = flovaFirmwareMetadata;
+#endif
     if (lifecycle_ != FlovaLifecycle::Idle) return false;
     managedProvisioning_ = allowProvisioning;
     pending_.lastError[0] = 0;
@@ -94,6 +95,11 @@ class FlovaClient {
       return false;
     }
     prepareProvisioningIdentity();
+    if (!validFirmwareTarget(provisioningConfig_.firmwareTarget)) {
+      setLastError("invalid_firmware_target");
+      lifecycle_ = FlovaLifecycle::Failed;
+      return false;
+    }
     scheduleRuntime_.begin();
     if (!provisioning_.begin(handleProvisioning, this)) {
       writeError("board_begin_failed");
@@ -112,6 +118,20 @@ class FlovaClient {
     const bool hasPending =
         storage_.read("prov_pending", &pending_, sizeof(pending_)) &&
         flova::verifyProvisioningImage(pending_);
+    memset(&otaPendingRecord_, 0, sizeof(otaPendingRecord_));
+    otaPendingRecordValid_ =
+        storage_.read("ota_pending", &otaPendingRecord_, sizeof(otaPendingRecord_)) &&
+        otaPendingRecord_.magic == kOtaPendingMagic &&
+        otaPendingRecord_.installId.present && otaPendingRecord_.releaseId.present &&
+        otaPendingRecord_.version[0];
+    otaActivationFailurePending_ =
+        otaPendingRecordValid_ && strcmp(otaPendingRecord_.version, FLOVA_FIRMWARE_VERSION) != 0;
+    otaBootState_ = link_.otaBootState();
+    otaRollbackReason_[0] = 0;
+    if (otaActivationFailurePending_) {
+      otaBootState_ = FlovaOtaBootState::RolledBack;
+      copy(otaRollbackReason_, "ota_activation_failed");
+    }
 
     logger_.log(hasConfiguration
                     ? "[flova] stored configuration accepted"
@@ -149,7 +169,7 @@ class FlovaClient {
   }
 
   bool setFirmwareTarget(const char* target) {
-    if (lifecycle_ != FlovaLifecycle::Idle || !target || !target[0] ||
+    if (lifecycle_ != FlovaLifecycle::Idle || !validFirmwareTarget(target) ||
         !copy(firmwareTargetWorkspace_, target)) {
       setLastError("invalid_firmware_target");
       return false;
@@ -268,6 +288,7 @@ class FlovaClient {
       }
       drainConfiguration(false);
       processOta();
+      serviceOtaBoot();
       reportRuntimeStatus();
     }
   }
@@ -275,11 +296,13 @@ class FlovaClient {
   bool startProvisioning() {
     link_.disconnect();
     if (!storage_.remove("config") || !storage_.remove("prov_pending") ||
-        !storage_.remove("prov_error")) {
+        !storage_.remove("prov_error") || !storage_.remove("ota_pending")) {
       writeError("storage_failed");
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
+    otaPendingRecordValid_ = false;
+    otaActivationFailurePending_ = false;
     memset(&runtimeConfiguration_, 0, sizeof(runtimeConfiguration_));
     memset(&pending_, 0, sizeof(pending_));
     configurationVerifiedGeneration_ = 0;
@@ -313,6 +336,10 @@ class FlovaClient {
     restartContext_ = context;
   }
   void setOtaEnabled(bool enabled) { otaEnabled_ = enabled; }
+  void setOtaProfile(FlovaOtaStrategy strategy, const char* bootLayoutVersion,
+                     bool rollbackCapable) {
+    link_.setOtaProfile(strategy, bootLayoutVersion, rollbackCapable);
+  }
   bool restartRequired() const {
     return lifecycle_ == FlovaLifecycle::RestartRequired ||
            lifecycle_ == FlovaLifecycle::RestartScheduled;
@@ -325,8 +352,11 @@ class FlovaClient {
  private:
   static const uint8_t kMaximumBootstrapAttempts = 3;
   static const uint32_t kBootstrapTimeoutMs = 30000UL;
+  static const uint32_t kOtaHealthWindowMs = 30000UL;
+  static const uint32_t kOtaHealthDeadlineMs = 120000UL;
   static const uint32_t kMaximumConfigurationRecords =
       FLOVA_DATASTREAM_CAPACITY + FLOVA_SCHEDULE_CAPACITY + 8;
+  static const uint32_t kOtaPendingMagic = 0x4f544131UL;
 
   enum class ConfigurationWorkMode : uint8_t {
     None,
@@ -1246,8 +1276,8 @@ class FlovaClient {
       if (link_.publishOtaReport(otaResult_)) otaResultPending_ = false;
       return;
     }
-    FlovaLinkOtaOffer offer = {};
-    if (!link_.takeOtaOffer(offer)) return;
+    if (!link_.takeOtaOffer(otaOfferWorkspace_)) return;
+    const FlovaLinkOtaOffer& offer = otaOfferWorkspace_;
     otaResult_ = FlovaLinkOtaReport();
     otaResult_.messageId = nextControlMessageId();
     otaResult_.installId = offer.installId;
@@ -1258,7 +1288,15 @@ class FlovaClient {
       otaResultPending_ = true;
       return;
     }
-    if (!offer.installId.present || !offer.sizeBytes ||
+    const uint32_t maxImageBytes = link_.otaMaxImageBytes();
+    if (!maxImageBytes || offer.sizeBytes > maxImageBytes) {
+      otaResult_.status = FlovaLinkResultStatus::Error;
+      strncpy(otaResult_.errorCode, "ota_image_too_large",
+              sizeof(otaResult_.errorCode) - 1);
+      otaResultPending_ = true;
+      return;
+    }
+    if (!offer.installId.present || !offer.releaseId.present || !offer.sizeBytes ||
         strncmp(offer.url, "https://", 8) != 0 ||
         (offer.firmwareTarget[0] && provisioningConfig_.firmwareTarget &&
          strcmp(offer.firmwareTarget, provisioningConfig_.firmwareTarget) != 0)) {
@@ -1268,11 +1306,30 @@ class FlovaClient {
       otaResultPending_ = true;
       return;
     }
+    otaPendingRecord_ = {};
+    otaPendingRecord_.magic = kOtaPendingMagic;
+    otaPendingRecord_.installId = offer.installId;
+    otaPendingRecord_.releaseId = offer.releaseId;
+    strncpy(otaPendingRecord_.version, offer.version,
+            sizeof(otaPendingRecord_.version) - 1);
+    if (!storage_.write("ota_pending", &otaPendingRecord_, sizeof(otaPendingRecord_))) {
+      otaResult_.status = FlovaLinkResultStatus::Error;
+      strncpy(otaResult_.errorCode, "storage_failed",
+              sizeof(otaResult_.errorCode) - 1);
+      otaResultPending_ = true;
+      return;
+    }
+    otaPendingRecordValid_ = true;
     FlovaLinkOtaReport accepted = {};
     accepted.messageId = nextControlMessageId();
     accepted.installId = offer.installId;
-    accepted.status = FlovaLinkResultStatus::Ok;
-    if (!link_.publishOtaReport(accepted)) return;
+    accepted.status = FlovaLinkResultStatus::Accepted;
+    strncpy(accepted.errorCode, "ok", sizeof(accepted.errorCode) - 1);
+    if (!link_.publishOtaReport(accepted)) {
+      storage_.remove("ota_pending");
+      otaPendingRecordValid_ = false;
+      return;
+    }
     link_.disconnect();
     const flova::OtaInstallResult result = link_.installOta(offer);
     if (result == flova::OtaInstallResult::Installed) {
@@ -1288,6 +1345,8 @@ class FlovaClient {
                                         ? "resource_unavailable"
                                         : "ota_download_failed";
     strncpy(otaResult_.errorCode, error, sizeof(otaResult_.errorCode) - 1);
+    storage_.remove("ota_pending");
+    otaPendingRecordValid_ = false;
     otaResultPending_ = true;
   }
 
@@ -1299,6 +1358,18 @@ class FlovaClient {
     }
     const uint32_t now = millis();
     if (!runtimeReported_) {
+      if (otaActivationFailurePending_) {
+        otaResult_ = {};
+        otaResult_.messageId = nextControlMessageId();
+        otaResult_.installId = otaPendingRecord_.installId;
+        otaResult_.status = FlovaLinkResultStatus::Error;
+        strncpy(otaResult_.errorCode, "ota_activation_failed",
+                sizeof(otaResult_.errorCode) - 1);
+        if (!link_.publishOtaReport(otaResult_)) return;
+        storage_.remove("ota_pending");
+        otaPendingRecordValid_ = false;
+        otaActivationFailurePending_ = false;
+      }
       if (activeConfigurationGeneration_) {
         FlovaLinkConfigurationState state = {};
         state.messageId = nextControlMessageId();
@@ -1323,13 +1394,31 @@ class FlovaClient {
     heartbeat.scheduleSlots = FLOVA_SCHEDULE_RUNTIME_ENABLED
                                   ? FLOVA_SCHEDULE_CAPACITY
                                   : 0;
-    heartbeat.otaCapable = otaEnabled_;
+    const uint32_t maxImageBytes = link_.otaMaxImageBytes();
+    heartbeat.otaCapable = otaEnabled_ && maxImageBytes > 0;
+    heartbeat.otaMaxImageBytes = heartbeat.otaCapable ? maxImageBytes : 0;
+    heartbeat.otaStrategy = heartbeat.otaCapable
+                                ? link_.otaStrategy()
+                                : FlovaOtaStrategy::None;
+    heartbeat.otaRollbackCapable = heartbeat.otaCapable &&
+                                   link_.otaRollbackCapable();
+    heartbeat.otaBootState = heartbeat.otaCapable ? otaBootState_ : FlovaOtaBootState::Stable;
+    if (heartbeat.otaBootState == FlovaOtaBootState::RolledBack)
+      copy(heartbeat.otaRollbackReason, otaRollbackReason_);
+    if (!copy(heartbeat.otaBootLayoutVersion,
+              heartbeat.otaCapable ? link_.otaBootLayoutVersion() : "legacy"))
+      return;
     strncpy(heartbeat.firmwareVersion, FLOVA_FIRMWARE_VERSION,
             sizeof(heartbeat.firmwareVersion) - 1);
     if (provisioningConfig_.firmwareTarget) {
       strncpy(heartbeat.firmwareTarget,
               provisioningConfig_.firmwareTarget,
               sizeof(heartbeat.firmwareTarget) - 1);
+    }
+    if (otaPendingRecordValid_ &&
+        strcmp(otaPendingRecord_.version, FLOVA_FIRMWARE_VERSION) == 0) {
+      heartbeat.runningReleaseId = otaPendingRecord_.releaseId;
+      heartbeat.lastInstallId = otaPendingRecord_.installId;
     }
     if (link_.publishHeartbeat(heartbeat)) lastHeartbeatAt_ = now ? now : 1;
   }
@@ -1421,6 +1510,29 @@ class FlovaClient {
     }
   }
 
+  void serviceOtaBoot() {
+    if (otaBootState_ != FlovaOtaBootState::Candidate) return;
+    if (!link_.connected() || !device_.ready()) {
+      otaHealthStartedAt_ = 0;
+      return;
+    }
+    const uint32_t now = millis();
+    if (!otaHealthStartedAt_) otaHealthStartedAt_ = now ? now : 1;
+    const uint32_t elapsed = now - otaHealthStartedAt_;
+    if (elapsed >= kOtaHealthDeadlineMs) {
+      copy(otaRollbackReason_, "ota_health_timeout");
+      link_.rollbackOtaBoot();
+      return;
+    }
+    if (elapsed >= kOtaHealthWindowMs) {
+      if (link_.confirmOtaBoot()) {
+        otaBootState_ = FlovaOtaBootState::Stable;
+        otaHealthStartedAt_ = 0;
+      }
+      return;
+    }
+  }
+
   void requestRestart(FlovaRestartReason reason) {
     restartReason_ = reason;
     if (!restartHandler_) {
@@ -1445,6 +1557,19 @@ class FlovaClient {
       return false;
     }
     memcpy(output, input, length + 1);
+    return true;
+  }
+
+  static bool validFirmwareTarget(const char* target) {
+    if (!target || !target[0]) return false;
+    const size_t length = strlen(target);
+    if (length >= FLOVA_LINK_OTA_TARGET_BYTES) return false;
+    for (size_t i = 0; i < length; ++i) {
+      const char c = target[i];
+      const bool alpha = c >= 'a' && c <= 'z';
+      const bool digit = c >= '0' && c <= '9';
+      if (!alpha && !digit && c != '_' && c != '-' && c != '.') return false;
+    }
     return true;
   }
 
@@ -1508,8 +1633,15 @@ class FlovaClient {
   bool managedProvisioning_ = false;
   bool handoffAccepted_ = false;
   FlovaLinkOtaReport otaResult_ = {};
+  FlovaLinkOtaOffer otaOfferWorkspace_ = {};
   bool otaResultPending_ = false;
   bool otaEnabled_ = false;
+  FlovaOtaPendingRecord otaPendingRecord_ = {};
+  bool otaPendingRecordValid_ = false;
+  bool otaActivationFailurePending_ = false;
+  FlovaOtaBootState otaBootState_ = FlovaOtaBootState::Stable;
+  char otaRollbackReason_[FLOVA_LINK_TEXT_BYTES] = {};
+  uint32_t otaHealthStartedAt_ = 0;
   size_t validationDatastreamCount_ = 0;
   size_t validationScheduleCount_ = 0;
   ConfigurationWork configurationWork_ = {};

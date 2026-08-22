@@ -72,8 +72,8 @@ void loop() { flova.run(); }
 ```
 
 `FlovaEsp32` and `FlovaEsp8266` are explicit board compositions over the same
-typed application API. Include the matching board header; shared code does not
-inspect `ESP32` or `ESP8266` macros. Datastream names are declared by the
+typed application API. Their board packages own TLS, socket, OTA, and pin
+policy; shared code does not inspect `ESP32` or `ESP8266` macros. Datastream names are declared by the
 application and resolved to the Engine's numeric IDs during the authenticated
 binding handshake. The handler receives a context pointer, runs from
 `flova.run()`, and may safely own the board's GPIO or application state.
@@ -84,9 +84,10 @@ network behave.
 
 The normal application path stops at the board header. Advanced Arduino ports
 that need to provide their own Link or board services may include
-`<FlovaArduino.h>` and compose `FlovaClient` directly. The individual transport,
-TLS, codec, and adapter headers are implementation seams for that advanced path,
-not beginner entry points.
+`<FlovaArduino.h>` and compose `FlovaClient` directly. An Arduino port that
+reuses the bounded Link core also includes `adapters/ArduinoFlovaLink.h` and
+provides a `FlovaArduinoPlatform`; the generic package never supplies an ESP
+socket, TLS client, updater, or pin map.
 
 To replace the setup channel, implement the small `FlovaProvisioningAdapter`
 callbacks and use the borrowed-service runtime:
@@ -94,7 +95,8 @@ callbacks and use the borrowed-service runtime:
 ```cpp
 FlovaEsp32Storage storage;
 FlovaEsp32Entropy entropy;
-ArduinoFlovaLink link(entropy);
+FlovaEsp32Platform platform;
+ArduinoFlovaLink link(platform, entropy);
 ArduinoFlovaClock clock;
 ArduinoFlovaLogger logger;
 ArduinoFlovaHardware hardware;

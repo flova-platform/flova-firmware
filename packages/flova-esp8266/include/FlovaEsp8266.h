@@ -4,8 +4,10 @@
 #include <user_interface.h>
 
 #include <FlovaArduino.h>
+#include <FlovaEsp8266Platform.h>
 #include <FlovaEsp8266Services.h>
 #include <FlovaWifiProvisioning.h>
+#include <adapters/ArduinoFlovaLink.h>
 #include <adapters/ArduinoFlovaManualHardware.h>
 
 class FlovaEsp8266Entropy : public FlovaEntropySource {
@@ -18,7 +20,7 @@ class FlovaEsp8266Entropy : public FlovaEntropySource {
 class FlovaEsp8266 final {
  public:
   FlovaEsp8266()
-      : link_(entropy_),
+      : linkPlatform_(), link_(linkPlatform_, entropy_),
         identity_("custom_arduino_esp8266"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {}
@@ -73,6 +75,10 @@ class FlovaEsp8266 final {
   flova::Device& device() { return client_.device(); }
   bool setFirmwareTarget(const char* target) { return client_.setFirmwareTarget(target); }
   void enableOta(bool enabled = true) { client_.setOtaEnabled(enabled); }
+  void setOtaProfile(FlovaOtaStrategy strategy, const char* bootLayoutVersion,
+                     bool rollbackCapable = false) {
+    client_.setOtaProfile(strategy, bootLayoutVersion, rollbackCapable);
+  }
   void setRestartHandler(FlovaRestartHandler handler, void* context = nullptr) {
     client_.setRestartHandler(handler, context);
   }
@@ -86,6 +92,7 @@ class FlovaEsp8266 final {
 
  private:
   FlovaEsp8266Entropy entropy_;
+  FlovaEsp8266Platform linkPlatform_;
   ArduinoFlovaLink link_;
   FlovaEsp8266Storage storage_;
   ArduinoFlovaClock clock_;

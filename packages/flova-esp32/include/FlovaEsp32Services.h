@@ -7,7 +7,7 @@
 #include <time.h>
 
 #include <FlovaRuntimeServices.h>
-#include <FlovaStorageKey.h>
+#include <FlovaEsp32StorageKey.h>
 #include <FlovaWifiProvisioning.h>
 #include <adapters/ArduinoFlovaUtcBootstrap.h>
 

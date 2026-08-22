@@ -132,7 +132,7 @@ class FlovaWs {
         // Ignore oversized nonessential headers after consuming the complete
         // line. Required headers remain valid only when their bounded value
         // can be parsed below; this prevents a large proxy cookie or tracing
-        // header from consuming permanent ESP8266 RAM.
+        // header from consuming permanent board RAM.
         continue;
       }
       if (firstLine) {

@@ -60,9 +60,9 @@ automatic restart.
 ```text
 flova-embedded-sdk portable C++11 runtime and domain contracts
         ↓
-flova-arduino      Arduino services and Device Link adapter
+flova-arduino      generic Arduino services and Device Link core
         ↓
-flova-esp32/8266   passive SDK facades plus explicit universal compositions
+flova-esp32/8266   board transport/TLS/OTA plus explicit universal compositions
         ↓
 examples/          selected firmware applications
 ```
@@ -74,9 +74,10 @@ anchor; each environment selects its application from `examples/*/src`.
 ## Repository layout
 
 - `packages/flova-embedded-sdk`: portable `flova::Device` SDK for custom boards.
-- `packages/flova-arduino`: Arduino clock, storage, logging, TLS, OTA, and
-  Device Link services.
-- `packages/flova-esp32`, `packages/flova-esp8266`: board-specific wrappers.
+- `packages/flova-arduino`: generic Arduino clock/storage/logging and bounded
+  Device Link services; no ESP transport or OTA implementation.
+- `packages/flova-esp32`, `packages/flova-esp8266`: board-specific transport,
+  TLS, OTA, pin policy, and public wrappers.
 - `examples/universal-*`: universal ESP firmware applications.
 - `examples/datastream-api-*`: typed API compile contracts.
 - `examples/custom-board-basic`: normal-C++11 custom-board integration.

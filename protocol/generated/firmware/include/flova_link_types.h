@@ -52,6 +52,10 @@ struct ota_desired_ota_target {
 	struct zcbor_string ota_desired_ota_target;
 };
 
+struct ota_desired_ota_release_id {
+	struct zcbor_string ota_desired_ota_release_id;
+};
+
 struct ota_desired {
 	struct zcbor_string ota_desired_ota_install_id;
 	struct zcbor_string ota_desired_ota_version;
@@ -60,6 +64,8 @@ struct ota_desired {
 	uint64_t ota_desired_ota_size;
 	struct ota_desired_ota_target ota_desired_ota_target;
 	bool ota_desired_ota_target_present;
+	struct ota_desired_ota_release_id ota_desired_ota_release_id;
+	bool ota_desired_ota_release_id_present;
 };
 
 struct time_response {
@@ -89,11 +95,48 @@ struct datastream_bind {
 	struct datastream_binding_keys datastream_bind_binding_keys;
 };
 
+struct ota_profile_ota_boot_state {
+	uint64_t ota_profile_ota_boot_state;
+};
+
+struct ota_profile_ota_rollback_reason {
+	struct zcbor_string ota_profile_ota_rollback_reason;
+};
+
+struct ota_profile {
+	uint64_t ota_profile_ota_max_image_bytes;
+	uint64_t ota_profile_ota_strategy;
+	struct zcbor_string ota_profile_ota_boot_layout_version;
+	bool ota_profile_ota_rollback_capable;
+	struct ota_profile_ota_boot_state ota_profile_ota_boot_state;
+	bool ota_profile_ota_boot_state_present;
+	struct ota_profile_ota_rollback_reason ota_profile_ota_rollback_reason;
+	bool ota_profile_ota_rollback_reason_present;
+};
+
 struct heartbeat {
 	uint64_t heartbeat_generation;
 	uint64_t heartbeat_uptime_ms;
 	uint64_t heartbeat_status;
 	struct zcbor_string heartbeat_firmware_version;
+	struct zcbor_string heartbeat_firmware_target;
+	union {
+		struct zcbor_string heartbeat_running_release_id_empty_id_m;
+		struct zcbor_string heartbeat_running_release_id_uuid_m;
+	};
+	enum {
+		heartbeat_running_release_id_empty_id_m_c,
+		heartbeat_running_release_id_uuid_m_c,
+	} heartbeat_running_release_id_choice;
+	union {
+		struct zcbor_string heartbeat_last_install_id_empty_id_m;
+		struct zcbor_string heartbeat_last_install_id_uuid_m;
+	};
+	enum {
+		heartbeat_last_install_id_empty_id_m_c,
+		heartbeat_last_install_id_uuid_m_c,
+	} heartbeat_last_install_id_choice;
+	struct ota_profile heartbeat_ota_profile;
 };
 
 struct config_reported {

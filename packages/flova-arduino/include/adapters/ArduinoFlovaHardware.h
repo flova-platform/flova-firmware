@@ -7,6 +7,15 @@
 
 class ArduinoFlovaHardware final : public flova::Hardware {
  public:
+  typedef bool (*PinValidator)(uint16_t pin);
+
+  explicit ArduinoFlovaHardware(PinValidator inputValidator = anyPin,
+                                PinValidator outputValidator = anyPin,
+                                PinValidator analogValidator = anyPin)
+      : inputValidator_(inputValidator ? inputValidator : anyPin),
+        outputValidator_(outputValidator ? outputValidator : anyPin),
+        analogValidator_(analogValidator ? analogValidator : anyPin) {}
+
   flova::HardwareCapabilities capabilities() const override {
     return flova::HardwareCapabilities(
         true, FLOVA_HARDWARE_INPUT_CAPACITY, FLOVA_HARDWARE_OUTPUT_CAPACITY,
@@ -340,37 +349,10 @@ class ArduinoFlovaHardware final : public flova::Hardware {
     return false;
   }
 
-  static bool validInputPin(uint16_t pin) {
-#if defined(ESP32)
-    return pin <= 39 && !(pin >= 6 && pin <= 11);
-#elif defined(ESP8266)
-    return pin == 0 || pin == 2 || pin == 4 || pin == 5 ||
-           (pin >= 12 && pin <= 16);
-#else
-    return pin <= 255;
-#endif
-  }
-
-  static bool validOutputPin(uint16_t pin) {
-#if defined(ESP32)
-    return pin <= 33 && !(pin >= 6 && pin <= 11);
-#elif defined(ESP8266)
-    return pin == 0 || pin == 2 || pin == 4 || pin == 5 ||
-           (pin >= 12 && pin <= 16);
-#else
-    return pin <= 255;
-#endif
-  }
-
-  static bool validAnalogPin(uint16_t pin) {
-#if defined(ESP32)
-    return pin >= 32 && pin <= 39;
-#elif defined(ESP8266)
-    return pin == A0;
-#else
-    return pin <= 255;
-#endif
-  }
+  static bool anyPin(uint16_t pin) { return pin <= 255; }
+  bool validInputPin(uint16_t pin) const { return inputValidator_(pin); }
+  bool validOutputPin(uint16_t pin) const { return outputValidator_(pin); }
+  bool validAnalogPin(uint16_t pin) const { return analogValidator_(pin); }
 
   Mapping* find(DatastreamId id) {
     for (size_t i = 0; i < mappingCount_; ++i)
@@ -391,4 +373,7 @@ class ArduinoFlovaHardware final : public flova::Hardware {
   bool statusLedActiveLow_ = false;
   bool connected_ = false;
   char configurationError_[48] = {};
+  PinValidator inputValidator_;
+  PinValidator outputValidator_;
+  PinValidator analogValidator_;
 };

@@ -13,6 +13,10 @@
 // The SDK deliberately exposes domain records, never a route or serialized
 // payload.  A platform Link implementation owns CBOR and the outer frame.
 static const size_t FLOVA_LINK_TEXT_BYTES = FLOVA_TEXT_CAPACITY;
+static const size_t FLOVA_LINK_OTA_URL_BYTES = 257;
+static const size_t FLOVA_LINK_OTA_SHA256_BYTES = 65;
+static const size_t FLOVA_LINK_OTA_VERSION_BYTES = 33;
+static const size_t FLOVA_LINK_OTA_TARGET_BYTES = 33;
 static const size_t FLOVA_LINK_RECORD_BYTES = 448;
 // Four worst-case bounded text scalar items fit under the 500-byte payload
 // limit after deterministic-CBOR array overhead. The encoder still enforces
@@ -44,6 +48,8 @@ enum class FlovaLinkMessageType : uint8_t {
 
 enum class FlovaLinkResultStatus : uint8_t { Ok = 0, Accepted = 1, Duplicate = 2, Error = 3 };
 enum class FlovaLinkConfigurationPhase : uint8_t { Begin, Record, End };
+enum class FlovaOtaStrategy : uint8_t { None = 0, Ab = 1, AbRecovery = 2 };
+enum class FlovaOtaBootState : uint8_t { Stable = 0, Candidate = 1, RolledBack = 2 };
 // Stable CBOR scalar discriminator. The transport encodes this as the first
 // item of a fixed array; text is the only variable-size alternative and is
 // bounded by the schema-derived storage below.
@@ -160,13 +166,18 @@ struct FlovaLinkOtaOffer {
   uint64_t messageId;
   FlovaLinkId installId;
   FlovaLinkId releaseId;
-  char version[FLOVA_LINK_TEXT_BYTES];
-  char firmwareTarget[FLOVA_LINK_TEXT_BYTES];
-  // The Arduino adapter already bounds all OTA text fields to the profile
-  // text capacity; retaining a record-sized URL here wastes persistent RAM.
-  char url[FLOVA_LINK_TEXT_BYTES];
-  char sha256[FLOVA_LINK_TEXT_BYTES];
+  char version[FLOVA_LINK_OTA_VERSION_BYTES];
+  char firmwareTarget[FLOVA_LINK_OTA_TARGET_BYTES];
+  char url[FLOVA_LINK_OTA_URL_BYTES];
+  char sha256[FLOVA_LINK_OTA_SHA256_BYTES];
   uint32_t sizeBytes;
+};
+
+struct FlovaOtaPendingRecord {
+  uint32_t magic;
+  FlovaLinkId installId;
+  FlovaLinkId releaseId;
+  char version[FLOVA_LINK_OTA_VERSION_BYTES];
 };
 
 struct FlovaLinkOtaReport {
@@ -203,10 +214,16 @@ struct FlovaLinkHeartbeat {
   uint16_t datastreamSlots;
   uint16_t scheduleSlots;
   bool otaCapable;
-  char firmwareVersion[FLOVA_LINK_TEXT_BYTES];
-  char firmwareTarget[FLOVA_LINK_TEXT_BYTES];
-  char runningReleaseId[FLOVA_LINK_TEXT_BYTES];
-  char appliedTemplateVersionId[FLOVA_LINK_TEXT_BYTES];
+  char firmwareVersion[FLOVA_LINK_OTA_VERSION_BYTES];
+  char firmwareTarget[FLOVA_LINK_OTA_TARGET_BYTES];
+  FlovaLinkId runningReleaseId;
+  FlovaLinkId lastInstallId;
+  uint32_t otaMaxImageBytes;
+  FlovaOtaStrategy otaStrategy;
+  bool otaRollbackCapable;
+  char otaBootLayoutVersion[FLOVA_LINK_OTA_TARGET_BYTES];
+  FlovaOtaBootState otaBootState;
+  char otaRollbackReason[FLOVA_LINK_TEXT_BYTES];
 };
 
 struct FlovaLinkTimeRequest {

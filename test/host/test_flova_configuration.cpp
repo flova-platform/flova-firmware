@@ -1,6 +1,6 @@
 #include "FlovaConfiguration.h"
 #include "FlovaLinkConfigurationStorage.h"
-#include "FlovaStorageKey.h"
+#include "FlovaEsp32StorageKey.h"
 #include "adapters/ArduinoFlovaManualHardware.h"
 
 #include <assert.h>

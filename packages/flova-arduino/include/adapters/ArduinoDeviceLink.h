@@ -6,21 +6,14 @@
 #include <FlovaLinkCodec.h>
 #include <FlovaConfigurationInstaller.h>
 #include <FlovaHardware.h>
+#include <FlovaArduinoPlatform.h>
 #include <FlovaWs.h>
-#include <FlovaTlsProfile.h>
-#include <FlovaTlsRoots.h>
 #include <FlovaLinkMessages.h>
 
 extern "C" {
 #include <flova_link_decode.h>
 #include <flova_link_encode.h>
 }
-
-#if defined(ESP8266)
-#include <user_interface.h>
-#elif defined(ESP32)
-#include <esp_system.h>
-#endif
 
 // The adapter is the only Arduino-facing Device Link codec. It owns a small
 // deferred receive queue and one transmit frame; application code sees typed SDK
@@ -29,19 +22,12 @@ extern "C" {
 // loop(), where application hardware is allowed to run.
 class ArduinoDeviceLink final {
  public:
-#if defined(ESP8266)
-  typedef BearSSL::WiFiClientSecure LinkTlsClient;
-#elif defined(ESP32)
-  typedef WiFiClientSecure LinkTlsClient;
-#endif
-
   static const size_t kFrameBytes = flova::link::kMaximumFrameBytes;
   static const size_t kPayloadBytes = flova::link::kMaximumPayloadBytes;
   static const size_t kTransmitWorkspaceBytes =
       kFrameBytes + FlovaWs::kMaximumOutgoingHeaderBytes;
   // Authentication and CONFIG_BEGIN can arrive in the same network turn.
-  // Two slots cover that burst without taking another TLS-sized buffer from
-  // the ESP8266 heap.
+  // Two slots cover that burst without taking another transport-sized buffer.
   static const uint8_t kPendingFrameSlots = 2;
   static const size_t kUrlBytes = 193;
   static const uint8_t kMaximumDatastreamBindings = FLOVA_MAX_ACTIVE_DATASTREAMS;
@@ -50,13 +36,9 @@ class ArduinoDeviceLink final {
   static_assert(sizeof(struct config_record) <= 384,
                 "generated CONFIG_RECORD decode workspace exceeded its budget");
 
-  explicit ArduinoDeviceLink(FlovaEntropySource& entropy)
-      : websocket_(tls_, entropy) {}
+  ArduinoDeviceLink(FlovaArduinoPlatform& platform, FlovaEntropySource& entropy)
+      : platform_(platform), websocket_(platform.linkClient(), entropy) {}
   ~ArduinoDeviceLink() { disconnect(); }
-
-#if defined(ESP8266)
-  void setTrustAnchors(BearSSL::X509List& anchors) { trustAnchors_ = &anchors; }
-#endif
 
   bool configure(const char* url) {
     if (!url || strlen(url) >= sizeof(url_)) return false;
@@ -129,17 +111,6 @@ class ArduinoDeviceLink final {
     disconnect();
     connectionAttemptFailed_ = false;
     resourceUnavailable_ = false;
-#if defined(ESP8266)
-    flova::TlsHeapStats heap;
-    const flova::TlsResourceStatus resources = flova::tlsResourceStatus(flova::TlsUse::Link, &heap);
-    flova::logTlsHeap("before Link", heap);
-    if (!trustAnchors_ || resources != flova::TlsResourceStatus::Ready) {
-      Serial.printf("[flova] Link rejected reason=%s\n",
-                    trustAnchors_ ? flova::tlsResourceError(resources) : "trust_anchors_unavailable");
-      resourceUnavailable_ = true;
-      return false;
-    }
-#endif
     if (!openConnection(false)) return false;
     // WebSocket authentication completes from loop(); do not stop the
     // application's loop for up to ten seconds during startup/reconnect.
@@ -158,17 +129,6 @@ class ArduinoDeviceLink final {
     disconnect();
     connectionAttemptFailed_ = false;
     resourceUnavailable_ = false;
-#if defined(ESP8266)
-    flova::TlsHeapStats heap;
-    const flova::TlsResourceStatus resources = flova::tlsResourceStatus(flova::TlsUse::Link, &heap);
-    flova::logTlsHeap("before Link bootstrap", heap);
-    if (!trustAnchors_ || resources != flova::TlsResourceStatus::Ready) {
-      Serial.printf("[flova] Link bootstrap rejected reason=%s\n",
-                    trustAnchors_ ? flova::tlsResourceError(resources) : "trust_anchors_unavailable");
-      resourceUnavailable_ = true;
-      return false;
-    }
-#endif
     return openConnection(true);
   }
 
@@ -233,7 +193,43 @@ class ArduinoDeviceLink final {
     value.heartbeat_generation = configurationGeneration_;
     value.heartbeat_uptime_ms = message.uptimeMs;
     value.heartbeat_status = message.otaCapable ? 1 : 0;
-    if (!setText(value.heartbeat_firmware_version, message.firmwareVersion, sizeof(message.firmwareVersion))) return false;
+    if (!setText(value.heartbeat_firmware_version, message.firmwareVersion,
+                 sizeof(message.firmwareVersion)) ||
+        !setText(value.heartbeat_firmware_target, message.firmwareTarget,
+                 sizeof(message.firmwareTarget))) return false;
+    value.heartbeat_running_release_id_choice =
+        message.runningReleaseId.present
+            ? heartbeat::heartbeat_running_release_id_uuid_m_c
+            : heartbeat::heartbeat_running_release_id_empty_id_m_c;
+    value.heartbeat_running_release_id_uuid_m.value = message.runningReleaseId.bytes;
+    value.heartbeat_running_release_id_uuid_m.len =
+        message.runningReleaseId.present ? sizeof(message.runningReleaseId.bytes) : 0;
+    value.heartbeat_last_install_id_choice =
+        message.lastInstallId.present
+            ? heartbeat::heartbeat_last_install_id_uuid_m_c
+            : heartbeat::heartbeat_last_install_id_empty_id_m_c;
+    value.heartbeat_last_install_id_uuid_m.value = message.lastInstallId.bytes;
+    value.heartbeat_last_install_id_uuid_m.len =
+        message.lastInstallId.present ? sizeof(message.lastInstallId.bytes) : 0;
+    value.heartbeat_ota_profile.ota_profile_ota_max_image_bytes =
+        message.otaMaxImageBytes;
+    value.heartbeat_ota_profile.ota_profile_ota_strategy =
+        static_cast<uint8_t>(message.otaStrategy);
+    value.heartbeat_ota_profile.ota_profile_ota_rollback_capable =
+        message.otaRollbackCapable;
+    if (!setText(value.heartbeat_ota_profile.ota_profile_ota_boot_layout_version,
+                 message.otaBootLayoutVersion,
+                 sizeof(message.otaBootLayoutVersion))) return false;
+    value.heartbeat_ota_profile.ota_profile_ota_boot_state.ota_profile_ota_boot_state =
+        static_cast<uint8_t>(message.otaBootState);
+    value.heartbeat_ota_profile.ota_profile_ota_boot_state_present = true;
+    if (message.otaRollbackReason[0]) {
+      if (!setText(value.heartbeat_ota_profile.ota_profile_ota_rollback_reason
+                       .ota_profile_ota_rollback_reason,
+                   message.otaRollbackReason,
+                   sizeof(message.otaRollbackReason))) return false;
+      value.heartbeat_ota_profile.ota_profile_ota_rollback_reason_present = true;
+    }
     return sendEncoded(0x10, message.messageId, value, cbor_encode_heartbeat);
   }
 
@@ -305,17 +301,19 @@ class ArduinoDeviceLink final {
   }
   void loop() {
     if (!active_) return;
-#if defined(ESP8266)
-    pumpTransmit();
+    if (!platform_.serviceLinkWrite()) {
+      connectionAttemptFailed_ = true;
+      disconnect();
+      return;
+    }
     for (uint8_t i = 0; i < kPendingFrameSlots && active_; ++i) {
       pumpWebSocket();
-      if (!txLength_) dispatchPendingFrame();
-      pumpTransmit();
+      if (!platform_.linkWriteBusy()) dispatchPendingFrame();
+      if (!platform_.serviceLinkWrite()) {
+        connectionAttemptFailed_ = true;
+        disconnect();
+      }
     }
-#else
-    pumpWebSocket();
-    dispatchPendingFrame();
-#endif
   }
 
   void dispatchPendingFrame() {
@@ -342,8 +340,8 @@ class ArduinoDeviceLink final {
                   static_cast<unsigned long>(millis() - pendingFrameQueuedAtMs_[slot]));
 #endif
     handleFrame(frame);
-    // Configuration decoding uses generated CBOR structs that are too large
-    // for the ESP8266 callback stack. Dispatch only after handleFrame() has
+    // Configuration decoding uses generated CBOR structs that may be larger
+    // than a small Arduino callback stack. Dispatch after handleFrame() has
     // returned and those temporary structs have been released.
     if (pendingCallback_ && (callback_ || callbackWithContext_) && active_) {
       pendingCallback_ = false;
@@ -370,7 +368,7 @@ class ArduinoDeviceLink final {
     if (disconnecting_) return;
     disconnecting_ = true;
     const bool hadConnection = active_ || authenticated_ || bootstrap_ ||
-                               pendingFrameCount_ != 0 || tls_.connected();
+                               pendingFrameCount_ != 0 || websocket_.connected();
     active_ = false;
     authenticated_ = false;
     bindingPending_ = false;
@@ -379,17 +377,10 @@ class ArduinoDeviceLink final {
     pendingFrameHead_ = 0;
     pendingFrameTail_ = 0;
     pendingFrameLength_ = 0;
-#if defined(ESP8266)
-    txLength_ = 0;
-    txOffset_ = 0;
-#endif
     pendingCallback_ = false;
     if (notifyPeer) websocket_.close();
     else websocket_.abort();
-    tls_.stop();
-#if defined(ESP8266)
-    if (hadConnection) flova::logTlsHeap("after Link disconnect");
-#endif
+    if (hadConnection) platform_.closeLink();
     disconnecting_ = false;
   }
 
@@ -397,50 +388,23 @@ class ArduinoDeviceLink final {
   typedef int (*Encoder)(uint8_t*, size_t, const void*, size_t*);
 
   bool openConnection(bool bootstrap) {
-#if defined(ESP8266)
-    flova::configureLinkTls(tls_, *trustAnchors_, time(nullptr));
-    {
-      // BearSSL allocates its TLS control blocks during connect. Keep that
-      // allocation in the configured IRAM heap rather than fragmented DRAM.
-      HeapSelectIram tlsHeap;
-      if (!tls_.connect(host_, port_)) {
-        flova::logLinkTlsFailure(tls_);
-        tls_.stop();
-        connectionAttemptFailed_ = true;
-        return false;
-      }
-    }
-#else
-    if (!tlsConfigured_) {
-      flova::configureLinkTls(tls_);
-      tlsConfigured_ = true;
-    }
-    if (!tls_.connect(host_, port_)) {
-      Serial.printf("[flova] Link TLS connect failed host=%s port=%u\n",
-                    host_, static_cast<unsigned>(port_));
-      tls_.stop();
+    if (!platform_.openLink(host_, port_)) {
+      resourceUnavailable_ = platform_.resourceRecoveryRequired();
       connectionAttemptFailed_ = true;
       return false;
     }
-#endif
-    // The ESP8266 wrapper forwards this to its real private TCP context via
-    // the guarded framework patch used by Link builds.
-    tls_.setNoDelay(true);
     if (!websocket_.handshake(host_, port_, path_)) {
       Serial.printf("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
                     static_cast<unsigned>(websocket_.error()),
                     FlovaWs::handshakeFailureName(websocket_.handshakeFailure()),
                     static_cast<unsigned>(websocket_.handshakeStatus()));
-      tls_.stop();
+      platform_.closeLink();
       connectionAttemptFailed_ = true;
       return false;
     }
     active_ = true;
     bootstrap_ = bootstrap;
     authenticated_ = false;
-#if defined(ESP8266)
-    flova::logTlsHeap("after Link WSS");
-#endif
     if (bootstrap_ ? !sendBootstrapAuthentication() : !sendAuthentication()) {
       connectionAttemptFailed_ = true;
       disconnect();
@@ -482,33 +446,6 @@ class ArduinoDeviceLink final {
     }
   }
 
-#if defined(ESP8266)
-  void pumpTransmit() {
-    if (!active_) return;
-    if (!tls_.pollNonBlocking()) {
-      connectionAttemptFailed_ = true;
-      disconnect();
-      return;
-    }
-    if (!txLength_) return;
-    const int accepted = tls_.writeNonBlocking(tx_ + txOffset_, txLength_ - txOffset_);
-    if (accepted < 0) {
-      connectionAttemptFailed_ = true;
-      disconnect();
-      return;
-    }
-    txOffset_ += static_cast<size_t>(accepted);
-    if (txOffset_ != txLength_) return;
-#if FLOVA_LINK_PERFORMANCE_LOGGING
-    Serial.printf("[flova] Link TX drained bytes=%u queue_ms=%lu\n",
-                  static_cast<unsigned>(txLength_),
-                  static_cast<unsigned long>(millis() - txQueuedAtMs_));
-#endif
-    txLength_ = 0;
-    txOffset_ = 0;
-  }
-#endif
-
   template <typename T>
   bool sendEncoded(uint8_t type, uint64_t messageId, const T& value, int (*encoder)(uint8_t*, size_t, const T*, size_t*)) {
 #if FLOVA_LINK_PERFORMANCE_LOGGING
@@ -516,30 +453,18 @@ class ArduinoDeviceLink final {
 #endif
     size_t payloadLength = 0;
     uint8_t* frame = tx_ + FlovaWs::kMaximumOutgoingHeaderBytes;
-#if defined(ESP8266)
-    if (txLength_) return false;
-#endif
+    if (platform_.linkWriteBusy()) return false;
     if (flova::link::encodeCanonical(frame + flova::link::kHeaderBytes, kPayloadBytes, value, encoder, payloadLength) != flova::link::CborResult::Complete ||
         !flova::link::encodeFrameHeader(frame, kFrameBytes, type, 0, messageId, payloadLength)) return false;
 #if FLOVA_LINK_PERFORMANCE_LOGGING
     const uint32_t encodedAt = millis();
 #endif
-#if defined(ESP8266)
     size_t wireLength = 0;
     if (!websocket_.prepareBinary(frame, flova::link::kHeaderBytes + payloadLength,
                                   tx_, sizeof(tx_), wireLength))
       return false;
-    txLength_ = wireLength;
-    txOffset_ = 0;
-#if FLOVA_LINK_PERFORMANCE_LOGGING
-    txQueuedAtMs_ = millis();
-#endif
-    pumpTransmit();
-    const bool sent = active_;
-#else
-    const bool sent = websocket_.sendBinaryCoalesced(
-        frame, flova::link::kHeaderBytes + payloadLength, tx_, sizeof(tx_));
-#endif
+    const bool sent = platform_.submitLinkWrite(tx_, wireLength) &&
+                      platform_.serviceLinkWrite();
 #if FLOVA_LINK_PERFORMANCE_LOGGING
     Serial.printf("[flova] Link send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu writes=%u wire_bytes=%u accepted=%u\n",
                   static_cast<unsigned>(type),
@@ -608,9 +533,6 @@ class ArduinoDeviceLink final {
         authenticated_ = true;
         bindingPending_ = bindingCount_ != 0;
         if (bindingPending_ && !sendDatastreamBinding()) disconnect();
-#if defined(ESP8266)
-        flova::logTlsHeap("after Link auth");
-#endif
       } else {
         Serial.println("[flova] Link auth response rejected=auth_ok_decode_failed");
         disconnect();
@@ -754,11 +676,21 @@ class ArduinoDeviceLink final {
     inbound_.type = FlovaLinkMessageType::OtaOffer;
     inbound_.messageId = frame.messageId;
     copyId(inbound_.body.otaOffer.installId, value.ota_desired_ota_install_id);
-    copyText(inbound_.body.otaOffer.version, value.ota_desired_ota_version);
-    copyText(inbound_.body.otaOffer.url, value.ota_desired_ota_url);
+    if (!copyTextBounded(inbound_.body.otaOffer.version,
+                         sizeof(inbound_.body.otaOffer.version),
+                         value.ota_desired_ota_version) ||
+        !copyTextBounded(inbound_.body.otaOffer.url,
+                         sizeof(inbound_.body.otaOffer.url),
+                         value.ota_desired_ota_url))
+      return disconnect();
     if (value.ota_desired_ota_target_present)
-      copyText(inbound_.body.otaOffer.firmwareTarget,
-               value.ota_desired_ota_target.ota_desired_ota_target);
+      if (!copyTextBounded(inbound_.body.otaOffer.firmwareTarget,
+                           sizeof(inbound_.body.otaOffer.firmwareTarget),
+                           value.ota_desired_ota_target.ota_desired_ota_target))
+        return disconnect();
+    if (value.ota_desired_ota_release_id_present)
+      copyId(inbound_.body.otaOffer.releaseId,
+             value.ota_desired_ota_release_id.ota_desired_ota_release_id);
     if (!copyHex(inbound_.body.otaOffer.sha256, sizeof(inbound_.body.otaOffer.sha256),
                  value.ota_desired_ota_checksum)) return disconnect();
     inbound_.body.otaOffer.sizeBytes = static_cast<uint32_t>(value.ota_desired_ota_size);
@@ -820,9 +752,6 @@ class ArduinoDeviceLink final {
       inbound_.body.configuration.hasTypedUnit = readConfigurationUnit(
           inbound_.body.configuration.typedUnit, value.config_record_record_body);
       if (!inbound_.body.configuration.hasTypedUnit) return disconnect();
-#if defined(ESP8266)
-      flova::logTlsHeap("during Link configuration record");
-#endif
     } else {
       struct config_end value = {};
       if (!decode(frame, value, cbor_decode_config_end, cbor_encode_config_end)) return disconnect();
@@ -865,11 +794,15 @@ class ArduinoDeviceLink final {
   }
 
   static void copyText(char* out, const struct zcbor_string& input) {
-    if (!out) return;
-    const size_t maxLength = FLOVA_TEXT_CAPACITY;
-    const size_t length = input.len < maxLength - 1 ? input.len : maxLength - 1;
-    memcpy(out, input.value, length);
-    out[length] = 0;
+    copyTextBounded(out, FLOVA_TEXT_CAPACITY, input);
+  }
+
+  static bool copyTextBounded(char* out, size_t capacity,
+                              const struct zcbor_string& input) {
+    if (!out || capacity < 1 || input.len >= capacity) return false;
+    memcpy(out, input.value, input.len);
+    out[input.len] = 0;
+    return true;
   }
 
   static bool copyUuidText(char (&out)[37], const struct zcbor_string& input) {
@@ -1217,8 +1150,7 @@ class ArduinoDeviceLink final {
   bool active_ = false;
   bool authenticated_ = false;
   bool bootstrap_ = false;
-  bool tlsConfigured_ = false;
-  LinkTlsClient tls_;
+  FlovaArduinoPlatform& platform_;
   FlovaWs websocket_;
   uint8_t deviceId_[16] = {};
   uint8_t secret_[32] = {};
@@ -1229,13 +1161,6 @@ class ArduinoDeviceLink final {
   char bootstrapHardwareId_[97] = {};
   char bootstrapFirmwareTarget_[65] = {};
   uint8_t tx_[kTransmitWorkspaceBytes] = {};
-#if defined(ESP8266)
-  size_t txLength_ = 0;
-  size_t txOffset_ = 0;
-#if FLOVA_LINK_PERFORMANCE_LOGGING
-  uint32_t txQueuedAtMs_ = 0;
-#endif
-#endif
   const char* bindingKeys_[kMaximumDatastreamBindings] = {};
   uint8_t bindingCount_ = 0;
   bool bindingPending_ = false;
@@ -1260,7 +1185,4 @@ class ArduinoDeviceLink final {
   bool pendingCallback_ = false;
   FlovaLinkInboundMessage inbound_ = {};
   struct config_record configurationDecodeWorkspace_ = {};
-#if defined(ESP8266)
-  BearSSL::X509List* trustAnchors_ = nullptr;
-#endif
 };

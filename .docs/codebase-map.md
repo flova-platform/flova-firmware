@@ -7,9 +7,9 @@ application under `examples/*/src` with `build_src_filter`.
 
 ```text
 packages/flova-embedded-sdk portable C++11 domain runtime
-packages/flova-arduino      Arduino services and Device Link adapter
-packages/flova-esp32        passive ESP32 SDK and universal composition
-packages/flova-esp8266      passive ESP8266 SDK and universal composition
+packages/flova-arduino      generic Arduino services and Device Link core
+packages/flova-esp32        ESP32 transport/TLS/OTA and universal composition
+packages/flova-esp8266      ESP8266 transport/TLS/OTA and universal composition
 examples/                   firmware applications and compile contracts
 protocol/                   CDDL authority, generated codecs, and vectors
 third_party/                vendored protocol dependencies
@@ -28,12 +28,12 @@ The package ownership table is also available in
 portable SDK core
         ^
         | domain services and bounded records
-Arduino adapters
+Arduino core adapters
         ^
-        | TLS, WebSocket, storage, clock bootstrap, OTA service
+        | bounded WebSocket framing, services, and platform seam
 ESP32 / ESP8266 board packages
         ^
-        | passive facade or explicit full-device ownership
+        | TLS, socket, OTA, pin policy, and explicit full-device ownership
 selected example application
 ```
 
@@ -44,10 +44,13 @@ facades explicitly. No-code applications select `FlovaUniversalEsp32` or
 remains unchanged in either composition.
 
 Portable core code must not include Arduino, ESP, GPIO, Wi-Fi, WebSocket, TLS,
-or filesystem headers. A board supplies `Link`, `Storage`, `Clock`, and
-`Logger`, then explicitly composes setup-channel provisioning, runtime network,
-TLS clock bootstrap, and identity services. Configuration installation, OTA,
-scheduling, and hardware mapping remain separate optional services.
+or filesystem headers. The generic Arduino package may provide bounded Device
+Link framing and service orchestration, but it must not select a board transport
+or call board APIs. ESP32 and ESP8266 packages own their concrete TLS/socket/OTA
+and pin policies; other Arduino boards can supply the same
+`FlovaArduinoPlatform` seam or implement `flova::Link` directly. Configuration
+installation, OTA, scheduling, and hardware mapping remain separate optional
+services.
 
 Generated zcbor and third-party files are protocol/build inputs, not hand-edited
 SDK source. Keep protocol schema changes in `protocol/flova-link-v1.cddl` and

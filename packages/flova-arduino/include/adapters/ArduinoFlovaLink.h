@@ -1,27 +1,19 @@
 #pragma once
 
 #include <Arduino.h>
-#include <new>
 
 #include <FlovaDevice.h>
 #include <FlovaClientLink.h>
-#include <FlovaTlsRoots.h>
+#include <FlovaArduinoPlatform.h>
 #include "ArduinoDeviceLink.h"
-#include "ArduinoOtaInstaller.h"
 
 // Canonical flova::Link adapter for Arduino projects. It deliberately maps
 // only the core state/command/time contract; provisioning, OTA, schedules,
 // and configuration installation remain opt-in board services.
 class ArduinoFlovaLink : public FlovaClientLink {
  public:
-  explicit ArduinoFlovaLink(FlovaEntropySource& entropy)
-      : transport_(entropy), messageNonce_(readNonce(entropy)) {}
-
-  ~ArduinoFlovaLink() override {
-#if defined(ESP8266)
-    delete trustAnchors_;
-#endif
-  }
+  ArduinoFlovaLink(FlovaArduinoPlatform& platform, FlovaEntropySource& entropy)
+      : platform_(platform), transport_(platform, entropy), messageNonce_(readNonce(entropy)) {}
 
   bool configure(const char* url, const char* deviceId, const char* secret) {
     if (!copy(url, url_, sizeof(url_)) || !copy(deviceId, deviceIdText_, sizeof(deviceIdText_)) ||
@@ -91,11 +83,44 @@ class ArduinoFlovaLink : public FlovaClientLink {
 
   flova::OtaInstallResult installOta(
       const FlovaLinkOtaOffer& input) override {
-#if defined(ESP8266)
-    if (!trustAnchors_) return flova::OtaInstallResult::ResourceUnavailable;
-    otaInstaller_.setTrustAnchors(*trustAnchors_);
-#endif
-    return otaInstaller_.install(input);
+    return platform_.installOta(input);
+  }
+
+  uint32_t otaMaxImageBytes() const override {
+    return platform_.otaMaxImageBytes();
+  }
+
+  FlovaOtaStrategy otaStrategy() const override {
+    return otaProfileSet_ ? otaStrategy_ : platform_.otaStrategy();
+  }
+
+  const char* otaBootLayoutVersion() const override {
+    return otaProfileSet_ ? otaBootLayoutVersion_ : platform_.otaBootLayoutVersion();
+  }
+
+  bool otaRollbackCapable() const override {
+    return otaProfileSet_ ? otaRollbackCapable_ : platform_.otaRollbackCapable();
+  }
+
+  FlovaOtaBootState otaBootState() const override {
+    return platform_.otaBootState();
+  }
+
+  bool confirmOtaBoot() override { return platform_.confirmOtaBoot(); }
+
+  bool rollbackOtaBoot() override { return platform_.rollbackOtaBoot(); }
+
+  void setOtaProfile(FlovaOtaStrategy strategy, const char* bootLayoutVersion,
+                     bool rollbackCapable) override {
+    otaStrategy_ = strategy;
+    otaRollbackCapable_ = rollbackCapable;
+    otaProfileSet_ = true;
+    if (!copy(bootLayoutVersion, otaBootLayoutVersion_,
+              sizeof(otaBootLayoutVersion_))) {
+      otaStrategy_ = FlovaOtaStrategy::None;
+      otaRollbackCapable_ = false;
+      copy("legacy", otaBootLayoutVersion_, sizeof(otaBootLayoutVersion_));
+    }
   }
 
   bool decodeStoredConfigurationRecord(
@@ -123,10 +148,6 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   void disconnect() { transport_.disconnect(); }
-
-#if defined(ESP8266)
-  void setTrustAnchors(BearSSL::X509List& anchors) { transport_.setTrustAnchors(anchors); }
-#endif
 
   bool begin() override {
     if (!ensureTransport()) return false;
@@ -239,19 +260,13 @@ class ArduinoFlovaLink : public FlovaClientLink {
   bool ensureTransport() {
     resourceUnavailable_ = false;
     if (!configured_ && !transport_.configure(url_)) return false;
-#if defined(ESP8266)
-    if (!trustAnchors_) {
-      trustAnchors_ = new (std::nothrow) BearSSL::X509List(FLOVA_TLS_ROOT_CERTS);
-      if (!trustAnchors_) {
-        resourceUnavailable_ = true;
-        return false;
-      }
-      transport_.setTrustAnchors(*trustAnchors_);
-    }
-#endif
     transport_.setConfigurationGeneration(configurationGeneration_);
     transport_.setCallbackContext(receive, this);
     configured_ = transport_.begin();
+    if (configured_ && !platform_.beginLink()) {
+      resourceUnavailable_ = platform_.resourceRecoveryRequired();
+      configured_ = false;
+    }
     return configured_;
   }
 
@@ -389,6 +404,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
     receiver_(receiverContext_, message);
   }
 
+  FlovaArduinoPlatform& platform_;
   ArduinoDeviceLink transport_;
   const char* bindingKeys_[ArduinoDeviceLink::kMaximumDatastreamBindings] = {};
   DatastreamId boundIds_[ArduinoDeviceLink::kMaximumDatastreamBindings] = {};
@@ -402,6 +418,10 @@ class ArduinoFlovaLink : public FlovaClientLink {
   uint32_t nextReconnectAt_ = 0;
   uint32_t configurationGeneration_ = 0;
   uint32_t messageNonce_;
+  FlovaOtaStrategy otaStrategy_ = FlovaOtaStrategy::None;
+  bool otaRollbackCapable_ = false;
+  bool otaProfileSet_ = false;
+  char otaBootLayoutVersion_[FLOVA_LINK_OTA_TARGET_BYTES] = "legacy";
   uint64_t pendingTimeRequestId_ = 0;
   char pendingTimeCommandId_[flova::kMaxText] = {};
   char url_[193] = {};
@@ -412,8 +432,4 @@ class ArduinoFlovaLink : public FlovaClientLink {
   FlovaLinkBootstrapCommitted bootstrapCommitted_ = {};
   FlovaLinkConfigurationRecord configuration_ = {};
   FlovaLinkOtaOffer otaOffer_ = {};
-  ArduinoOtaInstaller otaInstaller_;
-#if defined(ESP8266)
-  BearSSL::X509List* trustAnchors_ = nullptr;
-#endif
 };

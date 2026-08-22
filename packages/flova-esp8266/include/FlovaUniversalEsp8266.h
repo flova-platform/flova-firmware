@@ -3,13 +3,14 @@
 #include <FlovaArduino.h>
 #include <FlovaEsp8266.h>
 #include <FlovaEsp8266Provisioning.h>
+#include <FlovaEsp8266HardwarePolicy.h>
 #include <adapters/ArduinoFlovaHardware.h>
 
 // Full-device composition used by the no-code universal firmware.
 class FlovaUniversalEsp8266 final {
  public:
   FlovaUniversalEsp8266()
-      : link_(entropy_), provisioning_(storage_),
+      : linkPlatform_(), link_(linkPlatform_, entropy_), provisioning_(storage_),
         network_(storage_), identity_("universal_esp8266"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
@@ -48,11 +49,14 @@ class FlovaUniversalEsp8266 final {
   }
 
   FlovaEsp8266Entropy entropy_;
+  FlovaEsp8266Platform linkPlatform_;
   ArduinoFlovaLink link_;
   FlovaEsp8266Storage storage_;
   ArduinoFlovaClock clock_;
   ArduinoFlovaLogger logger_;
-  ArduinoFlovaHardware hardware_;
+  ArduinoFlovaHardware hardware_{flova::esp8266::validDigitalPin,
+                                 flova::esp8266::validDigitalPin,
+                                 flova::esp8266::validAnalogPin};
   FlovaEsp8266Provisioning provisioning_;
   FlovaEsp8266StoredNetwork network_;
   ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock_;

@@ -4,8 +4,10 @@
 #include <esp_system.h>
 
 #include <FlovaArduino.h>
+#include <FlovaEsp32Platform.h>
 #include <FlovaEsp32Services.h>
 #include <FlovaWifiProvisioning.h>
+#include <adapters/ArduinoFlovaLink.h>
 #include <adapters/ArduinoFlovaManualHardware.h>
 
 class FlovaEsp32Entropy : public FlovaEntropySource {
@@ -16,7 +18,7 @@ class FlovaEsp32Entropy : public FlovaEntropySource {
 class FlovaEsp32 final {
  public:
   FlovaEsp32()
-      : link_(entropy_),
+      : linkPlatform_(), link_(linkPlatform_, entropy_),
         identity_("custom_arduino_esp32"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {}
@@ -69,6 +71,10 @@ class FlovaEsp32 final {
   flova::Device& device() { return client_.device(); }
   bool setFirmwareTarget(const char* target) { return client_.setFirmwareTarget(target); }
   void enableOta(bool enabled = true) { client_.setOtaEnabled(enabled); }
+  void setOtaProfile(FlovaOtaStrategy strategy, const char* bootLayoutVersion,
+                     bool rollbackCapable = false) {
+    client_.setOtaProfile(strategy, bootLayoutVersion, rollbackCapable);
+  }
   void setRestartHandler(FlovaRestartHandler handler, void* context = nullptr) {
     client_.setRestartHandler(handler, context);
   }
@@ -82,6 +88,7 @@ class FlovaEsp32 final {
 
  private:
   FlovaEsp32Entropy entropy_;
+  FlovaEsp32Platform linkPlatform_;
   ArduinoFlovaLink link_;
   FlovaEsp32Storage storage_;
   ArduinoFlovaClock clock_;

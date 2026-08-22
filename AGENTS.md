@@ -13,11 +13,12 @@ area.
 - `packages/flova-embedded-sdk`: canonical C++11 `flova::Device` runtime. Its
   portable include closure must not depend on Arduino, ESP, GPIO, Wi-Fi,
   WebSocket, TLS, filesystem, exceptions, RTTI, or unbounded containers.
-- `packages/flova-arduino`: Arduino clock, storage, logging, TLS, OTA, and
-  Device Link services.
+- `packages/flova-arduino`: generic Arduino clock, storage, logging, bounded
+  Device Link services, and the board-platform seam. It must not contain ESP
+  transport, TLS, updater, or pin-policy code.
 - `packages/flova-esp32` and `packages/flova-esp8266`: board-specific
-  provisioning, boot/storage policy, TLS/resource setup, and hardware
-  composition.
+  provisioning, boot/storage policy, TLS/resource setup, OTA, pin policy, and
+  hardware composition.
 - `examples/`: selected PlatformIO applications and SDK compile contracts.
   The root `src/` is only a required PlatformIO source anchor; it contains no
   firmware implementation.

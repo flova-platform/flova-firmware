@@ -39,6 +39,12 @@ if rg -n '^[[:space:]]*#[[:space:]]*(if|ifdef|ifndef|elif)\b' examples -g '*.cpp
   failed=1
 fi
 
+generic_arduino_headers="packages/flova-arduino/include"
+if rg -n 'ESP32|ESP8266|ESP\.|BearSSL|WiFiClientSecure|ESP8266HTTPClient|HTTPClient\.h|Update\.h|Updater\.h|esp_system\.h|user_interface\.h|HeapSelect|FlovaTlsProfile|ArduinoOtaInstaller' "$generic_arduino_headers" -g '*.h'; then
+  echo "error: board-specific ESP transport or OTA code leaked into Flova Arduino" >&2
+  failed=1
+fi
+
 provisioning_headers="packages/flova-arduino/include/FlovaProvisioningAdapter.h packages/flova-esp32/include/FlovaEsp32Provisioning.h packages/flova-esp32/include/FlovaEsp32BleProvisioning.h packages/flova-esp8266/include/FlovaEsp8266Provisioning.h"
 if rg -n 'beginRuntime|runtimeConnected|clockReady|defaultHardwareId|defaultFirmwareTarget|ArduinoFlovaUtcBootstrap|WiFi\.begin' $provisioning_headers; then
   echo "error: provisioning adapters own runtime network, TLS clock, or identity behavior" >&2

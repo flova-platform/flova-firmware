@@ -45,7 +45,9 @@ target_include_directories(flova-ws-test PRIVATE
 add_executable(flova-custom-board examples/custom-board-basic/src/main.cpp)
 target_link_libraries(flova-custom-board PRIVATE flova-core)
 add_executable(flova-configuration-test test/host/test_flova_configuration.cpp)
-target_include_directories(flova-configuration-test PRIVATE packages/flova-arduino/include)
+target_include_directories(flova-configuration-test PRIVATE
+  packages/flova-arduino/include
+  packages/flova-esp32/include)
 target_link_libraries(flova-configuration-test PRIVATE flova-core)
 add_executable(flova-runtime-services-test test/host/test_flova_runtime_services.cpp)
 target_include_directories(flova-runtime-services-test PRIVATE packages/flova-arduino/include)

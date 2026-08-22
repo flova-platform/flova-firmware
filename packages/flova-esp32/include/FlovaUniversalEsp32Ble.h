@@ -3,20 +3,31 @@
 #include <FlovaArduino.h>
 #include <FlovaEsp32.h>
 #include <FlovaEsp32BleProvisioning.h>
+#include <FlovaEsp32HardwarePolicy.h>
 #include <adapters/ArduinoFlovaHardware.h>
+
+#if defined(FLOVA_FIRMWARE_TARGET)
+#define FLOVA_UNIVERSAL_ESP32_BLE_TARGET FLOVA_FIRMWARE_TARGET
+#else
+#define FLOVA_UNIVERSAL_ESP32_BLE_TARGET "universal_esp32_ble"
+#endif
+
+#if defined(FLOVA_OTA_BOOT_LAYOUT_VERSION)
+#define FLOVA_UNIVERSAL_ESP32_BLE_LAYOUT FLOVA_OTA_BOOT_LAYOUT_VERSION
+#else
+#define FLOVA_UNIVERSAL_ESP32_BLE_LAYOUT "esp32-ab"
+#endif
 
 class FlovaUniversalEsp32Ble final {
  public:
   explicit FlovaUniversalEsp32Ble(const char* proofOfPossession = nullptr)
-      : link_(entropy_), provisioning_(proofOfPossession),
-        identity_("universal_esp32_ble"),
+      : linkPlatform_(), link_(linkPlatform_, entropy_), provisioning_(proofOfPossession),
+        identity_(FLOVA_UNIVERSAL_ESP32_BLE_TARGET),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
-    client_.setFirmwareTarget("universal_esp32_ble");
-    // The BLE/BTDM image does not fit either 1.28 MiB OTA slot on the 4 MiB
-    // DevKit. This MVP uses the 2 MiB single-app partition; production OTA
-    // needs a larger-flash board or a deliberately larger partition layout.
-    client_.setOtaEnabled(false);
+    client_.setFirmwareTarget(FLOVA_UNIVERSAL_ESP32_BLE_TARGET);
+    client_.setOtaProfile(FlovaOtaStrategy::Ab, FLOVA_UNIVERSAL_ESP32_BLE_LAYOUT, true);
+    client_.setOtaEnabled(true);
     client_.setRestartHandler(scheduleRestart, this);
   }
 
@@ -45,11 +56,14 @@ class FlovaUniversalEsp32Ble final {
   }
 
   FlovaEsp32Entropy entropy_;
+  FlovaEsp32Platform linkPlatform_;
   ArduinoFlovaLink link_;
   FlovaEsp32Storage storage_;
   ArduinoFlovaClock clock_;
   ArduinoFlovaLogger logger_;
-  ArduinoFlovaHardware hardware_;
+  ArduinoFlovaHardware hardware_{flova::esp32::validInputPin,
+                                 flova::esp32::validOutputPin,
+                                 flova::esp32::validAnalogPin};
   FlovaEsp32BleProvisioning provisioning_;
   FlovaEsp32PlatformNetwork network_;
   ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock_;

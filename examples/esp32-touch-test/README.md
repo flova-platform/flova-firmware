@@ -47,7 +47,10 @@ This custom example intentionally does not use template pin mappings. The
 sketch owns GPIO2/GPIO4 directly; advanced applications can change those
 constants or replace the hardware behavior entirely.
 
-The BLE target uses the 2 MiB single-app partition and has OTA disabled for the
-current ESP32 DevKit BLE image. It also uses the bounded BLE profile, so its
-runtime datastream capacity is smaller than the SoftAP target. BLE provisioning
+The BLE target uses the repository-owned 4 MiB A/B partition and supports
+authenticated OTA. Existing devices flashed with the previous `no_ota.csv`
+layout need one wired PlatformIO upload before they can receive OTA updates;
+the NVS partition remains at the same offset, so this migration does not erase
+Flova configuration. It also uses the bounded BLE profile, so its runtime
+datastream capacity is smaller than the SoftAP target. BLE provisioning
 currently uses Security 1 with a null proof of possession for MVP testing.

@@ -22,7 +22,7 @@ ESP8266_LIMITS = (
     ("finishConfigurationApply", re.compile(r"finishConfigurationApply\(\)"), 256),
     ("finishConfigurationVerification", re.compile(r"finishConfigurationVerification\(\)"), 256),
     ("processOta", re.compile(r"FlovaClient::processOta\(\)"), 512),
-    ("ArduinoOtaInstaller::install", re.compile(r"ArduinoOtaInstaller::install\("), 768),
+    ("FlovaEsp8266Platform::installOta", re.compile(r"FlovaEsp8266Platform::installOta\("), 768),
     ("sendDatastreamBinding", re.compile(r"sendDatastreamBinding\(\)"), 768),
     ("handleDatastreamBound", re.compile(r"handleDatastreamBound\("), 768),
     ("dispatchPendingFrame", re.compile(r"dispatchPendingFrame\(\)"), 256),
@@ -38,6 +38,7 @@ ESP32_LIMITS = (
 )
 
 OPTIONAL_LIMITS = {
+    "sendDatastreamBinding",
     "ScheduleManifest::reset",
     "ScheduleRuntime::clear",
     "ScheduleChunkCompiler::reset",

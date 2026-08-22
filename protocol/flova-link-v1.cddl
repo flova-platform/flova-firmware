@@ -20,6 +20,7 @@ error-code = tstr .size (1..48)
 short-text = tstr .size (0..96)
 long-text = tstr .size (0..192)
 url = tstr .size (1..192)
+ota-artifact-url = tstr .size (1..256)
 token = bstr .size (32..64)
 compact-id = uint16
 generation = uint32
@@ -81,7 +82,15 @@ datastream-bound = [bound-generation: generation, bound-ids: datastream-bound-id
 datastream-bound-ids = [1*64 compact-id]
 
 ; 0x10..0x18 device-to-Engine hot-path messages.
-heartbeat = [heartbeat-generation: generation, heartbeat-uptime-ms: uint64, heartbeat-status: uint8, heartbeat-firmware-version: tstr .size (1..32)]
+heartbeat = [heartbeat-generation: generation, heartbeat-uptime-ms: uint64, heartbeat-status: uint8, heartbeat-firmware-version: tstr .size (1..32), heartbeat-firmware-target: tstr .size (1..32), heartbeat-running-release-id: empty-id / uuid, heartbeat-last-install-id: empty-id / uuid, heartbeat-ota-profile: ota-profile]
+ota-profile = {
+  ota-max-image-bytes: 0 => uint32,
+  ota-strategy: 1 => 0..2,
+  ota-boot-layout-version: 2 => tstr .size (1..32),
+  ota-rollback-capable: 3 => bool,
+  ? ota-boot-state: 4 => 0..2,
+  ? ota-rollback-reason: 5 => tstr .size (1..48)
+}
 state = [state-generation: generation, state-values: state-readings]
 state-readings = [1*4 state-reading]
 state-reading = [reading-compact-id: compact-id, typed-value-fields, reading-revision: uint32]
@@ -104,10 +113,11 @@ config-desired = [desired-config-generation: generation, desired-config-checksum
 ota-desired = {
   ota-install-id: 0 => uuid,
   ota-version: 1 => tstr .size (1..32),
-  ota-url: 2 => url,
+  ota-url: 2 => ota-artifact-url,
   ota-checksum: 3 => sha256,
   ota-size: 4 => uint32,
-  ? ota-target: 5 => tstr .size (1..32)
+  ? ota-target: 5 => tstr .size (1..32),
+  ? ota-release-id: 6 => uuid
 }
 schedule-desired = [desired-schedule-generation: generation, desired-schedule-revision: uint32, desired-schedule-record-count: uint16, desired-schedule-checksum: sha256]
 time-response = [time-response-request-id: uint64, time-response-server-utc-ms: uint64]

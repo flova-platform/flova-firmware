@@ -42,6 +42,20 @@ class FlovaClientLink : public flova::Link {
   virtual bool publishOtaReport(const FlovaLinkOtaReport& report) = 0;
   virtual flova::OtaInstallResult installOta(
       const FlovaLinkOtaOffer& offer) = 0;
+  virtual uint32_t otaMaxImageBytes() const { return 0; }
+  virtual FlovaOtaStrategy otaStrategy() const {
+    return FlovaOtaStrategy::None;
+  }
+  virtual const char* otaBootLayoutVersion() const { return "legacy"; }
+  virtual bool otaRollbackCapable() const { return false; }
+  virtual FlovaOtaBootState otaBootState() const {
+    return FlovaOtaBootState::Stable;
+  }
+  virtual bool confirmOtaBoot() { return false; }
+  virtual bool rollbackOtaBoot() { return false; }
+  // Board compositions may publish their actual boot layout and recovery
+  // contract. The defaults describe the portable, non-transactional updater.
+  virtual void setOtaProfile(FlovaOtaStrategy, const char*, bool) {}
   virtual bool decodeStoredConfigurationRecord(
       const uint8_t* payload, size_t length,
       FlovaLinkConfigurationRecord& output) = 0;

@@ -6,7 +6,10 @@
   "license": "MIT",
   "frameworks": ["arduino"],
   "platforms": ["espressif8266"],
-  "build": { "includeDir": "include" },
+  "build": {
+    "includeDir": "include",
+    "extraScript": "../flova-arduino/scripts/patch_esp8266_bearssl_nonblocking.py"
+  },
   "dependencies": {
     "Flova Arduino": "^0.2.0"
   }

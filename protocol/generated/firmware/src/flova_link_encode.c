@@ -26,8 +26,12 @@
 } while(0)
 
 static bool encode_repeated_ota_desired_ota_target(zcbor_state_t *state, const struct ota_desired_ota_target *input);
+static bool encode_repeated_ota_desired_ota_release_id(zcbor_state_t *state, const struct ota_desired_ota_release_id *input);
 static bool encode_repeated_datastream_binding_keys_tstr1_48(zcbor_state_t *state, const struct zcbor_string *input);
 static bool encode_datastream_binding_keys(zcbor_state_t *state, const struct datastream_binding_keys *input);
+static bool encode_repeated_ota_profile_ota_boot_state(zcbor_state_t *state, const struct ota_profile_ota_boot_state *input);
+static bool encode_repeated_ota_profile_ota_rollback_reason(zcbor_state_t *state, const struct ota_profile_ota_rollback_reason *input);
+static bool encode_ota_profile(zcbor_state_t *state, const struct ota_profile *input);
 static bool encode_typed_value_fields(zcbor_state_t *state, const struct typed_value_fields_r *input);
 static bool encode_correlation_id(zcbor_state_t *state, const struct correlation_id_r *input);
 static bool encode_capabilities(zcbor_state_t *state, const struct capabilities *input);
@@ -113,6 +117,19 @@ static bool encode_repeated_ota_desired_ota_target(
 	return res;
 }
 
+static bool encode_repeated_ota_desired_ota_release_id(
+		zcbor_state_t *state, const struct ota_desired_ota_release_id *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (6))))
+	&& ((((((*input).ota_desired_ota_release_id.len == 16)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_bstr_encode(state, (&(*input).ota_desired_ota_release_id)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool encode_repeated_datastream_binding_keys_tstr1_48(
 		zcbor_state_t *state, const struct zcbor_string *input)
 {
@@ -132,6 +149,57 @@ static bool encode_datastream_binding_keys(
 	zcbor_log("%s\r\n", __func__);
 
 	bool res = (((zcbor_list_start_encode(state, 64) && ((zcbor_multi_encode_minmax(1, 64, &(*input).datastream_binding_keys_tstr1_48_count, (zcbor_encoder_t *)encode_repeated_datastream_binding_keys_tstr1_48, state, (*&(*input).datastream_binding_keys_tstr1_48), sizeof(struct zcbor_string))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 64))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_ota_profile_ota_boot_state(
+		zcbor_state_t *state, const struct ota_profile_ota_boot_state *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (4))))
+	&& ((((*input).ota_profile_ota_boot_state <= 2)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).ota_profile_ota_boot_state)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_ota_profile_ota_rollback_reason(
+		zcbor_state_t *state, const struct ota_profile_ota_rollback_reason *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (5))))
+	&& ((((*input).ota_profile_ota_rollback_reason.len >= 1)
+	&& ((*input).ota_profile_ota_rollback_reason.len <= 48)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_tstr_encode(state, (&(*input).ota_profile_ota_rollback_reason)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_ota_profile(
+		zcbor_state_t *state, const struct ota_profile *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_map_start_encode(state, 6) && (((((zcbor_uint64_put(state, (0))))
+	&& ((((((*input).ota_profile_ota_max_image_bytes <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).ota_profile_ota_max_image_bytes))))
+	&& (((zcbor_uint64_put(state, (1))))
+	&& ((((*input).ota_profile_ota_strategy <= 2)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).ota_profile_ota_strategy))))
+	&& (((zcbor_uint64_put(state, (2))))
+	&& ((((*input).ota_profile_ota_boot_layout_version.len >= 1)
+	&& ((*input).ota_profile_ota_boot_layout_version.len <= 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_tstr_encode(state, (&(*input).ota_profile_ota_boot_layout_version))))
+	&& (((zcbor_uint64_put(state, (3))))
+	&& (zcbor_bool_encode(state, (&(*input).ota_profile_ota_rollback_capable))))
+	&& (!(*input).ota_profile_ota_boot_state_present || encode_repeated_ota_profile_ota_boot_state(state, (&(*input).ota_profile_ota_boot_state)))
+	&& (!(*input).ota_profile_ota_rollback_reason_present || encode_repeated_ota_profile_ota_rollback_reason(state, (&(*input).ota_profile_ota_rollback_reason)))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_map_end_encode(state, 6))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -883,7 +951,7 @@ static bool encode_ota_desired(
 {
 	zcbor_log("%s\r\n", __func__);
 
-	bool res = (((zcbor_map_start_encode(state, 6) && (((((zcbor_uint64_put(state, (0))))
+	bool res = (((zcbor_map_start_encode(state, 7) && (((((zcbor_uint64_put(state, (0))))
 	&& ((((((*input).ota_desired_ota_install_id.len == 16)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_bstr_encode(state, (&(*input).ota_desired_ota_install_id))))
 	&& (((zcbor_uint64_put(state, (1))))
@@ -892,7 +960,7 @@ static bool encode_ota_desired(
 	&& (zcbor_tstr_encode(state, (&(*input).ota_desired_ota_version))))
 	&& (((zcbor_uint64_put(state, (2))))
 	&& ((((((*input).ota_desired_ota_url.len >= 1)
-	&& ((*input).ota_desired_ota_url.len <= 192)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& ((*input).ota_desired_ota_url.len <= 256)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_tstr_encode(state, (&(*input).ota_desired_ota_url))))
 	&& (((zcbor_uint64_put(state, (3))))
 	&& ((((((*input).ota_desired_ota_checksum.len == 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
@@ -900,7 +968,8 @@ static bool encode_ota_desired(
 	&& (((zcbor_uint64_put(state, (4))))
 	&& ((((((*input).ota_desired_ota_size <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_uint64_encode(state, (&(*input).ota_desired_ota_size))))
-	&& (!(*input).ota_desired_ota_target_present || encode_repeated_ota_desired_ota_target(state, (&(*input).ota_desired_ota_target)))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_map_end_encode(state, 6))));
+	&& (!(*input).ota_desired_ota_target_present || encode_repeated_ota_desired_ota_target(state, (&(*input).ota_desired_ota_target)))
+	&& (!(*input).ota_desired_ota_release_id_present || encode_repeated_ota_desired_ota_release_id(state, (&(*input).ota_desired_ota_release_id)))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_map_end_encode(state, 7))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -1083,14 +1152,28 @@ static bool encode_heartbeat(
 {
 	zcbor_log("%s\r\n", __func__);
 
-	bool res = (((zcbor_list_start_encode(state, 4) && (((((((((((*input).heartbeat_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	bool res = (((zcbor_list_start_encode(state, 8) && (((((((((((*input).heartbeat_generation <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_uint64_encode(state, (&(*input).heartbeat_generation))))
 	&& ((zcbor_uint64_encode(state, (&(*input).heartbeat_uptime_ms))))
 	&& (((((((*input).heartbeat_status <= UINT8_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
 	&& (zcbor_uint64_encode(state, (&(*input).heartbeat_status))))
 	&& (((((*input).heartbeat_firmware_version.len >= 1)
 	&& ((*input).heartbeat_firmware_version.len <= 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
-	&& (zcbor_tstr_encode(state, (&(*input).heartbeat_firmware_version))))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 4))));
+	&& (zcbor_tstr_encode(state, (&(*input).heartbeat_firmware_version))))
+	&& (((((*input).heartbeat_firmware_target.len >= 1)
+	&& ((*input).heartbeat_firmware_target.len <= 32)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_tstr_encode(state, (&(*input).heartbeat_firmware_target))))
+	&& ((((*input).heartbeat_running_release_id_choice == heartbeat_running_release_id_empty_id_m_c) ? (((((((*input).heartbeat_running_release_id_empty_id_m.len == 0)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_bstr_encode(state, (&(*input).heartbeat_running_release_id_empty_id_m))))
+	: (((*input).heartbeat_running_release_id_choice == heartbeat_running_release_id_uuid_m_c) ? (((((((*input).heartbeat_running_release_id_uuid_m.len == 16)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_bstr_encode(state, (&(*input).heartbeat_running_release_id_uuid_m))))
+	: false)))
+	&& ((((*input).heartbeat_last_install_id_choice == heartbeat_last_install_id_empty_id_m_c) ? (((((((*input).heartbeat_last_install_id_empty_id_m.len == 0)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_bstr_encode(state, (&(*input).heartbeat_last_install_id_empty_id_m))))
+	: (((*input).heartbeat_last_install_id_choice == heartbeat_last_install_id_uuid_m_c) ? (((((((*input).heartbeat_last_install_id_uuid_m.len == 16)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_bstr_encode(state, (&(*input).heartbeat_last_install_id_uuid_m))))
+	: false)))
+	&& ((encode_ota_profile(state, (&(*input).heartbeat_ota_profile))))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_list_end_encode(state, 8))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -1369,7 +1452,7 @@ int cbor_encode_heartbeat(
 		const struct heartbeat *input,
 		size_t *payload_len_out)
 {
-	zcbor_state_t states[3];
+	zcbor_state_t states[4];
 
 	return zcbor_entry_function(payload, payload_len, (void *)input, payload_len_out, states,
 		(zcbor_decoder_t *)encode_heartbeat, sizeof(states) / sizeof(zcbor_state_t), 1);

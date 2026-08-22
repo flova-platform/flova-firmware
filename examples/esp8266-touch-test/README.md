@@ -54,3 +54,21 @@ the cloud-controlled path.
 This custom example intentionally does not use template pin mappings. The
 sketch owns D1/D2 directly; advanced applications can change those constants
 or replace the hardware behavior entirely.
+
+## OTA-enabled variant
+
+The OTA-enabled copy uses the same wiring and datastream behavior:
+
+```sh
+pio run -e esp8266-touch-test-ota
+```
+
+The first installation must be wired/factory flashed. After provisioning, the
+device reports the `esp8266-touch-test-ota` target and accepts matching HTTPS
+firmware offers after validating their declared size and SHA-256 checksum.
+ESP8266 OTA uses the platform's staged-copy updater and has no automatic
+rollback; keep wired recovery available for a failed post-update boot.
+
+For a release build, provide an explicit version with
+`-DFLOVA_FIRMWARE_VERSION=\"x.y.z\"` and upload the resulting ESP8266 binary
+as a separate artifact from the ESP32 BLE image.
