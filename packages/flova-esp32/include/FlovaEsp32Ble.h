@@ -32,6 +32,7 @@ class FlovaEsp32Ble final {
   bool provisioning() const { return client_.provisioning(); }
   FlovaLifecycle lifecycle() const { return client_.lifecycle(); }
   bool connected() const { return client_.connected(); }
+  bool runtimeReady() const { return client_.runtimeReady(); }
   bool ready() const { return client_.ready(); }
   const char* lastError() const { return client_.lastError(); }
   const flova::Diagnostics& diagnostics() const { return client_.diagnostics(); }

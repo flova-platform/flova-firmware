@@ -60,6 +60,14 @@ static bool encode_repeated_system_record_system_heartbeat_ms(zcbor_state_t *sta
 static bool encode_repeated_system_record_system_status_led_pin(zcbor_state_t *state, const struct system_record_system_status_led_pin *input);
 static bool encode_repeated_system_record_system_status_led_active_low(zcbor_state_t *state, const struct system_record_system_status_led_active_low *input);
 static bool encode_repeated_system_record_system_batch_flush_ms(zcbor_state_t *state, const struct system_record_system_batch_flush_ms *input);
+static bool encode_repeated_system_record_system_factory_reset_pin(zcbor_state_t *state, const struct system_record_system_factory_reset_pin *input);
+static bool encode_repeated_system_record_system_factory_reset_active_low(zcbor_state_t *state, const struct system_record_system_factory_reset_active_low *input);
+static bool encode_repeated_system_record_system_factory_reset_profile(zcbor_state_t *state, const struct system_record_system_factory_reset_profile *input);
+static bool encode_repeated_system_record_system_factory_reset_tap_count(zcbor_state_t *state, const struct system_record_system_factory_reset_tap_count *input);
+static bool encode_repeated_system_record_system_factory_reset_hold_ms(zcbor_state_t *state, const struct system_record_system_factory_reset_hold_ms *input);
+static bool encode_repeated_system_record_system_factory_reset_window_ms(zcbor_state_t *state, const struct system_record_system_factory_reset_window_ms *input);
+static bool encode_repeated_system_record_system_factory_reset_debounce_ms(zcbor_state_t *state, const struct system_record_system_factory_reset_debounce_ms *input);
+static bool encode_repeated_system_record_system_factory_reset_release_confirm(zcbor_state_t *state, const struct system_record_system_factory_reset_release_confirm *input);
 static bool encode_system_record(zcbor_state_t *state, const struct system_record *input);
 static bool encode_repeated_schedule_occurrence_record_occurrence_values_uint64_m(zcbor_state_t *state, const uint64_t *input);
 static bool encode_schedule_occurrence_record(zcbor_state_t *state, const struct schedule_occurrence_record *input);
@@ -650,17 +658,128 @@ static bool encode_repeated_system_record_system_batch_flush_ms(
 	return res;
 }
 
+static bool encode_repeated_system_record_system_factory_reset_pin(
+		zcbor_state_t *state, const struct system_record_system_factory_reset_pin *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (5))))
+	&& ((((((*input).system_record_system_factory_reset_pin <= UINT8_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).system_record_system_factory_reset_pin)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_system_record_system_factory_reset_active_low(
+		zcbor_state_t *state, const struct system_record_system_factory_reset_active_low *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (6))))
+	&& (zcbor_bool_encode(state, (&(*input).system_record_system_factory_reset_active_low)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_system_record_system_factory_reset_profile(
+		zcbor_state_t *state, const struct system_record_system_factory_reset_profile *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (7))))
+	&& ((((*input).system_record_system_factory_reset_profile <= 1)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).system_record_system_factory_reset_profile)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_system_record_system_factory_reset_tap_count(
+		zcbor_state_t *state, const struct system_record_system_factory_reset_tap_count *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (8))))
+	&& ((((*input).system_record_system_factory_reset_tap_count >= 1)
+	&& ((*input).system_record_system_factory_reset_tap_count <= 8)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).system_record_system_factory_reset_tap_count)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_system_record_system_factory_reset_hold_ms(
+		zcbor_state_t *state, const struct system_record_system_factory_reset_hold_ms *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (9))))
+	&& ((((((*input).system_record_system_factory_reset_hold_ms <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).system_record_system_factory_reset_hold_ms)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_system_record_system_factory_reset_window_ms(
+		zcbor_state_t *state, const struct system_record_system_factory_reset_window_ms *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (10))))
+	&& ((((((*input).system_record_system_factory_reset_window_ms <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).system_record_system_factory_reset_window_ms)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_system_record_system_factory_reset_debounce_ms(
+		zcbor_state_t *state, const struct system_record_system_factory_reset_debounce_ms *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (11))))
+	&& ((((((*input).system_record_system_factory_reset_debounce_ms <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).system_record_system_factory_reset_debounce_ms)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_system_record_system_factory_reset_release_confirm(
+		zcbor_state_t *state, const struct system_record_system_factory_reset_release_confirm *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (12))))
+	&& (zcbor_bool_encode(state, (&(*input).system_record_system_factory_reset_release_confirm)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool encode_system_record(
 		zcbor_state_t *state, const struct system_record *input)
 {
 	zcbor_log("%s\r\n", __func__);
 
-	bool res = (((zcbor_map_start_encode(state, 5) && (((((zcbor_uint64_put(state, (0))))
+	bool res = (((zcbor_map_start_encode(state, 13) && (((((zcbor_uint64_put(state, (0))))
 	&& (zcbor_uint64_put(state, (1))))
 	&& (!(*input).system_record_system_heartbeat_ms_present || encode_repeated_system_record_system_heartbeat_ms(state, (&(*input).system_record_system_heartbeat_ms)))
 	&& (!(*input).system_record_system_status_led_pin_present || encode_repeated_system_record_system_status_led_pin(state, (&(*input).system_record_system_status_led_pin)))
 	&& (!(*input).system_record_system_status_led_active_low_present || encode_repeated_system_record_system_status_led_active_low(state, (&(*input).system_record_system_status_led_active_low)))
-	&& (!(*input).system_record_system_batch_flush_ms_present || encode_repeated_system_record_system_batch_flush_ms(state, (&(*input).system_record_system_batch_flush_ms)))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_map_end_encode(state, 5))));
+	&& (!(*input).system_record_system_batch_flush_ms_present || encode_repeated_system_record_system_batch_flush_ms(state, (&(*input).system_record_system_batch_flush_ms)))
+	&& (!(*input).system_record_system_factory_reset_pin_present || encode_repeated_system_record_system_factory_reset_pin(state, (&(*input).system_record_system_factory_reset_pin)))
+	&& (!(*input).system_record_system_factory_reset_active_low_present || encode_repeated_system_record_system_factory_reset_active_low(state, (&(*input).system_record_system_factory_reset_active_low)))
+	&& (!(*input).system_record_system_factory_reset_profile_present || encode_repeated_system_record_system_factory_reset_profile(state, (&(*input).system_record_system_factory_reset_profile)))
+	&& (!(*input).system_record_system_factory_reset_tap_count_present || encode_repeated_system_record_system_factory_reset_tap_count(state, (&(*input).system_record_system_factory_reset_tap_count)))
+	&& (!(*input).system_record_system_factory_reset_hold_ms_present || encode_repeated_system_record_system_factory_reset_hold_ms(state, (&(*input).system_record_system_factory_reset_hold_ms)))
+	&& (!(*input).system_record_system_factory_reset_window_ms_present || encode_repeated_system_record_system_factory_reset_window_ms(state, (&(*input).system_record_system_factory_reset_window_ms)))
+	&& (!(*input).system_record_system_factory_reset_debounce_ms_present || encode_repeated_system_record_system_factory_reset_debounce_ms(state, (&(*input).system_record_system_factory_reset_debounce_ms)))
+	&& (!(*input).system_record_system_factory_reset_release_confirm_present || encode_repeated_system_record_system_factory_reset_release_confirm(state, (&(*input).system_record_system_factory_reset_release_confirm)))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_map_end_encode(state, 13))));
 
 	log_result(state, res, __func__);
 	return res;

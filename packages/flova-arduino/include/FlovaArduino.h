@@ -48,6 +48,7 @@ enum class FlovaRestartReason : uint8_t {
   OtaActivation,
   ResourceRecovery,
   ProvisioningRecovery,
+  FactoryReset,
 };
 
 typedef void (*FlovaRestartHandler)(void* context, FlovaRestartReason reason);
@@ -76,6 +77,8 @@ class FlovaClient {
         scheduleRuntime_(storage_, clock_),
         scheduleCompiler_(scheduleRuntime_.workspace()) {
     hardware_.attach(device_);
+    hardware_.setFactoryResetHandler(handlePhysicalFactoryReset, this);
+    device_.setFactoryResetHandler(handleFactoryResetCommand, this);
     link_.setHardwareCapabilities(hardware_.capabilities());
     scheduleRuntime_.handlers(applyScheduledWrite, requestScheduleRenewal,
                               reportScheduleStatus, this);
@@ -273,6 +276,7 @@ class FlovaClient {
     }
 
     if (lifecycle_ == FlovaLifecycle::Runtime) {
+      link_.setConnectionAllowed(network_.connected() && tlsClock_.ready());
       if (link_.resourceRecoveryRequired()) {
         link_.disconnect();
         requestRestart(FlovaRestartReason::ResourceRecovery);
@@ -280,7 +284,14 @@ class FlovaClient {
       }
       hardware_.setConnected(link_.connected());
       hardware_.run();
+      if (lifecycle_ != FlovaLifecycle::Runtime) return;
       device_.run();
+      if (factoryResetRequestedAt_ &&
+          (!device_.commandResultPending(factoryResetCommandId_) ||
+           millis() - factoryResetRequestedAt_ >= kFactoryResetAckGraceMs)) {
+        factoryReset();
+        return;
+      }
       scheduleRuntime_.run();
       if (configurationWork_.mode != ConfigurationWorkMode::None) {
         stepConfigurationWork();
@@ -328,6 +339,7 @@ class FlovaClient {
   const char* lastError() const { return pending_.lastError; }
   FlovaLifecycle lifecycle() const { return lifecycle_; }
   bool connected() const { return link_.connected(); }
+  bool runtimeReady() const { return lifecycle_ == FlovaLifecycle::Runtime; }
   bool ready() const { return lifecycle_ == FlovaLifecycle::Runtime && device_.ready(); }
   const flova::Diagnostics& diagnostics() const { return device_.diagnostics(); }
   flova::Device& device() { return device_; }
@@ -346,6 +358,19 @@ class FlovaClient {
   }
   FlovaRestartReason restartReason() const { return restartReason_; }
 
+  // Erases Flova runtime/provisioning state. Custom application storage and
+  // application-owned network credentials remain outside this boundary.
+  bool factoryReset() {
+    if (!network_.stop() || !network_.clearCredentials()) return false;
+    link_.disconnect();
+    hardware_.failSafe();
+    if (!storage_.clear()) return false;
+    factoryResetRequestedAt_ = 0;
+    factoryResetCommandId_[0] = 0;
+    requestRestart(FlovaRestartReason::FactoryReset);
+    return true;
+  }
+
   template <typename T>
   flova::Datastream<T> datastream(const char* key) { return device_.datastream<T>(key); }
 
@@ -354,6 +379,7 @@ class FlovaClient {
   static const uint32_t kBootstrapTimeoutMs = 30000UL;
   static const uint32_t kOtaHealthWindowMs = 30000UL;
   static const uint32_t kOtaHealthDeadlineMs = 120000UL;
+  static const uint32_t kFactoryResetAckGraceMs = 5000UL;
   static const uint32_t kMaximumConfigurationRecords =
       FLOVA_DATASTREAM_CAPACITY + FLOVA_SCHEDULE_CAPACITY + 8;
   static const uint32_t kOtaPendingMagic = 0x4f544131UL;
@@ -407,6 +433,23 @@ class FlovaClient {
       void* context, const flova::ProvisioningHandoff& input) {
     if (!context) return FlovaProvisioningResponse::Invalid;
     return static_cast<FlovaClient*>(context)->provision(input);
+  }
+
+  static flova::WriteResult handleFactoryResetCommand(void* context,
+                                                       const char* commandId) {
+    FlovaClient* self = static_cast<FlovaClient*>(context);
+    if (!self || self->factoryResetRequestedAt_)
+      return flova::WriteResult::noChange();
+    if (!copy(self->factoryResetCommandId_, commandId))
+      return flova::WriteResult::reject("factory_reset_invalid");
+    const uint32_t now = millis();
+    self->factoryResetRequestedAt_ = now ? now : 1;
+    return flova::WriteResult::accept();
+  }
+
+  static void handlePhysicalFactoryReset(void* context) {
+    FlovaClient* self = static_cast<FlovaClient*>(context);
+    if (self) self->factoryReset();
   }
 
   FlovaProvisioningResponse acceptProvisioning(
@@ -484,9 +527,11 @@ class FlovaClient {
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
-    logger_.log("[flova] lifecycle waiting_for_network");
-    lifecycle_ = FlovaLifecycle::WaitingForNetwork;
-    return true;
+    // Starting the application runtime is independent from cloud reachability.
+    // ArduinoFlovaLink keeps connection attempts gated until Wi-Fi and the TLS
+    // clock are ready, while Device restores local hardware immediately.
+    beginDeviceRuntime();
+    return lifecycle_ == FlovaLifecycle::Runtime;
   }
 
   void beginDeviceRuntime() {
@@ -1648,4 +1693,6 @@ class FlovaClient {
   FlovaRestartHandler restartHandler_ = nullptr;
   void* restartContext_ = nullptr;
   FlovaRestartReason restartReason_ = FlovaRestartReason::None;
+  uint32_t factoryResetRequestedAt_ = 0;
+  char factoryResetCommandId_[FLOVA_LINK_TEXT_BYTES] = {};
 };

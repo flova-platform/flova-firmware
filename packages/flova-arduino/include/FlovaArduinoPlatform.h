@@ -7,6 +7,12 @@
 
 #include <FlovaClientLink.h>
 
+enum class FlovaLinkOpenStatus : uint8_t {
+  InProgress,
+  Connected,
+  Failed
+};
+
 // Board policy for the bounded Arduino Device Link core. The core owns the
 // protocol queues and WebSocket parser; a board owns the concrete client,
 // TLS/resource setup, non-blocking write behavior, and OTA implementation.
@@ -15,7 +21,8 @@ class FlovaArduinoPlatform {
   virtual ~FlovaArduinoPlatform() {}
   virtual Client& linkClient() = 0;
   virtual bool beginLink() { return true; }
-  virtual bool openLink(const char* host, uint16_t port) = 0;
+  virtual bool startLink(const char* host, uint16_t port) = 0;
+  virtual FlovaLinkOpenStatus pollLink() = 0;
   virtual void closeLink() = 0;
   virtual bool resourceRecoveryRequired() const { return false; }
   virtual bool linkWriteBusy() const { return false; }

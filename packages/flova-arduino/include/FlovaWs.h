@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Client.h>
+#include <stdio.h>
 
 class FlovaEntropySource {
  public:
@@ -51,8 +52,109 @@ class FlovaWs {
     UnexpectedExtension
   };
 
+  enum class HandshakeProgress : uint8_t {
+    InProgress,
+    Complete,
+    Failed
+  };
+
   FlovaWs(Client& transport, FlovaEntropySource& entropy)
       : transport_(transport), entropy_(entropy) { reset(); }
+
+  // Prepare the HTTP upgrade request in caller-owned bounded storage. The
+  // owner sends it through its cooperative platform writer, then calls
+  // pollHandshake() from the application loop until completion.
+  bool startHandshake(const char* host, uint16_t port, const char* path,
+                      uint8_t* output, size_t capacity, size_t& length) {
+    length = 0;
+    if (state_ != State::Closed) {
+      handshakeFailure_ = HandshakeFailure::InvalidState;
+      error_ = Error::Handshake;
+      return false;
+    }
+    reset();
+    if (!transport_.connected())
+      return failHandshake(HandshakeFailure::TransportNotConnected,
+                           Error::NotConnected);
+    if (!output || !capacity || !port ||
+        !validToken(host, sizeof(line_), false) || !validPath(path))
+      return failHandshake(HandshakeFailure::InvalidRequest,
+                           Error::NotConnected);
+
+    uint8_t rawKey[16] = {};
+    for (size_t i = 0; i < sizeof(rawKey); ++i) rawKey[i] = randomByte();
+    if (!base64(rawKey, sizeof(rawKey), keyText_, sizeof(keyText_)))
+      return failHandshake(HandshakeFailure::InvalidRequest);
+    Sha1 sha;
+    sha.update(reinterpret_cast<const uint8_t*>(keyText_), strlen(keyText_));
+    sha.update(reinterpret_cast<const uint8_t*>(webSocketGuid()),
+               strlen(webSocketGuid()));
+    uint8_t digest[20] = {};
+    sha.finish(digest);
+    if (!base64(digest, sizeof(digest), acceptText_, sizeof(acceptText_)))
+      return failHandshake(HandshakeFailure::InvalidRequest);
+
+    const int written = snprintf(
+        reinterpret_cast<char*>(output), capacity,
+        "GET %s HTTP/1.1\r\nHost: %s:%u\r\nConnection: Upgrade\r\n"
+        "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"
+        "Sec-WebSocket-Key: %s\r\nUser-Agent: flova-ws/1\r\n\r\n",
+        path, host, static_cast<unsigned>(port), keyText_);
+    if (written <= 0 || static_cast<size_t>(written) >= capacity)
+      return failHandshake(HandshakeFailure::InvalidRequest);
+
+    length = static_cast<size_t>(written);
+    handshakeFirstLine_ = true;
+    handshakeDeadline_ = millis() + 10000UL;
+    state_ = State::Handshaking;
+    return true;
+  }
+
+  HandshakeProgress pollHandshake() {
+    if (state_ == State::Open) return HandshakeProgress::Complete;
+    if (state_ != State::Handshaking) return HandshakeProgress::Failed;
+    if (!transport_.connected()) {
+      failHandshake(HandshakeFailure::ResponseClosed);
+      return HandshakeProgress::Failed;
+    }
+
+    uint8_t processed = 0;
+    while (processed < 64 && transport_.available() > 0) {
+      const int input = transport_.read();
+      if (input < 0) break;
+      ++processed;
+      const uint8_t byte = static_cast<uint8_t>(input);
+      if (byte != '\n') {
+        if (handshakeLineLength_ + 1 < sizeof(line_)) {
+          line_[handshakeLineLength_++] = static_cast<char>(byte);
+        } else {
+          handshakeLineTruncated_ = true;
+          if (++handshakeDiscarded_ > kMaximumDiscardedHeaderBytes) {
+            failHandshake(HandshakeFailure::HeaderTooLong);
+            return HandshakeProgress::Failed;
+          }
+        }
+        continue;
+      }
+
+      if (handshakeLineLength_ && line_[handshakeLineLength_ - 1] == '\r')
+        --handshakeLineLength_;
+      line_[handshakeLineLength_] = 0;
+      const bool complete = !line_[0];
+      if (!acceptHandshakeLine()) return HandshakeProgress::Failed;
+      handshakeLineLength_ = 0;
+      handshakeDiscarded_ = 0;
+      handshakeLineTruncated_ = false;
+      line_[0] = 0;
+      if (complete) return finishPolledHandshake();
+    }
+
+    if (static_cast<int32_t>(millis() - handshakeDeadline_) >= 0) {
+      failHandshake(HandshakeFailure::ResponseTimeout);
+      return HandshakeProgress::Failed;
+    }
+    return HandshakeProgress::InProgress;
+  }
 
   // The Device Link server does not negotiate an application subprotocol;
   // binary framing and the first Link byte identify the protocol instead.
@@ -517,6 +619,66 @@ class FlovaWs {
     return false;
   }
 
+  bool acceptHandshakeLine() {
+    if (++handshakeHeaderCount_ > 32)
+      return failHandshake(HandshakeFailure::TooManyHeaders);
+    if (handshakeLineTruncated_) {
+      if (handshakeFirstLine_)
+        return failHandshake(HandshakeFailure::HeaderTooLong);
+      return true;
+    }
+    if (!line_[0]) return true;
+    if (handshakeFirstLine_) {
+      handshakeFirstLine_ = false;
+      if (!parseStatusLine(line_, handshakeStatus_))
+        return failHandshake(HandshakeFailure::InvalidStatus);
+      if (handshakeStatus_ != 101)
+        return failHandshake(HandshakeFailure::UnexpectedStatus);
+      return true;
+    }
+
+    char* colon = strchr(line_, ':');
+    if (!colon) return failHandshake(HandshakeFailure::InvalidStatus);
+    *colon = 0;
+    char* value = colon + 1;
+    while (*value == ' ' || *value == '\t') ++value;
+    trim(value);
+    if (equalsIgnoreCase(line_, "Upgrade"))
+      handshakeUpgrade_ = hasToken(value, "websocket");
+    else if (equalsIgnoreCase(line_, "Connection"))
+      handshakeConnection_ = hasToken(value, "upgrade");
+    else if (equalsIgnoreCase(line_, "Sec-WebSocket-Accept")) {
+      handshakeAcceptHeader_ = true;
+      handshakeAccept_ = strcmp(value, acceptText_) == 0;
+    } else if (equalsIgnoreCase(line_, "Sec-WebSocket-Extensions"))
+      handshakeExtensions_ = *value != 0;
+    return true;
+  }
+
+  HandshakeProgress finishPolledHandshake() {
+    if (handshakeFirstLine_)
+      failHandshake(HandshakeFailure::InvalidStatus);
+    else if (!handshakeUpgrade_)
+      failHandshake(HandshakeFailure::MissingUpgrade);
+    else if (!handshakeConnection_)
+      failHandshake(HandshakeFailure::MissingConnection);
+    else if (!handshakeAcceptHeader_)
+      failHandshake(HandshakeFailure::MissingAccept);
+    else if (!handshakeAccept_)
+      failHandshake(HandshakeFailure::InvalidAccept);
+    else if (handshakeExtensions_)
+      failHandshake(HandshakeFailure::UnexpectedExtension);
+    else {
+      state_ = State::Open;
+      error_ = Error::None;
+      memset(keyText_, 0, sizeof(keyText_));
+      memset(acceptText_, 0, sizeof(acceptText_));
+      memset(line_, 0, sizeof(line_));
+      return HandshakeProgress::Complete;
+    }
+    return HandshakeProgress::Failed;
+  }
+
   LineResult readLine(char* output, size_t capacity, bool& truncated) {
     size_t length = 0;
     size_t discarded = 0;
@@ -798,6 +960,17 @@ class FlovaWs {
     error_ = Error::None;
     handshakeFailure_ = HandshakeFailure::None;
     handshakeStatus_ = 0;
+    handshakeDeadline_ = 0;
+    handshakeLineLength_ = 0;
+    handshakeDiscarded_ = 0;
+    handshakeHeaderCount_ = 0;
+    handshakeFirstLine_ = true;
+    handshakeLineTruncated_ = false;
+    handshakeUpgrade_ = false;
+    handshakeConnection_ = false;
+    handshakeAcceptHeader_ = false;
+    handshakeAccept_ = false;
+    handshakeExtensions_ = false;
     memset(keyText_, 0, sizeof(keyText_));
     memset(acceptText_, 0, sizeof(acceptText_));
     memset(line_, 0, sizeof(line_));
@@ -823,6 +996,17 @@ class FlovaWs {
   Error error_ = Error::None;
   HandshakeFailure handshakeFailure_ = HandshakeFailure::None;
   uint16_t handshakeStatus_ = 0;
+  uint32_t handshakeDeadline_ = 0;
+  size_t handshakeLineLength_ = 0;
+  size_t handshakeDiscarded_ = 0;
+  uint8_t handshakeHeaderCount_ = 0;
+  bool handshakeFirstLine_ = true;
+  bool handshakeLineTruncated_ = false;
+  bool handshakeUpgrade_ = false;
+  bool handshakeConnection_ = false;
+  bool handshakeAcceptHeader_ = false;
+  bool handshakeAccept_ = false;
+  bool handshakeExtensions_ = false;
   char keyText_[25] = {};
   char acceptText_[29] = {};
   char line_[kMaximumHeaderLineBytes] = {};

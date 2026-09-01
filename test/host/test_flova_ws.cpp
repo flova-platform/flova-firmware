@@ -259,6 +259,40 @@ static void verifyHandshakeAndFrames() {
   assert(extendedLength == sizeof(extended));
 }
 
+static void verifyCooperativeHandshake() {
+  nowMs = 0;
+  FakeClient client;
+  client.includeProtocol = false;
+  FlovaWs websocket(client, entropy);
+  uint8_t request[384] = {};
+  size_t requestLength = 0;
+  assert(websocket.startHandshake("engine.example", 443, "/api/device-link",
+                                  request, sizeof(request), requestLength));
+  assert(requestLength && client.write(request, requestLength) == requestLength);
+  FlovaWs::HandshakeProgress progress = FlovaWs::HandshakeProgress::InProgress;
+  uint8_t polls = 0;
+  while (progress == FlovaWs::HandshakeProgress::InProgress && polls++ < 32)
+    progress = websocket.pollHandshake();
+  assert(progress == FlovaWs::HandshakeProgress::Complete);
+  assert(websocket.connected());
+  assert(polls > 1);  // Response parsing is intentionally bounded per poll.
+
+  FakeClient timeoutClient;
+  timeoutClient.respondToHandshake = false;
+  FlovaWs timeoutWebsocket(timeoutClient, entropy);
+  assert(timeoutWebsocket.startHandshake("engine.example", 443, "/",
+                                         request, sizeof(request),
+                                         requestLength));
+  assert(timeoutClient.write(request, requestLength) == requestLength);
+  assert(timeoutWebsocket.pollHandshake() ==
+         FlovaWs::HandshakeProgress::InProgress);
+  nowMs = 10001;
+  assert(timeoutWebsocket.pollHandshake() ==
+         FlovaWs::HandshakeProgress::Failed);
+  assert(timeoutWebsocket.handshakeFailure() ==
+         FlovaWs::HandshakeFailure::ResponseTimeout);
+}
+
 static void verifyRejection() {
   FakeClient client;
   client.respondToHandshake = false;
@@ -423,6 +457,7 @@ static void verifyCoalescedWrite() {
 
 int main() {
   verifyHandshakeAndFrames();
+  verifyCooperativeHandshake();
   verifyRejection();
   verifyReconnectCycles();
   verifyPeerCloseReconnect();

@@ -5,6 +5,7 @@
 #include <Updater.h>
 #include <WiFiClientSecureBearSSL.h>
 #include <bearssl/bearssl_hash.h>
+#include <lwip/dns.h>
 #include <new>
 
 #include <FlovaArduinoPlatform.h>
@@ -36,30 +37,97 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
     return true;
   }
 
-  bool openLink(const char* host, uint16_t port) override {
+  bool startLink(const char* host, uint16_t port) override {
     const flova::TlsResourceStatus resources =
         flova::tlsResourceStatus(flova::TlsUse::Link);
     if (!host || !host[0] || !trustAnchors_ ||
-        resources != flova::TlsResourceStatus::Ready) {
+        strlen(host) >= sizeof(linkHost_) || !port ||
+        resources != flova::TlsResourceStatus::Ready ||
+        linkOpenState_ == LinkOpenState::Dns ||
+        linkOpenState_ == LinkOpenState::Tcp ||
+        linkOpenState_ == LinkOpenState::Tls) {
       resourceUnavailable_ = resources != flova::TlsResourceStatus::Ready;
       return false;
     }
     resourceUnavailable_ = false;
-    flova::configureLinkTls(client_, *trustAnchors_, time(nullptr));
-    {
-      HeapSelectIram iram;
-      if (!client_.connect(host, port)) {
-        flova::logLinkTlsFailure(client_);
-        return false;
-      }
+    memcpy(linkHost_, host, strlen(host) + 1);
+    linkPort_ = port;
+    dnsReady_ = false;
+    dnsFailed_ = false;
+    const err_t dns = dns_gethostbyname(linkHost_, &dnsAddress_, dnsFound, this);
+    if (dns == ERR_OK) {
+      dnsReady_ = true;
+      linkOpenState_ = LinkOpenState::Dns;
+    } else if (dns == ERR_INPROGRESS) {
+      linkOpenState_ = LinkOpenState::Dns;
+    } else {
+      linkOpenState_ = LinkOpenState::Failed;
+      return false;
     }
-    client_.setNoDelay(true);
     return true;
+  }
+
+  FlovaLinkOpenStatus pollLink() override {
+    if (linkOpenState_ == LinkOpenState::Dns) {
+      if (dnsFailed_) {
+        linkOpenState_ = LinkOpenState::Failed;
+        return FlovaLinkOpenStatus::Failed;
+      }
+      if (!dnsReady_) return FlovaLinkOpenStatus::InProgress;
+      if (!client_.startTcpNonBlocking(IPAddress(dnsAddress_), linkPort_)) {
+        linkOpenState_ = LinkOpenState::Failed;
+        return FlovaLinkOpenStatus::Failed;
+      }
+      linkOpenState_ = LinkOpenState::Tcp;
+      return FlovaLinkOpenStatus::InProgress;
+    }
+    if (linkOpenState_ == LinkOpenState::Tcp) {
+      const int result = client_.pollTcpNonBlocking();
+      if (!result) return FlovaLinkOpenStatus::InProgress;
+      if (result < 0) {
+        linkOpenState_ = LinkOpenState::Failed;
+        return FlovaLinkOpenStatus::Failed;
+      }
+      flova::configureLinkTls(client_, *trustAnchors_, time(nullptr));
+      {
+        HeapSelectIram iram;
+        if (!client_.startTlsNonBlocking(linkHost_)) {
+          linkOpenState_ = LinkOpenState::Failed;
+          return FlovaLinkOpenStatus::Failed;
+        }
+      }
+      linkOpenState_ = LinkOpenState::Tls;
+      return FlovaLinkOpenStatus::InProgress;
+    }
+    if (linkOpenState_ == LinkOpenState::Tls) {
+      int result = 0;
+      {
+        HeapSelectIram iram;
+        result = client_.pollTlsNonBlocking();
+      }
+      if (!result) return FlovaLinkOpenStatus::InProgress;
+      if (result < 0) {
+        flova::logLinkTlsFailure(client_);
+        linkOpenState_ = LinkOpenState::Failed;
+        return FlovaLinkOpenStatus::Failed;
+      }
+      client_.setNoDelay(true);
+      linkOpenState_ = LinkOpenState::Connected;
+      return FlovaLinkOpenStatus::Connected;
+    }
+    return linkOpenState_ == LinkOpenState::Connected
+               ? FlovaLinkOpenStatus::Connected
+               : linkOpenState_ == LinkOpenState::Failed
+                     ? FlovaLinkOpenStatus::Failed
+                     : FlovaLinkOpenStatus::InProgress;
   }
 
   void closeLink() override {
     clearWrite();
-    client_.stop();
+    client_.stop(0);
+    linkOpenState_ = LinkOpenState::Idle;
+    dnsReady_ = false;
+    dnsFailed_ = false;
   }
 
   bool resourceRecoveryRequired() const override { return resourceUnavailable_; }
@@ -156,6 +224,20 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   }
 
  private:
+  enum class LinkOpenState : uint8_t { Idle, Dns, Tcp, Tls, Connected, Failed };
+
+  static void dnsFound(const char* name, const ip_addr_t* address,
+                       void* context) {
+    FlovaEsp8266Platform* self = static_cast<FlovaEsp8266Platform*>(context);
+    if (!self || !name || strcmp(name, self->linkHost_) != 0) return;
+    if (!address) {
+      self->dnsFailed_ = true;
+      return;
+    }
+    ip_addr_copy(self->dnsAddress_, *address);
+    self->dnsReady_ = true;
+  }
+
   void clearWrite() {
     writeData_ = nullptr;
     writeLength_ = 0;
@@ -177,6 +259,12 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
 
   BearSSL::WiFiClientSecure client_;
   BearSSL::X509List* trustAnchors_ = nullptr;
+  LinkOpenState linkOpenState_ = LinkOpenState::Idle;
+  ip_addr_t dnsAddress_ = {};
+  volatile bool dnsReady_ = false;
+  volatile bool dnsFailed_ = false;
+  char linkHost_[128] = {};
+  uint16_t linkPort_ = 0;
   const uint8_t* writeData_ = nullptr;
   size_t writeLength_ = 0;
   size_t writeOffset_ = 0;

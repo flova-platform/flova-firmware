@@ -8,10 +8,10 @@
 
 class TestLink : public flova::Link {
  public:
-  bool online = true; int sends = 0, stateSends = 0, errorSends = 0; double stateValues[64]; flova::Message last, lastError; flova::MessageReceiver receiver = 0; void* context = 0;
+  bool online = true; int sends = 0, stateSends = 0, errorSends = 0; double stateValues[64]; flova::Message last, lastError, lastResult; flova::MessageReceiver receiver = 0; void* context = 0;
   bool begin() override { return true; }
   bool connected() const override { return online; }
-  bool send(const flova::Message& message) override { sends++; last = message; if (message.kind == flova::MessageKind::StateUpdate) { if (message.value.type == flova::ValueType::Float) stateValues[stateSends] = message.value.scalar.floating; stateSends++; } if (message.kind == flova::MessageKind::Error) { errorSends++; lastError = message; } return online; }
+  bool send(const flova::Message& message) override { sends++; last = message; if (message.kind == flova::MessageKind::Acknowledgement || message.kind == flova::MessageKind::Error) lastResult = message; if (message.kind == flova::MessageKind::StateUpdate) { if (message.value.type == flova::ValueType::Float) stateValues[stateSends] = message.value.scalar.floating; stateSends++; } if (message.kind == flova::MessageKind::Error) { errorSends++; lastError = message; } return online; }
   bool bindDatastreams(const char* const*, size_t count, DatastreamId* ids) override { boundCount = count; for (size_t i = 0; i < count; ++i) ids[i] = static_cast<DatastreamId>(i + 1); return count <= FLOVA_MAX_ACTIVE_DATASTREAMS; }
   void poll() override {}
   void setReceiver(flova::MessageReceiver callback, void* value) override { receiver = callback; context = value; }
@@ -40,8 +40,9 @@ class AsyncBindingLink : public TestLink {
     for (size_t i = 0; i < count; ++i) ids[i] = pendingIds[i];
     return true;
   }
-  void poll() override { ready = true; }
+  void poll() override { if (autoReady) ready = true; }
   bool ready = false;
+  bool autoReady = true;
   DatastreamId pendingIds[FLOVA_MAX_ACTIVE_DATASTREAMS] = {};
 };
 class TestStorage : public flova::Storage { public: bool read(const char*, void*, size_t) override { return false; } bool write(const char*, const void*, size_t) override { return true; } bool remove(const char*) override { return true; } flova::StorageCapabilities capabilities() const override { flova::StorageCapabilities value; value.usableBytes = 65536; value.availableBytes = 65536; value.persistent = true; return value; } };
@@ -71,6 +72,8 @@ class TestClock : public flova::Clock { public: uint64_t now = 1, utc = 0; uint6
 class TestLogger : public flova::Logger { public: void log(const char*) override {} };
 
 static int writes;
+static int factoryResets;
+static flova::WriteResult requestFactoryReset(void*, const char*) { factoryResets++; return flova::WriteResult::accept(); }
 static int numericWrites;
 static int voidWrites;
 static bool reject;
@@ -116,6 +119,19 @@ int main() {
   stuckGesture.configure();
   assert(stuckGesture.update(true, 100) == FlovaFactoryResetGesture::None);
   assert(stuckGesture.update(true, 60100) == FlovaFactoryResetGesture::WindowClosed);
+
+  FlovaFactoryResetGesture holdGesture;
+  holdGesture.configure(3000, FlovaFactoryResetGesture::Hold, 1, 0, 20, false);
+  uint32_t holdNow = 100;
+  holdGesture.update(false, holdNow);
+  holdNow += 500;
+  assert(holdGesture.update(false, holdNow) == FlovaFactoryResetGesture::Armed);
+  holdNow += 20;
+  holdGesture.update(true, holdNow);
+  holdNow += 20;
+  assert(holdGesture.update(true, holdNow) == FlovaFactoryResetGesture::HoldStarted);
+  holdNow += 3000;
+  assert(holdGesture.update(true, holdNow) == FlovaFactoryResetGesture::Confirmed);
 
   FlovaFactoryResetGesture wrapGesture;
   wrapGesture.configure();
@@ -166,6 +182,36 @@ int main() {
   assert(restoredRelay.hasValue() && restoredRelay.value());
   assert(restoredRelay.snapshot().quality == flova::Quality::Good);
 
+  AsyncBindingLink delayedRestoreLink;
+  delayedRestoreLink.online = false;
+  delayedRestoreLink.autoReady = false;
+  TestClock delayedRestoreClock;
+  TestLogger delayedRestoreLogger;
+  flova::Device delayedRestoreDevice(delayedRestoreLink, persistentStorage,
+                                     delayedRestoreClock,
+                                     delayedRestoreLogger);
+  flova::Datastream<bool> delayedRelay =
+      delayedRestoreDevice.datastream<bool>("relay");
+  delayedRelay.onWrite(writeRelay)
+      .persist(flova::PersistencePolicy::Persistent);
+  flova::config::Unit delayedUnit;
+  delayedUnit.kind = flova::config::UnitKind::Datastream;
+  delayedUnit.data.datastream.id = 1;
+  delayedUnit.data.datastream.valueType = 0;
+  strcpy(delayedUnit.data.datastream.key, "relay");
+  assert(delayedRestoreDevice.applyConfigurationUnit(delayedUnit));
+  assert(delayedRestoreDevice.begin());
+  const int writesBeforeDelayedRestore = writes;
+  delayedRestoreDevice.run();
+  assert(writes == writesBeforeDelayedRestore + 1);
+  assert(delayedRelay.hasValue() && delayedRelay.value());
+  assert(!delayedRestoreDevice.ready());
+  delayedRestoreLink.ready = true;
+  delayedRestoreLink.online = true;
+  delayedRestoreDevice.run();
+  assert(writes == writesBeforeDelayedRestore + 1);
+  assert(delayedRestoreDevice.ready());
+
   TestLink failedRestoreLink;
   failedRestoreLink.online = false;
   TestClock failedRestoreClock;
@@ -210,6 +256,19 @@ int main() {
   assert(temperature.report(31.5f).accepted() && link.sends == 0);
   assert(device.begin());
   assert(relay.bound() && counter.bound());
+
+  device.setFactoryResetHandler(requestFactoryReset, nullptr);
+  flova::Message resetCommand;
+  resetCommand.kind = flova::MessageKind::WriteRequest;
+  resetCommand.datastreamId = FLOVA_FACTORY_RESET_DATASTREAM_ID;
+  resetCommand.value = flova::Value::from(true);
+  flova::Value::copy(resetCommand.commandId, "factory-reset-1");
+  link.inject(resetCommand);
+  assert(factoryResets == 1 && device.commandResultPending("factory-reset-1"));
+  device.run();
+  assert(link.lastResult.kind == flova::MessageKind::Acknowledgement);
+  link.acknowledge(link.lastResult.messageId);
+  assert(!device.commandResultPending("factory-reset-1"));
 
   assert(temperature.hasValue() && temperature.value() == 31.5f);
   assert(counter.write(INT64_MAX).accepted() && counter.value() == INT64_MAX && voidWrites == 1);

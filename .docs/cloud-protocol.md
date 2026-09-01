@@ -97,6 +97,11 @@ Best-effort telemetry can be shed; durable
 messages retain their ID across retry/reconnect and receive an application ACK
 only after the required Engine persistence. Commands run only in the device
 loop and report an applied value or rejection without duplicate state reports.
+Engine also acknowledges accepted heartbeats with the existing ingestion ACK.
+After observing that capability once, firmware treats a missing heartbeat ACK
+as a stale application connection and reconnects without waiting for TCP to
+notice a half-open path. Older Engine deployments remain compatible because
+the watchdog is armed only after the first heartbeat ACK.
 
 Certificate-chain and hostname validation are mandatory: no plaintext,
 `setInsecure()`, fingerprint-only validation, or downgrade. Official ESP8266

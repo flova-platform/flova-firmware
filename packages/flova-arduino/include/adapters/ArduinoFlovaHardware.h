@@ -4,6 +4,7 @@
 
 #include <FlovaDevice.h>
 #include <FlovaHardware.h>
+#include <FlovaFactoryResetGesture.h>
 
 class ArduinoFlovaHardware final : public flova::Hardware {
  public:
@@ -23,14 +24,27 @@ class ArduinoFlovaHardware final : public flova::Hardware {
   }
 
   void attach(flova::Device& device) override { device_ = &device; }
+  void setFactoryResetHandler(void (*handler)(void*), void* context) override {
+    factoryResetHandler_ = handler;
+    factoryResetContext_ = context;
+  }
 
   bool validate(const flova::config::Unit& unit) override {
     configurationError_[0] = 0;
     if (unit.kind == flova::config::UnitKind::System) {
-      if (!unit.data.system.hasStatusLedPin ||
-          validOutputPin(unit.data.system.statusLedPin))
-        return true;
-      return reject("hardware_pin_invalid");
+      if (unit.data.system.hasStatusLedPin &&
+          !validOutputPin(unit.data.system.statusLedPin))
+        return reject("hardware_pin_invalid");
+      if (unit.data.system.hasFactoryResetPin &&
+          (!validInputPin(unit.data.system.factoryResetPin) ||
+           (unit.data.system.hasFactoryResetTapCount &&
+            (unit.data.system.factoryResetTapCount < 1 || unit.data.system.factoryResetTapCount > 8)) ||
+           (unit.data.system.hasFactoryResetHoldMs &&
+            (unit.data.system.factoryResetHoldMs < 3000 || unit.data.system.factoryResetHoldMs > 30000)) ||
+           (unit.data.system.hasFactoryResetDebounceMs &&
+            (unit.data.system.factoryResetDebounceMs < 20 || unit.data.system.factoryResetDebounceMs > 500))))
+        return reject("factory_reset_configuration_invalid");
+      return true;
     }
     if (unit.kind != flova::config::UnitKind::Datastream ||
         !unit.data.datastream.hasMapping)
@@ -80,14 +94,29 @@ class ArduinoFlovaHardware final : public flova::Hardware {
   bool apply(const flova::config::Unit& unit) override {
     if (!validate(unit)) return false;
     if (unit.kind == flova::config::UnitKind::System) {
-      if (!unit.data.system.hasStatusLedPin) return true;
-      if (!validOutputPin(unit.data.system.statusLedPin))
-        return reject("hardware_pin_invalid");
-      statusLedPin_ = unit.data.system.statusLedPin;
-      statusLedActiveLow_ = unit.data.system.hasStatusLedActiveLow &&
-                            unit.data.system.statusLedActiveLow;
-      pinMode(statusLedPin_, OUTPUT);
-      updateStatusLed();
+      if (unit.data.system.hasStatusLedPin) {
+        statusLedPin_ = unit.data.system.statusLedPin;
+        statusLedActiveLow_ = unit.data.system.hasStatusLedActiveLow &&
+                              unit.data.system.statusLedActiveLow;
+        pinMode(statusLedPin_, OUTPUT);
+        updateStatusLed();
+      }
+      if (unit.data.system.hasFactoryResetPin) {
+        factoryResetPin_ = unit.data.system.factoryResetPin;
+        factoryResetActiveLow_ = !unit.data.system.hasFactoryResetActiveLow ||
+                                 unit.data.system.factoryResetActiveLow;
+        pinMode(factoryResetPin_, factoryResetActiveLow_ ? INPUT_PULLUP : INPUT);
+        factoryResetGesture_.configure(
+            unit.data.system.hasFactoryResetHoldMs ? unit.data.system.factoryResetHoldMs : 10000,
+            unit.data.system.hasFactoryResetProfile && unit.data.system.factoryResetProfile == 0
+                ? FlovaFactoryResetGesture::Hold
+                : FlovaFactoryResetGesture::TapThenHold,
+            unit.data.system.hasFactoryResetTapCount ? unit.data.system.factoryResetTapCount : 3,
+            unit.data.system.hasFactoryResetWindowMs ? unit.data.system.factoryResetWindowMs : 60000,
+            unit.data.system.hasFactoryResetDebounceMs ? unit.data.system.factoryResetDebounceMs : 50,
+            !unit.data.system.hasFactoryResetReleaseConfirm ||
+                unit.data.system.factoryResetReleaseConfirm);
+      }
       return true;
     }
     if (unit.kind != flova::config::UnitKind::Datastream ||
@@ -172,6 +201,7 @@ class ArduinoFlovaHardware final : public flova::Hardware {
     mappingCount_ = 0;
     statusLedPin_ = 255;
     statusLedActiveLow_ = false;
+    factoryResetPin_ = 255;
     configurationError_[0] = 0;
   }
 
@@ -180,6 +210,16 @@ class ArduinoFlovaHardware final : public flova::Hardware {
   void run() override {
     if (!device_) return;
     const uint32_t now = millis();
+    if (factoryResetPin_ != 255) {
+      const bool high = digitalRead(factoryResetPin_) == HIGH;
+      const bool pressed = factoryResetActiveLow_ ? !high : high;
+      if (factoryResetGesture_.update(pressed, now) ==
+              FlovaFactoryResetGesture::Confirmed &&
+          factoryResetHandler_) {
+        factoryResetHandler_(factoryResetContext_);
+        return;
+      }
+    }
     for (size_t i = 0; i < mappingCount_; ++i) {
       Mapping& mapping = mappings_[i];
       if (mapping.kind == flova::config::MappingKind::DigitalInput) {
@@ -372,6 +412,11 @@ class ArduinoFlovaHardware final : public flova::Hardware {
   uint8_t statusLedPin_ = 255;
   bool statusLedActiveLow_ = false;
   bool connected_ = false;
+  uint8_t factoryResetPin_ = 255;
+  bool factoryResetActiveLow_ = true;
+  FlovaFactoryResetGesture factoryResetGesture_;
+  void (*factoryResetHandler_)(void*) = nullptr;
+  void* factoryResetContext_ = nullptr;
   char configurationError_[48] = {};
   PinValidator inputValidator_;
   PinValidator outputValidator_;

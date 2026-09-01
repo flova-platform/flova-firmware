@@ -174,7 +174,15 @@ system-record = {
   ? system-heartbeat-ms: 1 => uint32,
   ? system-status-led-pin: 2 => uint8,
   ? system-status-led-active-low: 3 => bool,
-  ? system-batch-flush-ms: 4 => uint32
+  ? system-batch-flush-ms: 4 => uint32,
+  ? system-factory-reset-pin: 5 => uint8,
+  ? system-factory-reset-active-low: 6 => bool,
+  ? system-factory-reset-profile: 7 => 0..1,
+  ? system-factory-reset-tap-count: 8 => 1..8,
+  ? system-factory-reset-hold-ms: 9 => uint32,
+  ? system-factory-reset-window-ms: 10 => uint32,
+  ? system-factory-reset-debounce-ms: 11 => uint32,
+  ? system-factory-reset-release-confirm: 12 => bool
 }
 
 schedule-record = {

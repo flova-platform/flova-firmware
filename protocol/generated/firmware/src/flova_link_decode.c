@@ -60,6 +60,14 @@ static bool decode_repeated_system_record_system_heartbeat_ms(zcbor_state_t *sta
 static bool decode_repeated_system_record_system_status_led_pin(zcbor_state_t *state, struct system_record_system_status_led_pin *result);
 static bool decode_repeated_system_record_system_status_led_active_low(zcbor_state_t *state, struct system_record_system_status_led_active_low *result);
 static bool decode_repeated_system_record_system_batch_flush_ms(zcbor_state_t *state, struct system_record_system_batch_flush_ms *result);
+static bool decode_repeated_system_record_system_factory_reset_pin(zcbor_state_t *state, struct system_record_system_factory_reset_pin *result);
+static bool decode_repeated_system_record_system_factory_reset_active_low(zcbor_state_t *state, struct system_record_system_factory_reset_active_low *result);
+static bool decode_repeated_system_record_system_factory_reset_profile(zcbor_state_t *state, struct system_record_system_factory_reset_profile *result);
+static bool decode_repeated_system_record_system_factory_reset_tap_count(zcbor_state_t *state, struct system_record_system_factory_reset_tap_count *result);
+static bool decode_repeated_system_record_system_factory_reset_hold_ms(zcbor_state_t *state, struct system_record_system_factory_reset_hold_ms *result);
+static bool decode_repeated_system_record_system_factory_reset_window_ms(zcbor_state_t *state, struct system_record_system_factory_reset_window_ms *result);
+static bool decode_repeated_system_record_system_factory_reset_debounce_ms(zcbor_state_t *state, struct system_record_system_factory_reset_debounce_ms *result);
+static bool decode_repeated_system_record_system_factory_reset_release_confirm(zcbor_state_t *state, struct system_record_system_factory_reset_release_confirm *result);
 static bool decode_system_record(zcbor_state_t *state, struct system_record *result);
 static bool decode_repeated_schedule_occurrence_record_occurrence_values_uint64_m(zcbor_state_t *state, uint64_t *result);
 static bool decode_schedule_occurrence_record(zcbor_state_t *state, struct schedule_occurrence_record *result);
@@ -706,6 +714,109 @@ static bool decode_repeated_system_record_system_batch_flush_ms(
 	return res;
 }
 
+static bool decode_repeated_system_record_system_factory_reset_pin(
+		zcbor_state_t *state, struct system_record_system_factory_reset_pin *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (5))))
+	&& (zcbor_uint64_decode(state, (&(*result).system_record_system_factory_reset_pin)))
+	&& ((((((*result).system_record_system_factory_reset_pin <= UINT8_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_system_record_system_factory_reset_active_low(
+		zcbor_state_t *state, struct system_record_system_factory_reset_active_low *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (6))))
+	&& (zcbor_bool_decode(state, (&(*result).system_record_system_factory_reset_active_low)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_system_record_system_factory_reset_profile(
+		zcbor_state_t *state, struct system_record_system_factory_reset_profile *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (7))))
+	&& (zcbor_uint64_decode(state, (&(*result).system_record_system_factory_reset_profile)))
+	&& ((((*result).system_record_system_factory_reset_profile <= 1)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_system_record_system_factory_reset_tap_count(
+		zcbor_state_t *state, struct system_record_system_factory_reset_tap_count *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (8))))
+	&& (zcbor_uint64_decode(state, (&(*result).system_record_system_factory_reset_tap_count)))
+	&& ((((*result).system_record_system_factory_reset_tap_count >= 1)
+	&& ((*result).system_record_system_factory_reset_tap_count <= 8)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_system_record_system_factory_reset_hold_ms(
+		zcbor_state_t *state, struct system_record_system_factory_reset_hold_ms *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (9))))
+	&& (zcbor_uint64_decode(state, (&(*result).system_record_system_factory_reset_hold_ms)))
+	&& ((((((*result).system_record_system_factory_reset_hold_ms <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_system_record_system_factory_reset_window_ms(
+		zcbor_state_t *state, struct system_record_system_factory_reset_window_ms *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (10))))
+	&& (zcbor_uint64_decode(state, (&(*result).system_record_system_factory_reset_window_ms)))
+	&& ((((((*result).system_record_system_factory_reset_window_ms <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_system_record_system_factory_reset_debounce_ms(
+		zcbor_state_t *state, struct system_record_system_factory_reset_debounce_ms *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (11))))
+	&& (zcbor_uint64_decode(state, (&(*result).system_record_system_factory_reset_debounce_ms)))
+	&& ((((((*result).system_record_system_factory_reset_debounce_ms <= UINT32_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_system_record_system_factory_reset_release_confirm(
+		zcbor_state_t *state, struct system_record_system_factory_reset_release_confirm *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (12))))
+	&& (zcbor_bool_decode(state, (&(*result).system_record_system_factory_reset_release_confirm)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_system_record(
 		zcbor_state_t *state, struct system_record *result)
 {
@@ -716,7 +827,15 @@ static bool decode_system_record(
 	&& zcbor_present_decode(&((*result).system_record_system_heartbeat_ms_present), (zcbor_decoder_t *)decode_repeated_system_record_system_heartbeat_ms, state, (&(*result).system_record_system_heartbeat_ms))
 	&& zcbor_present_decode(&((*result).system_record_system_status_led_pin_present), (zcbor_decoder_t *)decode_repeated_system_record_system_status_led_pin, state, (&(*result).system_record_system_status_led_pin))
 	&& zcbor_present_decode(&((*result).system_record_system_status_led_active_low_present), (zcbor_decoder_t *)decode_repeated_system_record_system_status_led_active_low, state, (&(*result).system_record_system_status_led_active_low))
-	&& zcbor_present_decode(&((*result).system_record_system_batch_flush_ms_present), (zcbor_decoder_t *)decode_repeated_system_record_system_batch_flush_ms, state, (&(*result).system_record_system_batch_flush_ms))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_map_end_decode(state))));
+	&& zcbor_present_decode(&((*result).system_record_system_batch_flush_ms_present), (zcbor_decoder_t *)decode_repeated_system_record_system_batch_flush_ms, state, (&(*result).system_record_system_batch_flush_ms))
+	&& zcbor_present_decode(&((*result).system_record_system_factory_reset_pin_present), (zcbor_decoder_t *)decode_repeated_system_record_system_factory_reset_pin, state, (&(*result).system_record_system_factory_reset_pin))
+	&& zcbor_present_decode(&((*result).system_record_system_factory_reset_active_low_present), (zcbor_decoder_t *)decode_repeated_system_record_system_factory_reset_active_low, state, (&(*result).system_record_system_factory_reset_active_low))
+	&& zcbor_present_decode(&((*result).system_record_system_factory_reset_profile_present), (zcbor_decoder_t *)decode_repeated_system_record_system_factory_reset_profile, state, (&(*result).system_record_system_factory_reset_profile))
+	&& zcbor_present_decode(&((*result).system_record_system_factory_reset_tap_count_present), (zcbor_decoder_t *)decode_repeated_system_record_system_factory_reset_tap_count, state, (&(*result).system_record_system_factory_reset_tap_count))
+	&& zcbor_present_decode(&((*result).system_record_system_factory_reset_hold_ms_present), (zcbor_decoder_t *)decode_repeated_system_record_system_factory_reset_hold_ms, state, (&(*result).system_record_system_factory_reset_hold_ms))
+	&& zcbor_present_decode(&((*result).system_record_system_factory_reset_window_ms_present), (zcbor_decoder_t *)decode_repeated_system_record_system_factory_reset_window_ms, state, (&(*result).system_record_system_factory_reset_window_ms))
+	&& zcbor_present_decode(&((*result).system_record_system_factory_reset_debounce_ms_present), (zcbor_decoder_t *)decode_repeated_system_record_system_factory_reset_debounce_ms, state, (&(*result).system_record_system_factory_reset_debounce_ms))
+	&& zcbor_present_decode(&((*result).system_record_system_factory_reset_release_confirm_present), (zcbor_decoder_t *)decode_repeated_system_record_system_factory_reset_release_confirm, state, (&(*result).system_record_system_factory_reset_release_confirm))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_map_end_decode(state))));
 
 	if (false) {
 		/* For testing that the types of the arguments are correct.
@@ -726,6 +845,14 @@ static bool decode_system_record(
 		decode_repeated_system_record_system_status_led_pin(state, (&(*result).system_record_system_status_led_pin));
 		decode_repeated_system_record_system_status_led_active_low(state, (&(*result).system_record_system_status_led_active_low));
 		decode_repeated_system_record_system_batch_flush_ms(state, (&(*result).system_record_system_batch_flush_ms));
+		decode_repeated_system_record_system_factory_reset_pin(state, (&(*result).system_record_system_factory_reset_pin));
+		decode_repeated_system_record_system_factory_reset_active_low(state, (&(*result).system_record_system_factory_reset_active_low));
+		decode_repeated_system_record_system_factory_reset_profile(state, (&(*result).system_record_system_factory_reset_profile));
+		decode_repeated_system_record_system_factory_reset_tap_count(state, (&(*result).system_record_system_factory_reset_tap_count));
+		decode_repeated_system_record_system_factory_reset_hold_ms(state, (&(*result).system_record_system_factory_reset_hold_ms));
+		decode_repeated_system_record_system_factory_reset_window_ms(state, (&(*result).system_record_system_factory_reset_window_ms));
+		decode_repeated_system_record_system_factory_reset_debounce_ms(state, (&(*result).system_record_system_factory_reset_debounce_ms));
+		decode_repeated_system_record_system_factory_reset_release_confirm(state, (&(*result).system_record_system_factory_reset_release_confirm));
 	}
 
 	log_result(state, res, __func__);

@@ -37,6 +37,7 @@ class FlovaEsp32Storage : public flova::Storage {
     return ready_ && flova::makeNvsStorageKey(key, physical, sizeof(physical)) &&
            (!preferences_.isKey(physical) || preferences_.remove(physical));
   }
+  bool clear() override { return ready_ && preferences_.clear(); }
   flova::StorageCapabilities capabilities() const override {
     flova::StorageCapabilities value;
     value.usableBytes = 16384;
@@ -78,6 +79,10 @@ class FlovaEsp32StoredNetwork final : public FlovaNetworkRuntime {
   bool stop() override {
     if (WiFi.getMode() & WIFI_MODE_STA) WiFi.disconnect(false, false);
     return true;
+  }
+  bool clearCredentials() override {
+    WiFi.disconnect(true, true);
+    return storage_.remove("wifi");
   }
 
   bool connected() const override { return WiFi.status() == WL_CONNECTED; }

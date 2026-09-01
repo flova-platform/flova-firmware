@@ -432,6 +432,38 @@ struct system_record_system_batch_flush_ms {
 	uint64_t system_record_system_batch_flush_ms;
 };
 
+struct system_record_system_factory_reset_pin {
+	uint64_t system_record_system_factory_reset_pin;
+};
+
+struct system_record_system_factory_reset_active_low {
+	bool system_record_system_factory_reset_active_low;
+};
+
+struct system_record_system_factory_reset_profile {
+	uint64_t system_record_system_factory_reset_profile;
+};
+
+struct system_record_system_factory_reset_tap_count {
+	uint64_t system_record_system_factory_reset_tap_count;
+};
+
+struct system_record_system_factory_reset_hold_ms {
+	uint64_t system_record_system_factory_reset_hold_ms;
+};
+
+struct system_record_system_factory_reset_window_ms {
+	uint64_t system_record_system_factory_reset_window_ms;
+};
+
+struct system_record_system_factory_reset_debounce_ms {
+	uint64_t system_record_system_factory_reset_debounce_ms;
+};
+
+struct system_record_system_factory_reset_release_confirm {
+	bool system_record_system_factory_reset_release_confirm;
+};
+
 struct system_record {
 	struct system_record_system_heartbeat_ms system_record_system_heartbeat_ms;
 	bool system_record_system_heartbeat_ms_present;
@@ -441,6 +473,22 @@ struct system_record {
 	bool system_record_system_status_led_active_low_present;
 	struct system_record_system_batch_flush_ms system_record_system_batch_flush_ms;
 	bool system_record_system_batch_flush_ms_present;
+	struct system_record_system_factory_reset_pin system_record_system_factory_reset_pin;
+	bool system_record_system_factory_reset_pin_present;
+	struct system_record_system_factory_reset_active_low system_record_system_factory_reset_active_low;
+	bool system_record_system_factory_reset_active_low_present;
+	struct system_record_system_factory_reset_profile system_record_system_factory_reset_profile;
+	bool system_record_system_factory_reset_profile_present;
+	struct system_record_system_factory_reset_tap_count system_record_system_factory_reset_tap_count;
+	bool system_record_system_factory_reset_tap_count_present;
+	struct system_record_system_factory_reset_hold_ms system_record_system_factory_reset_hold_ms;
+	bool system_record_system_factory_reset_hold_ms_present;
+	struct system_record_system_factory_reset_window_ms system_record_system_factory_reset_window_ms;
+	bool system_record_system_factory_reset_window_ms_present;
+	struct system_record_system_factory_reset_debounce_ms system_record_system_factory_reset_debounce_ms;
+	bool system_record_system_factory_reset_debounce_ms_present;
+	struct system_record_system_factory_reset_release_confirm system_record_system_factory_reset_release_confirm;
+	bool system_record_system_factory_reset_release_confirm_present;
 };
 
 struct schedule_occurrence_record {

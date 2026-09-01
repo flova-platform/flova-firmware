@@ -36,9 +36,11 @@ void setup() {
   digitalWrite(relayContext.pin, HIGH);  // LED_BUILTIN is active-low.
 
   // Register the actuator handler before starting the runtime.
-  relay.onWrite(writeRelay, &relayContext);
+  relay.onWrite(writeRelay, &relayContext)
+      .persist(flova::PersistencePolicy::Persistent);
 
-  // Link authentication continues cooperatively from the normal loop.
+  // Persistent hardware restores before Link authentication, which continues
+  // cooperatively from the normal loop.
   if (!client.begin()) Serial.println("[flova] client startup failed");
 }
 

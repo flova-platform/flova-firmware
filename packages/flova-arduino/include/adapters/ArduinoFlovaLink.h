@@ -59,7 +59,14 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   bool publishHeartbeat(const FlovaLinkHeartbeat& heartbeat) override {
-    return transport_.publishHeartbeat(heartbeat);
+    if (!transport_.publishHeartbeat(heartbeat)) return false;
+    // Keep the oldest unanswered heartbeat so a later publish cannot extend
+    // the stale-connection deadline indefinitely.
+    if (!pendingHeartbeatId_) {
+      pendingHeartbeatId_ = heartbeat.messageId;
+      pendingHeartbeatAt_ = millis();
+    }
+    return true;
   }
 
   bool publishScheduleStatus(const FlovaLinkScheduleStatus& status) override {
@@ -147,16 +154,17 @@ class ArduinoFlovaLink : public FlovaClientLink {
     return resourceUnavailable_ || transport_.resourceRecoveryRequired();
   }
 
-  void disconnect() { transport_.disconnect(); }
+  void disconnect() {
+    transport_.disconnect();
+    pendingHeartbeatId_ = 0;
+    pendingHeartbeatAt_ = 0;
+  }
 
   bool begin() override {
     if (!ensureTransport()) return false;
-    // Socket/TLS setup starts here; WebSocket authentication and binding
-    // continue cooperatively from poll(). Application work remains in run().
-    const bool connectedNow = transport_.connect(deviceIdText_, secretText_);
-    nextReconnectAt_ = millis() + (connectedNow ? 5000UL : 1000UL);
-    // A temporary Wi-Fi/TLS failure must not make application setup
-    // irreversible. run() retries through the same bounded transport path.
+    // Local runtime starts before networking. poll() opens the connection only
+    // after FlovaClient confirms that Wi-Fi and the TLS clock are ready.
+    nextReconnectAt_ = 0;
     return true;
   }
 
@@ -206,12 +214,29 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   void poll() override {
+    if (!connectionAllowed_) {
+      disconnect();
+      bound_ = false;
+      return;
+    }
     transport_.loop();
-    if (!transport_.connected() && static_cast<int32_t>(millis() - nextReconnectAt_) >= 0) {
+    if (heartbeatAckSupported_ && pendingHeartbeatId_ &&
+        millis() - pendingHeartbeatAt_ >= kHeartbeatAckTimeoutMs) {
+      Serial.println("[flova] Link heartbeat acknowledgement timed out");
+      disconnect();
+      bound_ = false;
+      nextReconnectAt_ = millis();
+    }
+    if (!transport_.connected() && !transport_.connectionInProgress() &&
+        static_cast<int32_t>(millis() - nextReconnectAt_) >= 0) {
       bound_ = false;
       transport_.connect(deviceIdText_, secretText_);
       nextReconnectAt_ = millis() + 5000UL;
     }
+  }
+
+  void setConnectionAllowed(bool allowed) override {
+    connectionAllowed_ = allowed;
   }
 
   void setReceiver(flova::MessageReceiver receiver, void* context) override {
@@ -369,6 +394,15 @@ class ArduinoFlovaLink : public FlovaClientLink {
       bound_ = true;
       return;
     }
+    if (inbound.type == FlovaLinkMessageType::Acknowledgement &&
+        pendingHeartbeatId_ &&
+        inbound.body.acknowledgement.acknowledgedMessageId ==
+            pendingHeartbeatId_) {
+      pendingHeartbeatId_ = 0;
+      pendingHeartbeatAt_ = 0;
+      heartbeatAckSupported_ = true;
+      return;
+    }
     if (!receiver_) return;
     flova::Message message;
     if (inbound.type == FlovaLinkMessageType::Acknowledgement) {
@@ -415,9 +449,14 @@ class ArduinoFlovaLink : public FlovaClientLink {
   bool configurationPending_ = false;
   bool otaPending_ = false;
   bool resourceUnavailable_ = false;
+  bool connectionAllowed_ = false;
   uint32_t nextReconnectAt_ = 0;
   uint32_t configurationGeneration_ = 0;
   uint32_t messageNonce_;
+  static const uint32_t kHeartbeatAckTimeoutMs = 15000UL;
+  uint64_t pendingHeartbeatId_ = 0;
+  uint32_t pendingHeartbeatAt_ = 0;
+  bool heartbeatAckSupported_ = false;
   FlovaOtaStrategy otaStrategy_ = FlovaOtaStrategy::None;
   bool otaRollbackCapable_ = false;
   bool otaProfileSet_ = false;

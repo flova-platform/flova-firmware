@@ -63,6 +63,9 @@ class FlovaClientLink : public flova::Link {
   virtual uint32_t configurationGeneration() const = 0;
   virtual void setHardwareCapabilities(
       const flova::HardwareCapabilities& capabilities) = 0;
+  // Normal runtime may start before network and TLS prerequisites are ready.
+  // Board links must not attempt a connection while this gate is closed.
+  virtual void setConnectionAllowed(bool) {}
   virtual bool resourceRecoveryRequired() const { return false; }
   virtual void disconnect() = 0;
 };

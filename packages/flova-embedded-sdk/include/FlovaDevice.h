@@ -161,6 +161,8 @@ class Storage {
   virtual bool read(const char* key, void* output, size_t size) = 0;
   virtual bool write(const char* key, const void* value, size_t size) = 0;
   virtual bool remove(const char* key) = 0;
+  // Removes only records owned by the Flova runtime.
+  virtual bool clear() { return false; }
   virtual StorageCapabilities capabilities() const { return StorageCapabilities(); }
 };
 
@@ -199,8 +201,10 @@ template <typename T> class Datastream;
 class Device {
  public:
   typedef WriteResult (*ValueWriteHandler)(void* context, const Value& value);
+  typedef WriteResult (*FactoryResetHandler)(void* context,
+                                             const char* commandId);
   Device(Link& link, Storage& storage, Clock& clock, Logger& logger)
-      : link_(link), storage_(storage), clock_(clock), logger_(logger), count_(0), recentCursor_(0), historyHead_(0), historyCount_(0), lastTimeRequest_(0), timeRequestStarted_(0), timeSequence_(0), nextMessageId_(static_cast<uint64_t>(link.messageNonce()) << 32), retryNotBefore_(0), historyLastSentAt_(0), started_(false), bindingPending_(false), bindingFailed_(false), resourcePlanConfigured_(false), restoreAttempted_(false) {
+      : link_(link), storage_(storage), clock_(clock), logger_(logger), count_(0), recentCursor_(0), historyHead_(0), historyCount_(0), lastTimeRequest_(0), timeRequestStarted_(0), timeSequence_(0), nextMessageId_(static_cast<uint64_t>(link.messageNonce()) << 32), retryNotBefore_(0), historyLastSentAt_(0), factoryResetHandler_(nullptr), factoryResetContext_(nullptr), started_(false), bindingPending_(false), bindingFailed_(false), resourcePlanConfigured_(false) {
     for (size_t i = 0; i < 4; ++i) recentCommands_[i][0] = 0;
     pendingTimeId_[0] = 0;
   }
@@ -222,11 +226,12 @@ class Device {
     } else if (count_) {
       bindingPending_ = true;
     }
-    if (!bindingPending_) {
-      restore();
-      restoreHistory();
-      restoreResults();
-    }
+    // Stored configuration may already have supplied stable runtime IDs.
+    // Restore those values before cloud binding so local hardware can recover
+    // after a power cycle while the network is unavailable.
+    restore();
+    restoreHistory();
+    restoreResults();
     if (!link_.begin()) return false;
     started_ = true;
     return true;
@@ -237,23 +242,22 @@ class Device {
   void run() {
     link_.poll();
     if (bindingPending_) {
-      if (!link_.bindingReady()) return;
-      DatastreamId ids[kMaxDatastreams] = {};
-      if (!link_.readDatastreamBinding(ids, count_) || !applyBinding(ids)) {
-        bindingFailed_ = true;
+      if (link_.bindingReady()) {
+        DatastreamId ids[kMaxDatastreams] = {};
+        if (!link_.readDatastreamBinding(ids, count_) || !applyBinding(ids)) {
+          bindingFailed_ = true;
+          bindingPending_ = false;
+          return;
+        }
         bindingPending_ = false;
-        return;
+        // Direct portable integrations may not have IDs until binding.
+        restore();
+        restoreHistory();
+        restoreResults();
       }
-      bindingPending_ = false;
-      restore();
-      restoreHistory();
-      restoreResults();
     }
-    if (!restoreAttempted_) {
-      applyRestoredHardware();
-      restoreAttempted_ = true;
-    }
-    if (!started_ || bindingFailed_ || !link_.connected()) return;
+    applyRestoredHardware();
+    if (!started_ || bindingPending_ || bindingFailed_ || !link_.connected()) return;
     flushResults();
     if (retryNotBefore_ && clock_.milliseconds() < retryNotBefore_) return;
     syncTime();
@@ -265,6 +269,20 @@ class Device {
   size_t datastreamCount() const { return count_; }
   bool ready() const { return started_ && !bindingPending_ && !bindingFailed_ && link_.connected(); }
   uint64_t originateMessageId() { return ++nextMessageId_; }
+
+  void setFactoryResetHandler(FactoryResetHandler handler, void* context) {
+    factoryResetHandler_ = handler;
+    factoryResetContext_ = context;
+  }
+
+  bool commandResultPending(const char* commandId) const {
+    if (!commandId || !commandId[0]) return false;
+    for (size_t i = 0; i < FLOVA_COMMAND_DEDUP_CAPACITY; ++i)
+      if (pendingResults_[i].active &&
+          strcmp(pendingResults_[i].message.commandId, commandId) == 0)
+        return true;
+    return false;
+  }
 
   void resourcePlan(const ResourceBudget* budgets, size_t count) {
     resources_.configure(storage_.capabilities().usableBytes, budgets, count);
@@ -525,6 +543,23 @@ class Device {
       return;
     }
     if (message.kind != MessageKind::WriteRequest) return;
+    if (message.datastreamId == FLOVA_FACTORY_RESET_DATASTREAM_ID) {
+      if (message.expiresAtUtcMs &&
+          (!clock_.utcValid() || clock_.utcMilliseconds() >= message.expiresAtUtcMs))
+        return acknowledge(message, WriteResult::reject(clock_.utcValid() ? "command_expired" : "utc_time_required"), nullptr);
+      if (seen(message.commandId)) {
+        diagnostics_.duplicateCommands++;
+        return acknowledge(message, WriteResult::noChange(), nullptr);
+      }
+      const WriteResult result =
+          message.value.type == ValueType::Boolean && message.value.scalar.boolean &&
+                  factoryResetHandler_
+              ? factoryResetHandler_(factoryResetContext_, message.commandId)
+              : WriteResult::reject("factory_reset_invalid");
+      remember(message.commandId);
+      acknowledge(message, result, nullptr);
+      return;
+    }
     State* current = 0;
     for (size_t i = 0; i < count_; ++i) if (states_[i].runtime.id == message.datastreamId) { current = &states_[i]; break; }
     if (!current) return acknowledge(message, WriteResult::reject("unknown_datastream"), 0);
@@ -862,7 +897,8 @@ class Device {
   PendingResult pendingResults_[FLOVA_COMMAND_DEDUP_CAPACITY];
   HistoryRecord history_[FLOVA_HISTORY_CAPACITY]; size_t historyHead_, historyCount_; ResourceManager resources_;
   uint64_t lastTimeRequest_, timeRequestStarted_; uint32_t timeSequence_; uint64_t nextMessageId_; uint64_t retryNotBefore_; uint64_t historyLastSentAt_; char pendingTimeId_[kMaxText]; Diagnostics diagnostics_;
-  bool started_, bindingPending_, bindingFailed_, resourcePlanConfigured_, restoreAttempted_;
+  FactoryResetHandler factoryResetHandler_; void* factoryResetContext_;
+  bool started_, bindingPending_, bindingFailed_, resourcePlanConfigured_;
 };
 
 template <typename T> struct Codec;

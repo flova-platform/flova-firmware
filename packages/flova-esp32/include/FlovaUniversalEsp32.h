@@ -8,8 +8,9 @@
 
 class FlovaUniversalEsp32 final {
  public:
-  FlovaUniversalEsp32()
-      : linkPlatform_(), link_(linkPlatform_, entropy_), provisioning_(storage_),
+  explicit FlovaUniversalEsp32(const char* setupPassword = nullptr)
+      : linkPlatform_(), link_(linkPlatform_, entropy_),
+        provisioning_(storage_, setupPassword),
         network_(storage_), identity_("universal_esp32"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {
@@ -28,9 +29,11 @@ class FlovaUniversalEsp32 final {
   bool provisioning() const { return client_.provisioning(); }
   FlovaLifecycle lifecycle() const { return client_.lifecycle(); }
   bool connected() const { return client_.connected(); }
+  bool runtimeReady() const { return client_.runtimeReady(); }
   bool ready() const { return client_.ready(); }
   const char* lastError() const { return client_.lastError(); }
   flova::Device& device() { return client_.device(); }
+  bool factoryReset() { return client_.factoryReset(); }
 
   template <typename T>
   flova::Datastream<T> datastream(const char* key) {

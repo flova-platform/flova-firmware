@@ -4,8 +4,11 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
+#include <atomic>
 #include <sdkconfig.h>
 #include <esp_ota_ops.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <mbedtls/sha256.h>
 
 #include <FlovaArduinoPlatform.h>
@@ -21,25 +24,82 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
  public:
   Client& linkClient() override { return client_; }
 
-  bool openLink(const char* host, uint16_t port) override {
-    if (!host || !host[0]) return false;
-    client_.setCACert(FLOVA_TLS_ROOT_CERTS);
-    client_.setTimeout(FLOVA_HTTPS_TIMEOUT_MS / 1000UL);
-    if (!client_.connect(host, port)) return false;
-    client_.setNoDelay(true);
+  bool startLink(const char* host, uint16_t port) override {
+    const LinkOpenStatus status = linkOpenStatus_.load();
+    if (!host || !host[0] || strlen(host) >= sizeof(linkHost_) || !port ||
+        status == LinkOpenStatus::Opening ||
+        status == LinkOpenStatus::Connected)
+      return false;
+    memcpy(linkHost_, host, strlen(host) + 1);
+    linkPort_ = port;
+    linkCancel_.store(false);
+    linkReady_ = false;
+    linkOpenStatus_.store(LinkOpenStatus::Opening);
+    if (!linkTask_) {
+      if (xTaskCreatePinnedToCore(runLinkTask, "flova-link",
+                                  kLinkTaskStackBytes, this, 1, &linkTask_,
+                                  0) != pdPASS) {
+        resourceUnavailable_ = true;
+        linkOpenStatus_.store(LinkOpenStatus::Failed);
+        return false;
+      }
+    }
+    resourceUnavailable_ = false;
+    xTaskNotifyGive(linkTask_);
     return true;
   }
 
-  void closeLink() override { client_.stop(); }
+  FlovaLinkOpenStatus pollLink() override {
+    const LinkOpenStatus status = linkOpenStatus_.load();
+    if (status == LinkOpenStatus::Connected) {
+      if (!client_.connected()) {
+        linkOpenStatus_.store(LinkOpenStatus::Failed);
+        return FlovaLinkOpenStatus::Failed;
+      }
+      if (!linkReady_) {
+        client_.setNoDelay(true);
+        linkReady_ = true;
+      }
+      return FlovaLinkOpenStatus::Connected;
+    }
+    if (status == LinkOpenStatus::Failed)
+      return FlovaLinkOpenStatus::Failed;
+    return FlovaLinkOpenStatus::InProgress;
+  }
+
+  void closeLink() override {
+    linkCancel_.store(true);
+    linkReady_ = false;
+    const LinkOpenStatus status = linkOpenStatus_.load();
+    if (status != LinkOpenStatus::Opening) client_.stop();
+    if (status == LinkOpenStatus::Connected)
+      linkOpenStatus_.store(LinkOpenStatus::Failed);
+    clearWrite();
+  }
+
+  bool resourceRecoveryRequired() const override {
+    return resourceUnavailable_;
+  }
+
+  bool linkWriteBusy() const override { return writeOffset_ < writeLength_; }
 
   bool submitLinkWrite(const uint8_t* data, size_t length) override {
-    if (!data || !length || !client_.connected()) return false;
-    size_t written = 0;
-    while (written < length) {
-      const size_t count = client_.write(data + written, length - written);
-      if (!count) return false;
-      written += count;
-    }
+    if (linkWriteBusy() || !data || !length || !client_.connected())
+      return false;
+    writeData_ = data;
+    writeLength_ = length;
+    writeOffset_ = 0;
+    return true;
+  }
+
+  bool serviceLinkWrite() override {
+    if (!linkWriteBusy()) return true;
+    const size_t remaining = writeLength_ - writeOffset_;
+    const size_t chunk = remaining < 64 ? remaining : 64;
+    const size_t written = client_.write(writeData_ + writeOffset_, chunk);
+    if (!written) return false;
+    writeOffset_ += written;
+    if (!linkWriteBusy()) clearWrite();
     return true;
   }
 
@@ -166,6 +226,33 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
   }
 
  private:
+  enum class LinkOpenStatus : uint8_t { Idle, Opening, Connected, Failed };
+  static const uint32_t kLinkTaskStackBytes = 8192;
+
+  static void runLinkTask(void* context) {
+    FlovaEsp32Platform* self = static_cast<FlovaEsp32Platform*>(context);
+    for (;;) {
+      ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+      self->client_.stop();
+      self->client_.setCACert(FLOVA_TLS_ROOT_CERTS);
+      self->client_.setTimeout(FLOVA_HTTPS_TIMEOUT_MS / 1000UL);
+      const bool connected =
+          self->client_.connect(self->linkHost_, self->linkPort_);
+      if (connected && self->linkCancel_.load())
+        self->client_.stop();
+      self->linkOpenStatus_.store(
+          connected && !self->linkCancel_.load()
+              ? LinkOpenStatus::Connected
+              : LinkOpenStatus::Failed);
+    }
+  }
+
+  void clearWrite() {
+    writeData_ = nullptr;
+    writeLength_ = 0;
+    writeOffset_ = 0;
+  }
+
   void abortUpdate() { Update.abort(); }
 
   static bool hashMatches(const uint8_t* bytes, size_t length,
@@ -180,5 +267,15 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
   }
 
   WiFiClientSecure client_;
+  TaskHandle_t linkTask_ = nullptr;
+  std::atomic<LinkOpenStatus> linkOpenStatus_{LinkOpenStatus::Idle};
+  std::atomic<bool> linkCancel_{false};
+  bool resourceUnavailable_ = false;
+  bool linkReady_ = false;
+  char linkHost_[128] = {};
+  uint16_t linkPort_ = 0;
+  const uint8_t* writeData_ = nullptr;
+  size_t writeLength_ = 0;
+  size_t writeOffset_ = 0;
   uint8_t transferBuffer_[512] = {};
 };

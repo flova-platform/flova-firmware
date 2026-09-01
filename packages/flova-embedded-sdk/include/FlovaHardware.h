@@ -24,6 +24,7 @@ class Hardware {
  public:
   virtual ~Hardware() {}
   virtual void attach(Device& device) = 0;
+  virtual void setFactoryResetHandler(void (*)(void*), void*) {}
   virtual HardwareCapabilities capabilities() const {
     return HardwareCapabilities();
   }

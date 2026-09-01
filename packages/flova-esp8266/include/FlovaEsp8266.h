@@ -69,6 +69,7 @@ class FlovaEsp8266 final {
   bool provisioning() const { return client_.provisioning(); }
   FlovaLifecycle lifecycle() const { return client_.lifecycle(); }
   bool connected() const { return client_.connected(); }
+  bool runtimeReady() const { return client_.runtimeReady(); }
   bool ready() const { return client_.ready(); }
   const char* lastError() const { return client_.lastError(); }
   const flova::Diagnostics& diagnostics() const { return client_.diagnostics(); }
@@ -84,6 +85,7 @@ class FlovaEsp8266 final {
   }
   bool restartRequired() const { return client_.restartRequired(); }
   FlovaRestartReason restartReason() const { return client_.restartReason(); }
+  bool factoryReset() { return client_.factoryReset(); }
 
   template <typename T>
   flova::Datastream<T> datastream(const char* key) {

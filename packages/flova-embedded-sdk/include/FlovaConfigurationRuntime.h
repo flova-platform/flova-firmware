@@ -73,7 +73,22 @@ struct System {
   bool statusLedActiveLow;
   bool hasBatchFlushMs;
   uint32_t batchFlushMs;
-
+  bool hasFactoryResetPin;
+  uint8_t factoryResetPin;
+  bool hasFactoryResetActiveLow;
+  bool factoryResetActiveLow;
+  bool hasFactoryResetProfile;
+  uint8_t factoryResetProfile;
+  bool hasFactoryResetTapCount;
+  uint8_t factoryResetTapCount;
+  bool hasFactoryResetHoldMs;
+  uint32_t factoryResetHoldMs;
+  bool hasFactoryResetWindowMs;
+  uint32_t factoryResetWindowMs;
+  bool hasFactoryResetDebounceMs;
+  uint32_t factoryResetDebounceMs;
+  bool hasFactoryResetReleaseConfirm;
+  bool factoryResetReleaseConfirm;
 };
 
 struct ScheduleAction {

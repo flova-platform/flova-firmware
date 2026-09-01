@@ -72,6 +72,17 @@ traffic. Configuration and inbound runtime values with the wrong type are
 rejected before application or hardware handlers run. Application variables
 and pins need no datastream unless they should be visible to Flova.
 
+Power-cycle restoration is explicit. Add
+`.persist(flova::PersistencePolicy::Persistent)` to actuator state that should
+survive reboot. After stored configuration supplies its stable runtime ID, the
+SDK restores and applies that value before waiting for cloud binding. Persistence
+is not the default because restoring an actuator can be unsafe and every change
+also consumes flash endurance.
+
+`begin()` establishes local storage/configuration startup; it does not promise
+cloud connectivity. Use `runtimeReady()` for local-runtime readiness and
+`ready()` only when code specifically needs authenticated, bound Device Link.
+
 Advanced portable integrations may set local mode, offline retention, history,
 and persistence policies on `flova::Datastream<T>`. Normal ESP applications
 should use the configuration installed by Engine and only call `write()`,

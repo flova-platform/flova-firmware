@@ -106,6 +106,10 @@ class ArduinoDeviceLink final {
            (bootstrap_ || (authenticated_ && !bindingPending_));
   }
 
+  bool connectionInProgress() const {
+    return connecting_ || (active_ && (!authenticated_ || bindingPending_));
+  }
+
   bool connect(const char* deviceId, const char* secret) {
     if (!parseUuid(deviceId, deviceId_) || !decodeSecret(secret, secret_) || !parseUrl()) return false;
     disconnect();
@@ -300,10 +304,42 @@ class ArduinoDeviceLink final {
     callbackContext_ = context;
   }
   void loop() {
-    if (!active_) return;
+    if (!active_ && !connecting_) return;
     if (!platform_.serviceLinkWrite()) {
       connectionAttemptFailed_ = true;
       disconnect();
+      return;
+    }
+    if (connecting_) {
+      if (transportOpening_) {
+        const FlovaLinkOpenStatus status = platform_.pollLink();
+        if (status == FlovaLinkOpenStatus::InProgress) return;
+        if (status == FlovaLinkOpenStatus::Failed ||
+            !startWebSocketHandshake()) {
+          connectionAttemptFailed_ = true;
+          disconnect();
+          return;
+        }
+        transportOpening_ = false;
+      }
+      if (platform_.linkWriteBusy()) return;
+      const FlovaWs::HandshakeProgress progress = websocket_.pollHandshake();
+      if (progress == FlovaWs::HandshakeProgress::InProgress) return;
+      if (progress == FlovaWs::HandshakeProgress::Failed) {
+        Serial.printf("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
+                      static_cast<unsigned>(websocket_.error()),
+                      FlovaWs::handshakeFailureName(websocket_.handshakeFailure()),
+                      static_cast<unsigned>(websocket_.handshakeStatus()));
+        connectionAttemptFailed_ = true;
+        disconnect();
+        return;
+      }
+      connecting_ = false;
+      active_ = true;
+      if (bootstrap_ ? !sendBootstrapAuthentication() : !sendAuthentication()) {
+        connectionAttemptFailed_ = true;
+        disconnect();
+      }
       return;
     }
     for (uint8_t i = 0; i < kPendingFrameSlots && active_; ++i) {
@@ -367,9 +403,11 @@ class ArduinoDeviceLink final {
   void disconnect(bool notifyPeer = true) {
     if (disconnecting_) return;
     disconnecting_ = true;
-    const bool hadConnection = active_ || authenticated_ || bootstrap_ ||
+    const bool hadConnection = active_ || connecting_ || authenticated_ || bootstrap_ ||
                                pendingFrameCount_ != 0 || websocket_.connected();
     active_ = false;
+    connecting_ = false;
+    transportOpening_ = false;
     authenticated_ = false;
     bindingPending_ = false;
     bootstrap_ = false;
@@ -388,26 +426,25 @@ class ArduinoDeviceLink final {
   typedef int (*Encoder)(uint8_t*, size_t, const void*, size_t*);
 
   bool openConnection(bool bootstrap) {
-    if (!platform_.openLink(host_, port_)) {
+    if (!platform_.startLink(host_, port_)) {
       resourceUnavailable_ = platform_.resourceRecoveryRequired();
       connectionAttemptFailed_ = true;
       return false;
     }
-    if (!websocket_.handshake(host_, port_, path_)) {
-      Serial.printf("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
-                    static_cast<unsigned>(websocket_.error()),
-                    FlovaWs::handshakeFailureName(websocket_.handshakeFailure()),
-                    static_cast<unsigned>(websocket_.handshakeStatus()));
-      platform_.closeLink();
-      connectionAttemptFailed_ = true;
-      return false;
-    }
-    active_ = true;
+    connecting_ = true;
+    transportOpening_ = true;
     bootstrap_ = bootstrap;
     authenticated_ = false;
-    if (bootstrap_ ? !sendBootstrapAuthentication() : !sendAuthentication()) {
-      connectionAttemptFailed_ = true;
-      disconnect();
+    return true;
+  }
+
+  bool startWebSocketHandshake() {
+    size_t requestLength = 0;
+    if (!websocket_.startHandshake(host_, port_, path_, tx_, sizeof(tx_),
+                                   requestLength) ||
+        !platform_.submitLinkWrite(tx_, requestLength) ||
+        !platform_.serviceLinkWrite()) {
+      platform_.closeLink();
       return false;
     }
     return true;
@@ -905,6 +942,22 @@ class ArduinoDeviceLink final {
         out.data.system.statusLedActiveLow = source.system_record_system_status_led_active_low.system_record_system_status_led_active_low;
         out.data.system.hasBatchFlushMs = source.system_record_system_batch_flush_ms_present;
         out.data.system.batchFlushMs = static_cast<uint32_t>(source.system_record_system_batch_flush_ms.system_record_system_batch_flush_ms);
+        out.data.system.hasFactoryResetPin = source.system_record_system_factory_reset_pin_present;
+        out.data.system.factoryResetPin = static_cast<uint8_t>(source.system_record_system_factory_reset_pin.system_record_system_factory_reset_pin);
+        out.data.system.hasFactoryResetActiveLow = source.system_record_system_factory_reset_active_low_present;
+        out.data.system.factoryResetActiveLow = source.system_record_system_factory_reset_active_low.system_record_system_factory_reset_active_low;
+        out.data.system.hasFactoryResetProfile = source.system_record_system_factory_reset_profile_present;
+        out.data.system.factoryResetProfile = static_cast<uint8_t>(source.system_record_system_factory_reset_profile.system_record_system_factory_reset_profile);
+        out.data.system.hasFactoryResetTapCount = source.system_record_system_factory_reset_tap_count_present;
+        out.data.system.factoryResetTapCount = static_cast<uint8_t>(source.system_record_system_factory_reset_tap_count.system_record_system_factory_reset_tap_count);
+        out.data.system.hasFactoryResetHoldMs = source.system_record_system_factory_reset_hold_ms_present;
+        out.data.system.factoryResetHoldMs = static_cast<uint32_t>(source.system_record_system_factory_reset_hold_ms.system_record_system_factory_reset_hold_ms);
+        out.data.system.hasFactoryResetWindowMs = source.system_record_system_factory_reset_window_ms_present;
+        out.data.system.factoryResetWindowMs = static_cast<uint32_t>(source.system_record_system_factory_reset_window_ms.system_record_system_factory_reset_window_ms);
+        out.data.system.hasFactoryResetDebounceMs = source.system_record_system_factory_reset_debounce_ms_present;
+        out.data.system.factoryResetDebounceMs = static_cast<uint32_t>(source.system_record_system_factory_reset_debounce_ms.system_record_system_factory_reset_debounce_ms);
+        out.data.system.hasFactoryResetReleaseConfirm = source.system_record_system_factory_reset_release_confirm_present;
+        out.data.system.factoryResetReleaseConfirm = source.system_record_system_factory_reset_release_confirm.system_record_system_factory_reset_release_confirm;
         return true;
       }
       case config_record_body_r::config_record_body_schedule_record_m_c: {
@@ -1148,6 +1201,8 @@ class ArduinoDeviceLink final {
   char path_[kUrlBytes] = {};
   uint16_t port_ = 443;
   bool active_ = false;
+  bool connecting_ = false;
+  bool transportOpening_ = false;
   bool authenticated_ = false;
   bool bootstrap_ = false;
   FlovaArduinoPlatform& platform_;

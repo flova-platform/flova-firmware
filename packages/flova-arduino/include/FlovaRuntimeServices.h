@@ -10,6 +10,9 @@ class FlovaNetworkRuntime {
   virtual ~FlovaNetworkRuntime() {}
   virtual bool begin() { return true; }
   virtual bool stop() { return true; }
+  // Universal runtimes override this; observed/custom networking stays owned
+  // by the application and is intentionally untouched.
+  virtual bool clearCredentials() { return true; }
   virtual void loop() {}
   virtual bool connected() const { return true; }
 };

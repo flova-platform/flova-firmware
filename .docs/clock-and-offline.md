@@ -11,6 +11,11 @@ Offline policies:
 - `Drop`: update local cache without retaining a network publication.
 - `Reject`: reject operations whose delivery requirement cannot be met offline.
 
+These delivery policies do not gate local startup. On a configured device,
+explicitly persistent state and offline schedules restore before network or UTC
+is available. UTC-dependent schedule occurrences remain ineligible until the
+clock is valid, but the device runtime and developer-owned loop continue.
+
 History is disabled until Engine supplies a byte budget. The portable core uses
 `ResourceManager` to protect feature reservations and allows elastic borrowing
 only when it cannot consume another feature's guarantee. Retention can bound

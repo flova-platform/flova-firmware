@@ -162,6 +162,13 @@ class FlovaEsp8266Storage : public flova::Storage {
     clearError();
     return true;
   }
+  bool clear() override {
+    if (!mounted_) return false;
+    Dir directory = LittleFS.openDir("/flova");
+    bool ok = true;
+    while (directory.next()) ok = LittleFS.remove(directory.fileName()) && ok;
+    return ok;
+  }
 
   // Safe for diagnostics: this is an internal operation stage, never a path,
   // credential, token, or payload.
@@ -286,6 +293,10 @@ class FlovaEsp8266StoredNetwork final : public FlovaNetworkRuntime {
   }
 
   bool connected() const override { return WiFi.status() == WL_CONNECTED; }
+  bool clearCredentials() override {
+    WiFi.disconnect(true);
+    return storage_.remove("wifi");
+  }
 
  private:
   FlovaEsp8266Storage& storage_;

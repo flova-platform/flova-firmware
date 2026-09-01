@@ -41,9 +41,11 @@ void setup() {
 
   // onWrite() handles remote writes. Local logic can use relay.write(value),
   // while sensors or externally changed hardware should use relay.report(value).
-  relay.onWrite(writeRelay, &relayContext);
+  relay.onWrite(writeRelay, &relayContext)
+      .persist(flova::PersistencePolicy::Persistent);
 
-  // begin() restores Flova-private state or waits for provisioning. It does
+  // begin() restores Flova-private state and starts local runtime immediately.
+  // Cloud connection and binding continue later from run(). It does
   // not start a SoftAP, replace a server, change Wi-Fi mode, or reboot.
   if (!client.begin()) Serial.println("[flova] client startup failed");
 }

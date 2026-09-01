@@ -17,6 +17,17 @@ defined only by version-controlled CDDL. Generated zcbor structures isolate
 wire details, so SDK users keep their strongly typed read/write, state, command
 result, configuration, and OTA APIs without handling CBOR.
 
+## Factory reset ownership
+
+`FlovaClient::factoryReset()` is the single reset boundary. It clears only
+Flova-owned runtime and provisioning storage, clears Wi-Fi credentials only for
+universal compositions that own networking, drives outputs fail-safe, and then
+requests a restart. The reserved Link command waits for its result ACK or a
+bounded grace period before crossing that boundary. Universal firmware feeds
+the template-provided reset pin, profile, timing, polarity, and release
+confirmation into `FlovaFactoryResetGesture`; custom firmware can call the
+public helper from any application-defined physical rule.
+
 ## Local-first lifecycle
 
 ```text
@@ -40,6 +51,22 @@ composition and universal firmware have the same ordering. Physical storage
 adapters reject access before successful startup and expose bounded record and
 capacity limits; application-owned filesystems and servers remain otherwise
 untouched.
+
+For a configured device, stored configuration and explicitly persistent
+datastream values are restored before cloud connectivity. Accepted restored
+outputs are applied through their normal hardware handlers, and local writes,
+hardware polling, and offline schedules continue while Wi-Fi, TLS, WebSocket,
+authentication, or binding is unavailable. Later binding reconciles the same
+stable numeric IDs and publishes `KeepLatest` state without replaying the
+hardware transition. `runtimeReady()` reports this local boundary; `ready()`
+continues to mean that Device Link and binding are ready.
+
+Normal Device Link connection work is cooperative. ESP32 performs blocking
+DNS/TCP/TLS library calls in one fixed-stack network task with no application
+callbacks; ESP8266 advances asynchronous DNS, lwIP TCP, BearSSL, WebSocket
+upgrade, and bounded writes from explicit poll states. Neither path waits for
+external network progress inside the developer-owned `run()` call. Setup
+provisioning and explicitly approved OTA remain separate resource-owning modes.
 
 ## Portable core and protocol boundary
 

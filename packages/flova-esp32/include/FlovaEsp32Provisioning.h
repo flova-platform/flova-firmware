@@ -4,17 +4,21 @@
 #include <WiFi.h>
 #include <FlovaConfiguration.h>
 #include <FlovaProvisioningAdapter.h>
+#include <FlovaSoftApPortal.h>
 #include <FlovaWifiProvisioning.h>
 #include <FlovaEsp32Services.h>
 
 class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
  public:
-  explicit FlovaEsp32Provisioning(FlovaEsp32Storage& storage) : storage_(storage) {}
+  explicit FlovaEsp32Provisioning(FlovaEsp32Storage& storage,
+                                  const char* setupPassword = nullptr)
+      : storage_(storage), setupPassword_(setupPassword) {}
 
   bool begin(FlovaProvisioningHandler handler, void* context) override {
     handler_ = handler;
     context_ = context;
     if (!routesRegistered_) {
+      server_.on("/setup", HTTP_GET, [this]() { handleSetup(); });
       server_.on("/status", HTTP_GET, [this]() { handleStatus(); });
       server_.on("/provision", HTTP_POST, [this]() { handleProvision(); });
       routesRegistered_ = true;
@@ -34,7 +38,11 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
     char ssid[32] = {};
     snprintf(ssid, sizeof(ssid), "Flova-Setup-%08lx",
              static_cast<unsigned long>(ESP.getEfuseMac()));
-    if (!WiFi.softAP(ssid)) return false;
+    if (setupPassword_) {
+      const size_t length = strlen(setupPassword_);
+      if (length < 8 || length > 63) return false;
+    }
+    if (!WiFi.softAP(ssid, setupPassword_)) return false;
     server_.begin();
     provisioning_ = true;
     return true;
@@ -48,6 +56,12 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
   }
 
  private:
+  void handleSetup() {
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.sendHeader("X-Frame-Options", "DENY");
+    server_.send_P(200, "text/html; charset=utf-8", flova::kSoftApSetupPage);
+  }
+
   void handleStatus() {
     char error[flova::kProvisioningErrorBytes] = {};
     char* body = reinterpret_cast<char*>(&input_);
@@ -56,8 +70,8 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
         storage_.read("prov_error", error, sizeof(error)) && error[0];
     snprintf(body, bodyCapacity,
              hasError
-                 ? "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true,\"last_error_code\":\"%s\"}"
-                 : "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"can_retry\":true}",
+                 ? "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"browser_handoff\":\"fragment-v1\",\"can_retry\":true,\"last_error_code\":\"%s\"}"
+                 : "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"browser_handoff\":\"fragment-v1\",\"can_retry\":true}",
              error);
     server_.send(200, "application/json", body);
   }
@@ -86,6 +100,7 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
   }
 
   FlovaEsp32Storage& storage_;
+  const char* setupPassword_;
   WebServer server_{80};
   FlovaProvisioningHandler handler_ = nullptr;
   void* context_ = nullptr;

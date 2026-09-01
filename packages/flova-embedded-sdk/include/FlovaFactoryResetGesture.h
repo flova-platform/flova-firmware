@@ -4,6 +4,7 @@
 
 class FlovaFactoryResetGesture {
  public:
+  enum Profile : uint8_t { Hold = 0, TapThenHold = 1 };
   enum Event : uint8_t {
     None,
     Armed,
@@ -15,8 +16,15 @@ class FlovaFactoryResetGesture {
     ConfirmationExpired
   };
 
-  void configure(uint32_t holdMs = 10000) {
+  void configure(uint32_t holdMs = 10000, Profile profile = TapThenHold,
+                 uint8_t tapCount = 3, uint32_t windowMs = 60000,
+                 uint32_t debounceMs = 50, bool releaseConfirm = true) {
     holdMs_ = holdMs;
+    profile_ = profile;
+    tapCount_ = tapCount;
+    windowMs_ = windowMs;
+    debounceMs_ = debounceMs;
+    releaseConfirm_ = releaseConfirm;
     state_ = AwaitRelease;
     taps_ = 0;
     windowStartedMs_ = stateStartedMs_ = rawChangedMs_ = releasedSinceMs_ = 0;
@@ -26,7 +34,7 @@ class FlovaFactoryResetGesture {
   Event update(bool pressed, uint32_t now) {
     if (state_ == Disabled) return None;
     if (!windowStartedMs_) windowStartedMs_ = now ? now : 1;
-    if (now - windowStartedMs_ >= 60000UL) {
+    if (windowMs_ && now - windowStartedMs_ >= windowMs_) {
       state_ = Disabled;
       return WindowClosed;
     }
@@ -35,7 +43,7 @@ class FlovaFactoryResetGesture {
       rawPressed_ = pressed;
       rawChangedMs_ = now;
     }
-    if (rawPressed_ != stablePressed_ && now - rawChangedMs_ >= 50UL)
+    if (rawPressed_ != stablePressed_ && now - rawChangedMs_ >= debounceMs_)
       stablePressed_ = rawPressed_;
 
     switch (state_) {
@@ -45,7 +53,7 @@ class FlovaFactoryResetGesture {
         } else {
           if (!releasedSinceMs_) releasedSinceMs_ = now ? now : 1;
           if (now - releasedSinceMs_ >= 500UL) {
-            state_ = AwaitTapPress;
+            state_ = profile_ == Hold ? AwaitHold : AwaitTapPress;
             stateStartedMs_ = now;
             taps_ = 0;
             return Armed;
@@ -67,7 +75,7 @@ class FlovaFactoryResetGesture {
             break;
           }
           taps_++;
-          state_ = taps_ == 3 ? AwaitHold : AwaitTapPress;
+          state_ = taps_ == tapCount_ ? AwaitHold : AwaitTapPress;
           stateStartedMs_ = now;
           return TapAccepted;
         }
@@ -85,6 +93,10 @@ class FlovaFactoryResetGesture {
         if (!stablePressed_) {
           restart(now);
         } else if (now - stateStartedMs_ >= holdMs_) {
+          if (!releaseConfirm_) {
+            state_ = Disabled;
+            return Confirmed;
+          }
           state_ = AwaitConfirmRelease;
           stateStartedMs_ = now;
           return ReleaseRequested;
@@ -132,6 +144,11 @@ class FlovaFactoryResetGesture {
   bool rawPressed_ = false;
   bool stablePressed_ = false;
   uint32_t holdMs_ = 10000;
+  Profile profile_ = TapThenHold;
+  uint8_t tapCount_ = 3;
+  uint32_t windowMs_ = 60000;
+  uint32_t debounceMs_ = 50;
+  bool releaseConfirm_ = true;
   uint32_t windowStartedMs_ = 0;
   uint32_t stateStartedMs_ = 0;
   uint32_t rawChangedMs_ = 0;
