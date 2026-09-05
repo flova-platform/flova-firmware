@@ -8,8 +8,9 @@ contracts separate from Arduino and ESP implementation details.
 This repository is currently an MVP/development codebase. Choose one public
 entry point for the way your firmware is built: `FlovaEsp32` or `FlovaEsp8266`
 for an existing Arduino application, `FlovaUniversalEsp32` or
-`FlovaUniversalEsp8266` for full-device firmware, and `flova::Device` for a
-non-Arduino board.
+`FlovaUniversalEsp8266` for full-device SoftAP firmware,
+`FlovaUniversalEsp32Ble` for the separate ESP32 BLE setup image, and
+`flova::Device` for a non-Arduino board.
 
 ## Choose an integration
 
@@ -18,6 +19,7 @@ non-Arduino board.
 | Existing ESP32 Arduino application | Flova ESP32 | `<FlovaEsp32.h>` |
 | Existing ESP8266 Arduino application | Flova ESP8266 | `<FlovaEsp8266.h>` |
 | Full-device ESP32 firmware | Flova ESP32 | `<FlovaUniversalEsp32.h>` |
+| Full-device ESP32 BLE firmware | Flova ESP32 | `<FlovaUniversalEsp32Ble.h>` |
 | Full-device ESP8266 firmware | Flova ESP8266 | `<FlovaUniversalEsp8266.h>` |
 | Custom board, RTOS, PLC, or gateway | Flova Embedded SDK | `<FlovaDevice.h>` |
 
@@ -25,7 +27,7 @@ non-Arduino board.
 and remain normal platform includes. Flova's transport, provisioning, and
 adapter headers are implementation details of the board entry points. Direct
 Arduino service composition is an advanced escape hatch documented in
-`.docs/custom-boards.md` and starts with `<FlovaArduino.h>`.
+the package guides and examples, and starts with `<FlovaArduino.h>`.
 
 ## Quickstart
 
@@ -67,8 +69,8 @@ flova-esp32/8266   board transport/TLS/OTA plus explicit universal compositions
 examples/          selected firmware applications
 ```
 
-The [codebase map](.docs/codebase-map.md) explains package ownership and the
-dependency direction. The root `src/` directory is only a PlatformIO source
+Package ownership and dependency direction are summarized in
+`packages/README.md`. The root `src/` directory is only a PlatformIO source
 anchor; each environment selects its application from `examples/*/src`.
 
 ## Repository layout
@@ -89,8 +91,6 @@ anchor; each environment selects its application from `examples/*/src`.
   [protocol asset guide](protocol/README.md).
 - `scripts`: focused validation, generation, and PlatformIO integration tools;
   see the [script guide](scripts/README.md).
-- `.docs`: maintained architecture, API, protocol, board-porting, and testing
-  documentation.
 
 ## Build the universal firmware
 
@@ -140,8 +140,7 @@ The board supplies:
 
 Provisioning, OTA, boot control, schedules, and hardware mappings are optional
 board services. Transport callbacks must queue bounded work; hardware writes
-run from the device loop. See [Custom boards](.docs/custom-boards.md) and the
-[custom-board example](examples/custom-board-basic/README.md).
+run from the device loop. See the [custom-board example](examples/custom-board-basic/README.md).
 
 For an existing ESP32/ESP8266 Arduino application, use the board API
 example:
@@ -179,9 +178,8 @@ CONFIG_BEGIN → CONFIG_RECORD* → CONFIG_END
 ```
 
 The firmware persists and verifies records in the inactive A/B generation
-before acknowledging them, then promotes the generation atomically. See
-[Device Link](.docs/cloud-protocol.md) and
-[Provisioning](.docs/provisioning.md).
+before acknowledging them, then promotes the generation atomically. See the
+[protocol asset guide](protocol/README.md) and the provisioning example.
 
 ## Validation
 
@@ -192,6 +190,7 @@ cmake -S . -B /tmp/flova-core-build
 cmake --build /tmp/flova-core-build
 ctest --test-dir /tmp/flova-core-build --output-on-failure
 scripts/check_flova_link_contract.sh
+scripts/check_flova_public_surface.sh
 scripts/check_esp8266_stack_usage.py
 pio run -e universal-esp32 -e universal-esp8266
 pio run -e datastream-api-esp32 -e datastream-api-esp8266
@@ -200,6 +199,6 @@ pio test -e test-bootstrap-esp8266 --without-uploading --without-testing
 git diff --check
 ```
 
-See [Testing and release checks](.docs/testing.md) for hardware acceptance.
+See `test/README.md` for the test layout and hardware acceptance boundaries.
 Software builds do not replace physical provisioning, WSS/TLS, reconnect, OTA,
 power-loss recovery, or ESP8266 memory-stability testing.

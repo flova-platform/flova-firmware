@@ -23,7 +23,7 @@ if rg -n 'digitalOutput\(' $custom_facades; then
 fi
 
 if rg -n 'FlovaCore\.h|Flova\.h|Flova Device SDK|flova-device-sdk' \
-    README.md AGENTS.md packages .docs examples test CMakeLists.txt platformio.ini; then
+    README.md AGENTS.md packages examples test CMakeLists.txt platformio.ini; then
   echo "error: removed public names remain in repository guidance or consumers" >&2
   failed=1
 fi

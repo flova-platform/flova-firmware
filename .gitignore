@@ -21,6 +21,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Local Codex and documentation workspaces
+.codex/
+.docs/
+
 # Editors and operating-system metadata
 .vscode/
 .idea/

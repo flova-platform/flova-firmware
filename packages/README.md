@@ -23,5 +23,5 @@ The public protocol package is named `flova-link`; generated zcbor headers
 remain an internal implementation detail of that package.
 
 `FlovaDevice.h` is the portable runtime. New board ports implement the four
-`flova::` service interfaces and compose an explicit board class as documented
-in `.docs/custom-boards.md`.
+`flova::` service interfaces and compose an explicit board class as shown in
+`examples/custom-board-basic`.

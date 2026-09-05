@@ -4,9 +4,8 @@ This repository contains the portable Flova device SDK, Arduino services,
 ESP32/ESP8266 board packages, firmware examples, and the bounded Flova Link
 protocol implementation.
 
-Read [.docs/codebase-map.md](.docs/codebase-map.md) and the relevant document in
-[.docs/README.md](.docs/README.md) before changing an architectural or protocol
-area.
+Read `README.md`, `packages/README.md`, and `protocol/README.md` before changing
+an architectural or protocol area.
 
 ## Repository boundaries
 
