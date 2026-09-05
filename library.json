@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/package/schema/library.json",
+  "name": "FlovaSDK",
+  "version": "0.2.0",
+  "description": "Bounded local-first Flova device SDK for ESP32, ESP8266, and custom targets",
+  "keywords": ["flova", "iot", "esp32", "esp8266", "arduino"],
+  "homepage": "https://github.com/flova-platform/flova-firmware",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flova-platform/flova-firmware.git"
+  },
+  "authors": [
+    {"name": "Flova", "url": "https://github.com/flova-platform/flova-firmware", "maintainer": true}
+  ],
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "headers": ["FlovaSDK.h", "FlovaDevice.h", "FlovaEsp32.h", "FlovaEsp8266.h"],
+  "examples": ["examples/*"]
+}

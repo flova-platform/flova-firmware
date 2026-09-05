@@ -1,0 +1,111 @@
+#pragma once
+
+#include <WebServer.h>
+#include <WiFi.h>
+#include <FlovaConfiguration.h>
+#include <FlovaProvisioningAdapter.h>
+#include <FlovaSoftApPortal.h>
+#include <FlovaWifiProvisioning.h>
+#include <FlovaEsp32Services.h>
+
+class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
+ public:
+  explicit FlovaEsp32Provisioning(FlovaEsp32Storage& storage,
+                                  const char* setupPassword = nullptr)
+      : storage_(storage), setupPassword_(setupPassword) {}
+
+  bool begin(FlovaProvisioningHandler handler, void* context) override {
+    handler_ = handler;
+    context_ = context;
+    if (!routesRegistered_) {
+      server_.on("/setup", HTTP_GET, [this]() { handleSetup(); });
+      server_.on("/status", HTTP_GET, [this]() { handleStatus(); });
+      server_.on("/provision", HTTP_POST, [this]() { handleProvision(); });
+      routesRegistered_ = true;
+    }
+    return true;
+  }
+
+  void loop() override {
+    if (provisioning_) server_.handleClient();
+  }
+
+  bool startProvisioning() override {
+    provisioning_ = false;
+    if (!storage_.remove("wifi")) return false;
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_AP);
+    char ssid[32] = {};
+    snprintf(ssid, sizeof(ssid), "Flova-Setup-%08lx",
+             static_cast<unsigned long>(ESP.getEfuseMac()));
+    if (setupPassword_) {
+      const size_t length = strlen(setupPassword_);
+      if (length < 8 || length > 63) return false;
+    }
+    if (!WiFi.softAP(ssid, setupPassword_)) return false;
+    server_.begin();
+    provisioning_ = true;
+    return true;
+  }
+
+  bool stopProvisioning() override {
+    provisioning_ = false;
+    server_.stop();
+    WiFi.softAPdisconnect(true);
+    return true;
+  }
+
+ private:
+  void handleSetup() {
+    server_.sendHeader("Cache-Control", "no-store");
+    server_.sendHeader("X-Frame-Options", "DENY");
+    server_.send_P(200, "text/html; charset=utf-8", flova::kSoftApSetupPage);
+  }
+
+  void handleStatus() {
+    char error[flova::kProvisioningErrorBytes] = {};
+    char* body = reinterpret_cast<char*>(&input_);
+    const size_t bodyCapacity = sizeof(input_);
+    const bool hasError =
+        storage_.read("prov_error", error, sizeof(error)) && error[0];
+    snprintf(body, bodyCapacity,
+             hasError
+                 ? "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"browser_handoff\":\"fragment-v1\",\"can_retry\":true,\"last_error_code\":\"%s\"}"
+                 : "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"browser_handoff\":\"fragment-v1\",\"can_retry\":true}",
+             error);
+    server_.send(200, "application/json", body);
+  }
+
+  void handleProvision() {
+    const String& body = server_.arg("plain");
+    if (!handler_ || body.length() >= 768 ||
+        !flova::parseWifiProvisioningHandoff(body.c_str(), body.length(), input_,
+                                             &wifi_)) {
+      server_.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
+      return;
+    }
+    if (!storage_.write("wifi", &wifi_, sizeof(wifi_))) {
+      server_.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
+      return;
+    }
+    const FlovaProvisioningResponse result = handler_(context_, input_);
+    if (result == FlovaProvisioningResponse::Accepted) {
+      server_.send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
+    } else if (result == FlovaProvisioningResponse::StorageFailed) {
+      server_.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
+    } else {
+      storage_.remove("wifi");
+      server_.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
+    }
+  }
+
+  FlovaEsp32Storage& storage_;
+  const char* setupPassword_;
+  WebServer server_{80};
+  FlovaProvisioningHandler handler_ = nullptr;
+  void* context_ = nullptr;
+  flova::ProvisioningHandoff input_;
+  flova::WifiRuntimeData wifi_ = {};
+  bool routesRegistered_ = false;
+  bool provisioning_ = false;
+};
