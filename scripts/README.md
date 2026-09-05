@@ -43,10 +43,17 @@ the repository and must not be committed.
 ## ESP8266 framework integration
 
 ESP8266 Link environments run
-`packages/flova-arduino/scripts/patch_esp8266_bearssl_nonblocking.py` before
-compilation. The `flova-arduino` `library.json` manifest runs the same script
-automatically for ESP8266 consumers and it is a no-op for ESP32. The script
-accepts only the pinned Arduino framework version and exact upstream source
-hashes, then adds the cooperative BearSSL write API used by
-`ArduinoDeviceLink`. It is idempotent and fails closed if the installed
-framework changes.
+`packages/flova-esp8266/scripts/patch_esp8266_bearssl_nonblocking.py` before
+compilation. Registry consumers reference the packaged script with
+PlatformIO's project-level `extra_scripts` setting. The script accepts only
+the pinned Arduino framework version and exact upstream source hashes, then
+adds the cooperative BearSSL write API used by `ArduinoDeviceLink`. It is
+idempotent and fails closed if the installed framework changes.
+
+## SDK release
+
+`scripts/export_sdk_release.sh` creates the single self-contained `FlovaSDK`
+package consumed by PlatformIO and Arduino Library Manager. The generated tree
+contains release metadata, examples, public headers, board sources, generated
+Link codecs, and zcbor with its upstream notices. Do not edit that generated
+tree directly.

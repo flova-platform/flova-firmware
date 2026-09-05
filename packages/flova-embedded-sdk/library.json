@@ -1,11 +1,21 @@
 {
+  "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/package/schema/library.json",
   "name": "Flova Embedded SDK",
   "version": "0.2.0",
   "description": "Portable C++11 local-first Flova embedded device runtime",
   "keywords": ["flova", "iot", "datastream", "embedded"],
+  "homepage": "https://github.com/flova-platform/flova-firmware",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flova-platform/flova-firmware.git"
+  },
+  "authors": [
+    {"name": "Flova", "url": "https://github.com/flova-platform/flova-firmware", "maintainer": true}
+  ],
   "license": "MIT",
   "frameworks": "*",
   "platforms": "*",
+  "headers": ["FlovaDevice.h", "FlovaProvisioning.h"],
   "build": { "includeDir": "include" },
   "dependencies": { "flova-link": "^1.0.0" }
 }

@@ -1,3 +1,5 @@
+#if defined(ARDUINO_ARCH_ESP32)
+
 #include <sdkconfig.h>
 
 // Arduino-ESP32's initArduino() has a weak btInUse() hook. If the hook
@@ -24,3 +26,5 @@ extern "C" bool btInUse() { return true; }
 #if defined(CONFIG_APP_ROLLBACK_ENABLE) && CONFIG_APP_ROLLBACK_ENABLE
 extern "C" bool verifyRollbackLater() { return true; }
 #endif
+
+#endif  // ARDUINO_ARCH_ESP32

@@ -3,6 +3,7 @@
 #include <ESP8266WebServer.h>
 #include <user_interface.h>
 
+#include <FlovaEsp8266BuildProfile.h>
 #include <FlovaArduino.h>
 #include <FlovaEsp8266Platform.h>
 #include <FlovaEsp8266Services.h>

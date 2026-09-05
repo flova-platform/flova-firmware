@@ -1,15 +1,22 @@
 {
+  "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/package/schema/library.json",
   "name": "Flova ESP8266",
   "version": "0.2.0",
   "description": "Flova ESP8266 board package with plug-in and universal firmware entry points",
   "keywords": ["flova", "iot", "esp8266", "arduino"],
+  "homepage": "https://github.com/flova-platform/flova-firmware",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flova-platform/flova-firmware.git"
+  },
+  "authors": [
+    {"name": "Flova", "url": "https://github.com/flova-platform/flova-firmware", "maintainer": true}
+  ],
   "license": "MIT",
   "frameworks": ["arduino"],
   "platforms": ["espressif8266"],
-  "build": {
-    "includeDir": "include",
-    "extraScript": "../flova-arduino/scripts/patch_esp8266_bearssl_nonblocking.py"
-  },
+  "headers": ["FlovaEsp8266.h", "FlovaUniversalEsp8266.h"],
+  "build": { "includeDir": "include" },
   "dependencies": {
     "Flova Arduino": "^0.2.0"
   }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <FlovaEsp32BuildProfile.h>
 #include <FlovaArduino.h>
 #include <FlovaEsp32.h>
 #include <FlovaEsp32Provisioning.h>

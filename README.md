@@ -35,24 +35,51 @@ the package guides and examples, and starts with `<FlovaArduino.h>`.
 #include <ESP8266WiFi.h>
 #include <FlovaEsp8266.h>
 
-FlovaEsp8266 flova;
-auto relay = flova.datastream<bool>("relay");
+FlovaEsp8266 flovaDevice;
+auto relay = flovaDevice.datastream<bool>("relay");
 
 void setup() {
   WiFi.begin("your-wifi", "your-password");
   relay.onWrite([](bool enabled) {
     digitalWrite(LED_BUILTIN, enabled ? LOW : HIGH);
   });
-  flova.begin();
+  flovaDevice.begin();
 }
 
-void loop() { flova.run(); }
+void loop() { flovaDevice.run(); }
 ```
+
+## Install with PlatformIO
+
+After the first registry release, add the unified SDK package to a normal
+PlatformIO project:
+
+```ini
+[env:esp32dev]
+platform = espressif32
+board = esp32dev
+framework = arduino
+lib_deps = flova-platform/FlovaSDK@^0.2.0
+```
+
+The same package supports ESP8266 through its documented MMU flag and packaged
+BearSSL preparation script. Release maintainers should follow
+[PUBLISHING.md](PUBLISHING.md) to generate one clean artifact for both
+registries.
+
+## Arduino Library Manager
+
+The `FlovaSDK` Arduino library supports ESP32 applications through
+`<FlovaEsp32.h>`.
+It is generated from this canonical source tree with
+`scripts/export_sdk_release.sh`. ESP8266 uses the same release through
+PlatformIO so its required cooperative BearSSL preparation remains explicit
+and pinned.
 
 `begin()` restores Flova's private identity when present and otherwise enters
 `AwaitingProvisioning`; it never changes Wi-Fi, starts or stops a server,
 touches GPIO, or reboots the board. Deliver a phone or factory handoff with
-`flova.provision(flova::ProvisioningHandoff(linkUrl, token))`, or attach Flova's
+`flovaDevice.provision(flova::ProvisioningHandoff(linkUrl, token))`, or attach Flova's
 two bounded routes to an existing Arduino web server. Universal firmware is a
 separate full-device composition that owns SoftAP, Wi-Fi, GPIO, OTA, and
 automatic restart.

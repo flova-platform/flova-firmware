@@ -62,7 +62,7 @@ if all(marked.values()):
             raise RuntimeError(
                 f"Modified ESP8266 BearSSL patched source for {path.name}: {actual}"
             )
-    script_path = Path(env["PROJECT_DIR"]) / "packages" / "flova-arduino" / "scripts" / "patch_esp8266_bearssl_nonblocking.py"
+    script_path = Path(__file__).resolve()
     connect_patch = script_path.read_text().rsplit(
         "# The normal runtime must also advance TCP and TLS connection setup without",
         1,

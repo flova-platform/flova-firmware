@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <esp_system.h>
 
+#include <FlovaEsp32BuildProfile.h>
 #include <FlovaArduino.h>
 #include <FlovaEsp32Platform.h>
 #include <FlovaEsp32Services.h>
