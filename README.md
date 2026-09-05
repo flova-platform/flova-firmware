@@ -83,8 +83,8 @@ anchor; each environment selects its application from `examples/*/src`.
 - `examples/universal-*`: universal ESP firmware applications.
 - `examples/datastream-api-*`: typed API compile contracts.
 - `examples/custom-board-basic`: normal-C++11 custom-board integration.
-- `examples/custom-arduino-client`: Blynk-like explicit board-class integration
-  for ESP32/ESP8266 Arduino applications.
+- `examples/custom-arduino-client`: explicit board-class integration for
+  ESP32/ESP8266 Arduino applications.
 - `examples/custom-arduino-provisioning`: explicit board-class phone provisioning with
   no hardcoded Wi-Fi credentials.
 - `protocol`: CDDL schema, generated codecs, and conformance vectors; see the
