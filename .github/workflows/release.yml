@@ -29,6 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
+      - name: Install CI tools
+        run: |
+          command -v rg >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y ripgrep
+          }
+
       - name: Install PlatformIO
         run: |
           python3 -m pip install --user --disable-pip-version-check platformio==6.1.19
