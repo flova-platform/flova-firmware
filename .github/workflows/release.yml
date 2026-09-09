@@ -121,16 +121,12 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment:
       name: production
-      url: https://storage.flova.ir/flova-assets/releases/firmware/${{ needs.build.outputs.version }}/
+      url: https://github.com/${{ github.repository }}/releases/tag/firmware-${{ needs.build.outputs.version }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 20
     permissions:
-      contents: read
+      contents: write
     env:
-      VPS_HOST: ${{ secrets.VPS_HOST }}
-      VPS_USER: ${{ secrets.VPS_USER }}
-      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
-      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
       FIRMWARE_VERSION: ${{ needs.build.outputs.version }}
     steps:
       - name: Download firmware artifacts
@@ -139,49 +135,51 @@ jobs:
           name: universal-firmware-${{ needs.build.outputs.version }}
           path: ${{ runner.temp }}/flova-firmware-artifacts
 
-      - name: Prepare SSH
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          install -m 700 -d "$RUNNER_TEMP/flova-ssh"
-          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/flova-ssh/id_ed25519"
-          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$RUNNER_TEMP/flova-ssh/known_hosts"
-          chmod 600 "$RUNNER_TEMP/flova-ssh/id_ed25519" "$RUNNER_TEMP/flova-ssh/known_hosts"
-          test -s "$RUNNER_TEMP/flova-ssh/known_hosts"
+          gh --version
+          artifact_dir="$RUNNER_TEMP/flova-firmware-artifacts"
+          release_tag="firmware-$FIRMWARE_VERSION"
+          notes_file="$RUNNER_TEMP/flova-firmware-release-notes.md"
 
-      - name: Verify VPS uploader
-        run: |
-          ssh_args=(-i "$RUNNER_TEMP/flova-ssh/id_ed25519" -o UserKnownHostsFile="$RUNNER_TEMP/flova-ssh/known_hosts" -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
-          ssh "${ssh_args[@]}" "$VPS_USER@$VPS_HOST" \
-            "test -x /opt/flova/infra/scripts/upload-release-artifact.sh && grep -q 'content_type=' /opt/flova/infra/scripts/upload-release-artifact.sh && grep -q 'releases/firmware' /opt/flova/infra/scripts/configure-object-storage.sh"
+          {
+            echo "Universal Flova firmware $FIRMWARE_VERSION."
+            echo
+            for name in universal-esp32.bin universal-esp8266.bin; do
+              path="$artifact_dir/$name"
+              echo "- $name: $(stat -c '%s' "$path") bytes, SHA-256 $(sha256sum "$path" | cut -d' ' -f1)"
+            done
+          } > "$notes_file"
 
-      - name: Upload firmware to RustFS
-        run: |
-          ssh_args=(-i "$RUNNER_TEMP/flova-ssh/id_ed25519" -o UserKnownHostsFile="$RUNNER_TEMP/flova-ssh/known_hosts" -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
-          remote_dir="/tmp/flova-firmware-${GITHUB_RUN_ID}"
-          ssh "${ssh_args[@]}" "$VPS_USER@$VPS_HOST" "install -d -m 700 '$remote_dir'"
-          cleanup() {
-            ssh "${ssh_args[@]}" "$VPS_USER@$VPS_HOST" "rm -rf -- '$remote_dir'" || true
-          }
-          trap cleanup EXIT
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$release_tag" "$artifact_dir"/*.bin --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            release_flags=()
+            [[ "$FIRMWARE_VERSION" == *-* ]] && release_flags+=(--prerelease)
+            gh release create "$release_tag" \
+              "$artifact_dir/universal-esp32.bin" \
+              "$artifact_dir/universal-esp8266.bin" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Universal firmware $FIRMWARE_VERSION" \
+              --notes-file "$notes_file" \
+              "${release_flags[@]}"
+          fi
 
+          release_url="$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
           for name in universal-esp32.bin universal-esp8266.bin; do
-            local_path="$RUNNER_TEMP/flova-firmware-artifacts/$name"
-            remote_path="$remote_dir/$name"
-            object_key="releases/firmware/$FIRMWARE_VERSION/$name"
-            test -s "$local_path"
-            scp "${ssh_args[@]}" "$local_path" "$VPS_USER@$VPS_HOST:$remote_path"
-            url="$(ssh "${ssh_args[@]}" "$VPS_USER@$VPS_HOST" \
-              "FLOVA_INFRA_ENV_FILE=/opt/flova/infra/.env.production sh /opt/flova/infra/scripts/upload-release-artifact.sh '$remote_path' '$object_key' application/octet-stream")"
+            path="$artifact_dir/$name"
+            url="$release_url/download/$release_tag/$name"
             curl --fail --silent --show-error --location --head --max-time 20 "$url"
             {
               echo "## $name"
               echo
               echo "- Version: $FIRMWARE_VERSION"
-              echo "- SHA-256: \\`$(sha256sum "$local_path" | cut -d' ' -f1)\\`"
-              echo "- Size: $(stat -c '%s' "$local_path") bytes"
+              echo "- SHA-256: \\`$(sha256sum "$path" | cut -d' ' -f1)\\`"
+              echo "- Size: $(stat -c '%s' "$path") bytes"
               echo "- Download: [$name]($url)"
               echo
             } >> "$GITHUB_STEP_SUMMARY"
           done
-
-      - if: always()
-        run: rm -f "$RUNNER_TEMP/flova-ssh/id_ed25519" "$RUNNER_TEMP/flova-ssh/known_hosts"
