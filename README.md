@@ -26,23 +26,16 @@ portable C++11 core for custom hardware.
 
 ### PlatformIO
 
-ESP32:
+For an existing ESP32 PlatformIO project, add:
 
 ```ini
-[env:esp32dev]
-platform = espressif32
-board = esp32dev
-framework = arduino
 lib_deps = flova-platform/FlovaSDK@^0.2.0
 ```
 
-ESP8266 requires the SDK's bounded BearSSL setup:
+For an existing ESP8266 PlatformIO project, add the SDK's bounded BearSSL
+setup:
 
 ```ini
-[env:nodemcuv2]
-platform = espressif8266
-board = nodemcuv2
-framework = arduino
 build_flags = -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
 lib_deps = flova-platform/FlovaSDK@^0.2.0
 extra_scripts = pre:$PROJECT_LIBDEPS_DIR/${PIOENV}/FlovaSDK/scripts/patch_esp8266_bearssl_nonblocking.py
@@ -117,11 +110,9 @@ void setup() {
 void loop() { device.run(); }
 ```
 
-Use an `esp32dev`-compatible 4 MiB board profile. Arduino IDE or PlatformIO
-will upload the complete image.
+Use an ESP32 board. Arduino IDE or PlatformIO will upload the complete image.
 
-For ESP8266, use PlatformIO with the `nodemcuv2` profile and include
-`<FlovaUniversalEsp8266.h>`:
+For ESP8266, use PlatformIO and include `<FlovaUniversalEsp8266.h>`:
 
 ```sh
 pio run -e universal-esp8266 -t upload

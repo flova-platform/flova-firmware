@@ -26,23 +26,16 @@ FlovaSDK کیت توسعه رسمی C++ برای اتصال دستگاه‌ها 
 
 ### PlatformIO
 
-برای ESP32:
+در یک پروژه موجود ESP32 در PlatformIO، این خط را اضافه کنید:
 
 ```ini
-[env:esp32dev]
-platform = espressif32
-board = esp32dev
-framework = arduino
 lib_deps = flova-platform/FlovaSDK@^0.2.0
 ```
 
-برای ESP8266 تنظیم محدودشده BearSSL نیز لازم است:
+در یک پروژه موجود ESP8266 در PlatformIO، تنظیم محدودشده BearSSL را نیز اضافه
+کنید:
 
 ```ini
-[env:nodemcuv2]
-platform = espressif8266
-board = nodemcuv2
-framework = arduino
 build_flags = -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
 lib_deps = flova-platform/FlovaSDK@^0.2.0
 extra_scripts = pre:$PROJECT_LIBDEPS_DIR/${PIOENV}/FlovaSDK/scripts/patch_esp8266_bearssl_nonblocking.py
@@ -117,11 +110,10 @@ void setup() {
 void loop() { device.run(); }
 ```
 
-برای بردهای سازگار با profileِ `esp32dev` و فلش ۴ مگابایتی استفاده کنید.
-Arduino IDE یا PlatformIO تصویر کامل را upload می‌کند.
+از یک برد ESP32 استفاده کنید. Arduino IDE یا PlatformIO تصویر کامل را upload
+می‌کند.
 
-برای ESP8266، از PlatformIO با profileِ `nodemcuv2` و هدر
-`<FlovaUniversalEsp8266.h>` استفاده کنید:
+برای ESP8266، از PlatformIO و هدر `<FlovaUniversalEsp8266.h>` استفاده کنید:
 
 ```sh
 pio run -e universal-esp8266 -t upload

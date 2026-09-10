@@ -9,8 +9,7 @@ IDE users can install it from Library Manager for ESP32.
 
 ## ESP32 universal firmware
 
-In Arduino IDE, select an ESP32 board compatible with the `esp32dev` profile,
-install `FlovaSDK`, and use:
+In Arduino IDE, select an ESP32 board, install `FlovaSDK`, and use:
 
 ```cpp
 #include <Arduino.h>
