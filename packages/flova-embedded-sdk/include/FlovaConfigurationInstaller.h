@@ -319,8 +319,12 @@ class Installer {
     if (phase_ == Phase::Finalized) {
       return with(ack, matches(manifest_, begin) ? Status::Duplicate : Status::TransferActive);
     }
-    if (phase_ == Phase::Committed)
-      return with(ack, matches(manifest_, begin) ? Status::AlreadyCommitted : Status::StaleGeneration);
+    if (phase_ == Phase::Committed) {
+      // Durable storage above already established that this is a newer
+      // generation. Release the completed transaction so one Installer can
+      // apply successive runtime configurations without requiring a reboot.
+      reset();
+    }
 
     GenerationManifest pending;
     if (storage_.pendingManifest(pending) && pending.generation > begin.generation)

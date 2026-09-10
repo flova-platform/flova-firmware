@@ -253,6 +253,25 @@ void testCommittedGenerationReplayIsIdempotent() {
   assert(replay.record(changed).status == Status::DuplicateMismatch);
 }
 
+void testCommittedInstallerAcceptsNextGeneration() {
+  TestConfigurationStorage storage;
+  Installer installer(storage, kTestRecords);
+  Begin first = begin(1, 2);
+  assert(installer.begin(first).status == Status::Accepted);
+  appendAll(installer, 1, 2);
+  finish(installer, first);
+
+  Begin second = begin(2, 2);
+  assert(installer.begin(second).status == Status::Accepted);
+  appendAll(installer, 2, 2);
+  finish(installer, second);
+
+  uint32_t active = 0;
+  assert(storage.activeGeneration(active) && active == 2);
+  assert(installer.begin(first).status == Status::StaleGeneration);
+  assert(installer.begin(second).status == Status::AlreadyCommitted);
+}
+
 void testFinalCommitIsRetrySafe() {
   TestConfigurationStorage storage;
   Installer installer(storage, kTestRecords);
@@ -307,6 +326,7 @@ int main() {
   testChecksumMismatchDoesNotPromote();
   testStaleGenerationRejected();
   testCommittedGenerationReplayIsIdempotent();
+  testCommittedInstallerAcceptsNextGeneration();
   testFinalCommitIsRetrySafe();
   testWorkspaceDoesNotDependOnConfigurationCount();
   testDigestIsSha256OfThePersistedRecordStream();
