@@ -37,6 +37,19 @@ taking over networking, servers, GPIO, clock policy, or reboot. The stack guard 
 The public-surface guard prevents removed compatibility names and internal
 adapter headers from leaking into normal examples.
 
+## SDK release validation
+
+Export and compile the self-contained SDK package in a temporary directory:
+
+```sh
+scripts/check_sdk_release.sh /tmp/flova-sdk-check
+```
+
+The check builds both exported PlatformIO examples against the local package.
+ESP32 Arduino IDE users install the package from Library Manager; ESP8266 users
+use the exported PlatformIO project because its cooperative BearSSL framework
+preparation requires `extra_scripts`.
+
 Python bytecode, caches, build output, and PlatformIO output are ignored by
 the repository and must not be committed.
 

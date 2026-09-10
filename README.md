@@ -5,10 +5,10 @@
     <a href="README_FA.md">فارسی</a> ·
     <a href="https://docs.flova.ir">Documentation</a> ·
     <a href="examples">Examples</a> ·
-    <a href="https://github.com/flova-platform/flova-firmware/releases">Releases</a>
+    <a href="https://github.com/flova-platform/flova-firmware/tags">SDK versions</a>
   </p>
   <p>
-    <a href="https://github.com/flova-platform/flova-firmware/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/flova-platform/flova-firmware?sort=semver&amp;style=flat-square"></a>
+    <a href="https://github.com/flova-platform/flova-firmware/tags"><img alt="SDK version" src="https://img.shields.io/github/v/tag/flova-platform/flova-firmware?filter=v*&amp;sort=semver&amp;style=flat-square&amp;label=SDK"></a>
     <a href="https://registry.platformio.org/libraries/flova-platform/FlovaSDK"><img alt="PlatformIO Registry" src="https://badges.registry.platformio.org/packages/flova-platform/library/FlovaSDK.svg"></a>
     <a href="https://github.com/arduino/library-registry/pull/9043"><img alt="Arduino Library Manager" src="https://img.shields.io/badge/Arduino%20Library%20Manager-FlovaSDK-00878F?style=flat-square&amp;logo=arduino&amp;logoColor=white"></a>
     <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/flova-platform/flova-firmware?style=flat-square"></a>
@@ -94,12 +94,48 @@ For ESP8266, use `<ESP8266WiFi.h>` and `<FlovaEsp8266.h>`. See the
 [examples](examples) or follow the [documentation](https://docs.flova.ir) for
 provisioning and production setup.
 
+## Universal firmware from the SDK
+
+Build and upload the universal composition from your own project. The selected
+toolchain creates the complete board image, including the bootloader and
+partition table; no prebuilt firmware download is required.
+
+For ESP32, install `FlovaSDK` from Arduino Library Manager or the PlatformIO
+Registry and include `<FlovaUniversalEsp32.h>`:
+
+```cpp
+#include <Arduino.h>
+#include <FlovaUniversalEsp32.h>
+
+FlovaUniversalEsp32 device;
+
+void setup() {
+  Serial.begin(115200);
+  device.begin();
+}
+
+void loop() { device.run(); }
+```
+
+Use an `esp32dev`-compatible 4 MiB board profile. Arduino IDE or PlatformIO
+will upload the complete image.
+
+For ESP8266, use PlatformIO with the `nodemcuv2` profile and include
+`<FlovaUniversalEsp8266.h>`:
+
+```sh
+pio run -e universal-esp8266 -t upload
+```
+
+The ESP8266 project includes the pinned cooperative BearSSL preparation step.
+Arduino IDE is not an official ESP8266 path for this reason.
+
 ## Links
 
 - [Documentation](https://docs.flova.ir)
 - [PlatformIO Registry](https://registry.platformio.org/libraries/flova-platform/FlovaSDK)
 - [Examples](examples)
-- [Releases](https://github.com/flova-platform/flova-firmware/releases)
+- [SDK versions](https://github.com/flova-platform/flova-firmware/tags)
 - [Report an issue](https://github.com/flova-platform/flova-firmware/issues)
 
 ## License

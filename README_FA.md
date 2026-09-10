@@ -5,10 +5,10 @@
     <a href="README.md">English</a> ·
     <a href="https://docs.flova.ir">مستندات</a> ·
     <a href="examples">نمونه‌ها</a> ·
-    <a href="https://github.com/flova-platform/flova-firmware/releases">نسخه‌ها</a>
+    <a href="https://github.com/flova-platform/flova-firmware/tags">نسخه‌های SDK</a>
   </p>
   <p>
-    <a href="https://github.com/flova-platform/flova-firmware/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/flova-platform/flova-firmware?sort=semver&amp;style=flat-square"></a>
+    <a href="https://github.com/flova-platform/flova-firmware/tags"><img alt="نسخه SDK" src="https://img.shields.io/github/v/tag/flova-platform/flova-firmware?filter=v*&amp;sort=semver&amp;style=flat-square&amp;label=SDK"></a>
     <a href="https://registry.platformio.org/libraries/flova-platform/FlovaSDK"><img alt="PlatformIO Registry" src="https://badges.registry.platformio.org/packages/flova-platform/library/FlovaSDK.svg"></a>
     <a href="https://github.com/arduino/library-registry/pull/9043"><img alt="Arduino Library Manager" src="https://img.shields.io/badge/Arduino%20Library%20Manager-FlovaSDK-00878F?style=flat-square&amp;logo=arduino&amp;logoColor=white"></a>
     <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/flova-platform/flova-firmware?style=flat-square"></a>
@@ -94,12 +94,48 @@ void loop() {
 راه‌اندازی و استفاده در محیط عملیاتی، [نمونه‌ها](examples) را ببینید یا
 [مستندات فلووا](https://docs.flova.ir) را دنبال کنید.
 
+## firmware یونیورسال از SDK
+
+firmware یونیورسال را در پروژه خودتان build و upload کنید. ابزار انتخاب‌شده
+تصویر کامل برد، شامل bootloader و جدول پارتیشن، را می‌سازد و نیازی به دریافت
+فایل firmware آماده نیست.
+
+برای ESP32، `FlovaSDK` را از Arduino Library Manager یا رجیستری PlatformIO
+نصب کنید و از `<FlovaUniversalEsp32.h>` استفاده کنید:
+
+```cpp
+#include <Arduino.h>
+#include <FlovaUniversalEsp32.h>
+
+FlovaUniversalEsp32 device;
+
+void setup() {
+  Serial.begin(115200);
+  device.begin();
+}
+
+void loop() { device.run(); }
+```
+
+برای بردهای سازگار با profileِ `esp32dev` و فلش ۴ مگابایتی استفاده کنید.
+Arduino IDE یا PlatformIO تصویر کامل را upload می‌کند.
+
+برای ESP8266، از PlatformIO با profileِ `nodemcuv2` و هدر
+`<FlovaUniversalEsp8266.h>` استفاده کنید:
+
+```sh
+pio run -e universal-esp8266 -t upload
+```
+
+پروژه ESP8266 مرحله آماده‌سازی BearSSL نسخه‌بندی‌شده را دارد؛ به همین دلیل
+Arduino IDE برای ESP8266 مسیر رسمی این SDK نیست.
+
 ## پیوندها
 
 - [مستندات](https://docs.flova.ir)
 - [رجیستری PlatformIO](https://registry.platformio.org/libraries/flova-platform/FlovaSDK)
 - [نمونه‌ها](examples)
-- [نسخه‌های منتشرشده](https://github.com/flova-platform/flova-firmware/releases)
+- [نسخه‌های SDK](https://github.com/flova-platform/flova-firmware/tags)
 - [گزارش مشکل](https://github.com/flova-platform/flova-firmware/issues)
 
 ## مجوز

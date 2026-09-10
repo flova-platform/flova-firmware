@@ -15,6 +15,6 @@
   "license": "MIT",
   "frameworks": "*",
   "platforms": "*",
-  "headers": ["FlovaSDK.h", "FlovaDevice.h", "FlovaEsp32.h", "FlovaEsp8266.h"],
+  "headers": ["FlovaSDK.h", "FlovaDevice.h", "FlovaEsp32.h", "FlovaUniversalEsp32.h", "FlovaEsp8266.h", "FlovaUniversalEsp8266.h"],
   "examples": ["examples/*"]
 }

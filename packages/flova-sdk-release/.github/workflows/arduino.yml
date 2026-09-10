@@ -20,4 +20,7 @@ jobs:
             - name: esp32:esp32
               version: 2.0.17
               source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          sketch-paths: examples/Basic
+          libraries: |
+            - source-path: ./
+          sketch-paths: |
+            - examples/Basic

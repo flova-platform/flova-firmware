@@ -1,15 +1,11 @@
 #include <Arduino.h>
-#include <WiFi.h>
-#include <FlovaEsp32.h>
+#include <FlovaUniversalEsp32.h>
 
-FlovaEsp32 flovaDevice;
-auto relay = flovaDevice.datastream<bool>("relay");
+FlovaUniversalEsp32 device;
 
 void setup() {
-  WiFi.begin("your-wifi", "your-password");
-  pinMode(2, OUTPUT);
-  relay.onWrite([](bool enabled) { digitalWrite(2, enabled ? HIGH : LOW); });
-  flovaDevice.begin();
+  Serial.begin(115200);
+  device.begin();
 }
 
-void loop() { flovaDevice.run(); }
+void loop() { device.run(); }

@@ -1,17 +1,11 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
-#include <FlovaEsp8266.h>
+#include <FlovaUniversalEsp8266.h>
 
-FlovaEsp8266 flovaDevice;
-auto relay = flovaDevice.datastream<bool>("relay");
+FlovaUniversalEsp8266 device;
 
 void setup() {
-  WiFi.begin("your-wifi", "your-password");
-  pinMode(LED_BUILTIN, OUTPUT);
-  relay.onWrite([](bool enabled) {
-    digitalWrite(LED_BUILTIN, enabled ? LOW : HIGH);
-  });
-  flovaDevice.begin();
+  Serial.begin(115200);
+  device.begin();
 }
 
-void loop() { flovaDevice.run(); }
+void loop() { device.run(); }

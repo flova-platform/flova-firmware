@@ -1,27 +1,21 @@
-name: Build and publish universal firmware
+name: Build and publish FlovaSDK
 
 on:
   push:
     branches: [main]
+    tags: ['sdk-v*']
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Firmware version; use auto to derive it from the SDK version and commit
-        required: false
-        default: auto
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: flova-firmware-production
+  group: flova-sdk-release
   cancel-in-progress: false
 
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -29,48 +23,34 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - name: Install CI tools
-        run: |
-          command -v rg >/dev/null || {
-            sudo apt-get update
-            sudo apt-get install --no-install-recommends -y ripgrep
-          }
-
       - name: Install PlatformIO
         run: |
           python3 -m pip install --user --disable-pip-version-check platformio==6.1.19
           echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
           pio --version
 
-      - name: Resolve firmware version
+      - name: Resolve SDK version
         id: version
-        env:
-          REQUESTED_VERSION: ${{ inputs.version || 'auto' }}
         run: |
-          base_version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' packages/flova-sdk-release/library.json | head -n 1)"
-          [[ "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || {
-            echo "Invalid SDK version: $base_version" >&2
+          version="$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)",/\1/p' packages/flova-sdk-release/library.json | head -n 1)"
+          properties_version="$(sed -n 's/^version=//p' packages/flova-sdk-release/library.properties)"
+          [ -n "$version" ] && [ "$version" = "$properties_version" ] || {
+            echo "SDK manifest versions do not match" >&2
             exit 1
           }
 
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$REQUESTED_VERSION" != auto ]]; then
-            version="$REQUESTED_VERSION"
-          else
-            suffix="ci"
-            [[ "$GITHUB_EVENT_NAME" == push ]] && suffix="main"
-            version="${base_version}-${suffix}-${GITHUB_SHA::12}"
+          if [[ "$GITHUB_REF" == refs/tags/sdk-v* ]]; then
+            tag_version="${GITHUB_REF_NAME#sdk-v}"
+            [ "$tag_version" = "$version" ] || {
+              echo "sdk tag $tag_version does not match package version $version" >&2
+              exit 1
+            }
           fi
 
-          [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+-]{0,31}$ ]] || {
-            echo "Invalid firmware version (must be 1-32 safe path characters): $version" >&2
-            exit 1
-          }
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "FIRMWARE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "SDK_VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: Run host and firmware validation
-        env:
-          PLATFORMIO_BUILD_FLAGS: -DFLOVA_FIRMWARE_VERSION=\"${{ steps.version.outputs.version }}\"
+      - name: Run repository validation
         run: |
           cmake -S . -B /tmp/flova-core-build
           cmake --build /tmp/flova-core-build
@@ -84,109 +64,94 @@ jobs:
           scripts/check_esp8266_stack_usage.py
           git diff --check
 
-      - name: Validate universal firmware artifacts
-        env:
-          PLATFORMIO_BUILD_FLAGS: -DFLOVA_FIRMWARE_VERSION=\"${{ steps.version.outputs.version }}\"
+      - name: Validate exported SDK package
         run: |
-          artifact_dir="$RUNNER_TEMP/flova-firmware-artifacts"
-          install -m 700 -d "$artifact_dir"
+          scripts/check_sdk_release.sh "$RUNNER_TEMP/flova-sdk-check"
+          mkdir -p .ci
+          cp -R "$RUNNER_TEMP/flova-sdk-check/FlovaSDK" .ci/FlovaSDK
 
-          declare -A sources=(
-            [universal-esp32.bin]=.pio/build/universal-esp32/firmware.bin
-            [universal-esp8266.bin]=.pio/build/universal-esp8266/firmware.bin
-          )
-          declare -A limits=(
-            [universal-esp32.bin]=1310720
-            [universal-esp8266.bin]=1044464
-          )
+      - name: Compile Arduino ESP32 example
+        uses: arduino/compile-sketches@v1
+        with:
+          fqbn: esp32:esp32:esp32
+          platforms: |
+            - name: esp32:esp32
+              version: 2.0.17
+              source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          libraries: |
+            - source-path: ./.ci/FlovaSDK
+          sketch-paths: |
+            - packages/flova-sdk-release/examples/Basic
 
-          for name in "${!sources[@]}"; do
-            source="${sources[$name]}"
-            destination="$artifact_dir/$name"
-            test -s "$source"
-            cp "$source" "$destination"
-            size="$(stat -c '%s' "$destination")"
-            (( size <= limits[$name] )) || {
-              echo "$name exceeds OTA image limit: $size > ${limits[$name]}" >&2
-              exit 1
-            }
-            grep -a -F -q "${{ steps.version.outputs.version }}" "$destination"
-            sha256sum "$destination"
-            echo "$name: $size bytes"
-          done
-
-      - name: Store firmware artifacts
+      - name: Store SDK package
         uses: actions/upload-artifact@v4
         with:
-          name: universal-firmware-${{ steps.version.outputs.version }}
-          path: ${{ runner.temp }}/flova-firmware-artifacts/*.bin
+          name: flova-sdk-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/flova-sdk-check/FlovaSDK.tar.gz
           if-no-files-found: error
           retention-days: 14
 
   publish:
-    needs: build
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    environment:
-      name: production
-      url: https://github.com/${{ github.repository }}/releases/tag/firmware-${{ needs.build.outputs.version }}
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/sdk-v')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
     env:
-      FIRMWARE_VERSION: ${{ needs.build.outputs.version }}
+      SDK_VERSION: ${{ needs.validate.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      PLATFORMIO_AUTH_TOKEN: ${{ secrets.PLATFORMIO_AUTH_TOKEN }}
     steps:
-      - name: Download firmware artifacts
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+
+      - name: Install PlatformIO
+        run: |
+          python3 -m pip install --user --disable-pip-version-check platformio==6.1.19
+          echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
+          pio --version
+
+      - name: Download SDK package
         uses: actions/download-artifact@v4
         with:
-          name: universal-firmware-${{ needs.build.outputs.version }}
-          path: ${{ runner.temp }}/flova-firmware-artifacts
+          name: flova-sdk-${{ needs.validate.outputs.version }}
+          path: ${{ runner.temp }}/flova-sdk-artifact
 
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Publish PlatformIO package
         run: |
-          gh --version
-          artifact_dir="$RUNNER_TEMP/flova-firmware-artifacts"
-          release_tag="firmware-$FIRMWARE_VERSION"
-          notes_file="$RUNNER_TEMP/flova-firmware-release-notes.md"
+          test -n "$PLATFORMIO_AUTH_TOKEN"
+          pio pkg publish "$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz" \
+            --owner flova-platform --no-interactive
 
-          {
-            echo "Universal Flova firmware $FIRMWARE_VERSION."
-            echo
-            for name in universal-esp32.bin universal-esp8266.bin; do
-              path="$artifact_dir/$name"
-              echo "- $name: $(stat -c '%s' "$path") bytes, SHA-256 $(sha256sum "$path" | cut -d' ' -f1)"
-            done
-          } > "$notes_file"
+      - name: Publish Arduino Library Manager tree
+        run: |
+          repo_url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          generated_tag="v$SDK_VERSION"
+          library_dir="$RUNNER_TEMP/library-release"
+          archive="$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz"
 
-          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$release_tag" "$artifact_dir"/*.bin --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            release_flags=()
-            [[ "$FIRMWARE_VERSION" == *-* ]] && release_flags+=(--prerelease)
-            gh release create "$release_tag" \
-              "$artifact_dir/universal-esp32.bin" \
-              "$artifact_dir/universal-esp8266.bin" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "Universal firmware $FIRMWARE_VERSION" \
-              --notes-file "$notes_file" \
-              "${release_flags[@]}"
+          if git ls-remote --exit-code "$repo_url" "refs/tags/$generated_tag" >/dev/null 2>&1; then
+            echo "published tag already exists: $generated_tag" >&2
+            exit 1
           fi
 
-          release_url="$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
-          for name in universal-esp32.bin universal-esp8266.bin; do
-            path="$artifact_dir/$name"
-            url="$release_url/download/$release_tag/$name"
-            curl --fail --silent --show-error --location --head --max-time 20 "$url"
-            {
-              echo "## $name"
-              echo
-              echo "- Version: $FIRMWARE_VERSION"
-              echo "- SHA-256: \\`$(sha256sum "$path" | cut -d' ' -f1)\\`"
-              echo "- Size: $(stat -c '%s' "$path") bytes"
-              echo "- Download: [$name]($url)"
-              echo
-            } >> "$GITHUB_STEP_SUMMARY"
-          done
+          if git ls-remote --exit-code "$repo_url" refs/heads/library-release >/dev/null 2>&1; then
+            git clone --branch library-release --single-branch "$repo_url" "$library_dir"
+          else
+            git clone --no-checkout "$repo_url" "$library_dir"
+            git -C "$library_dir" checkout --orphan library-release
+          fi
+
+          git -C "$library_dir" rm -rf . || true
+          tar -xzf "$archive" -C "$library_dir"
+          git -C "$library_dir" config user.name "github-actions[bot]"
+          git -C "$library_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$library_dir" add -A
+          git -C "$library_dir" commit -m "release: FlovaSDK $SDK_VERSION"
+          git -C "$library_dir" push origin HEAD:library-release
+          git -C "$library_dir" tag -a "$generated_tag" -m "FlovaSDK $SDK_VERSION"
+          git -C "$library_dir" push origin "$generated_tag"
+
+          test "$(git -C "$library_dir" show "$generated_tag:library.json" | sed -n 's/^[[:space:]]*"version": "\([^"]*\)",/\1/p' | head -n 1)" = "$SDK_VERSION"

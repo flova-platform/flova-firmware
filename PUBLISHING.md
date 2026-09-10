@@ -4,27 +4,29 @@ The public `FlovaSDK` package is generated from this monorepo and published to
 both PlatformIO and Arduino Library Manager. Never edit the generated release
 tree directly.
 
-## Build the release tree
+## Build and validate the release tree
 
-Update both versions in `packages/flova-sdk-release`, regenerate protocol
-artifacts when the CDDL changes, then run:
+Update `library.json`, `library.properties`, and both packaged PlatformIO
+example dependency versions in `packages/flova-sdk-release`, regenerate
+protocol artifacts when the CDDL changes, then run:
 
 ```sh
 scripts/export_sdk_release.sh /tmp/FlovaSDK
-arduino-lint --library-manager submit /tmp/FlovaSDK
 pio pkg pack /tmp/FlovaSDK -o /tmp/FlovaSDK.tar.gz
+scripts/check_sdk_release.sh /tmp/flova-sdk-check
 ```
 
-Compile the Arduino ESP32 example and both PlatformIO examples from this clean
-tree before publishing. Run the complete repository validation matrix as well.
+The check script compiles both PlatformIO examples against the exported package.
+The SDK workflow also compiles the Arduino ESP32 example and runs the complete
+repository validation matrix before publishing.
 
 ## PlatformIO
 
-Confirm the authenticated registry owner before publishing. Package versions
-cannot be reused, even after unpublishing.
+Package versions cannot be reused, even after unpublishing. The automated
+release workflow authenticates with the `PLATFORMIO_AUTH_TOKEN` repository
+secret.
 
 ```sh
-pio account show
 pio pkg publish /tmp/FlovaSDK.tar.gz --owner flova-platform
 ```
 
@@ -39,13 +41,9 @@ Arduino Library Manager requires the release files at repository root. Keep
 `library-release` branch. Version tags must point to commits on that branch:
 
 ```sh
-git -C /tmp/FlovaSDK init -b library-release
-git -C /tmp/FlovaSDK remote add origin https://github.com/flova-platform/flova-firmware.git
-git -C /tmp/FlovaSDK add .
-git -C /tmp/FlovaSDK commit -m "release: FlovaSDK 0.2.0"
-git -C /tmp/FlovaSDK push origin HEAD:library-release
-git -C /tmp/FlovaSDK tag -a v0.2.0 -m "FlovaSDK 0.2.0"
-git -C /tmp/FlovaSDK push origin v0.2.0
+Push `sdk-vX.Y.Z` on `main`. The SDK workflow validates that the tag version
+matches both package manifests, publishes PlatformIO, replaces the generated
+`library-release` contents, and creates the immutable Arduino tag `vX.Y.Z`.
 ```
 
 Submit `https://github.com/flova-platform/flova-firmware` to the Arduino
@@ -54,4 +52,5 @@ ESP8266 remains available through PlatformIO because its bounded cooperative
 transport requires a pinned framework preparation script.
 
 Do not move or replace a published version tag. Release a new version for any
-correction.
+correction. Existing firmware binary releases are historical only; new device
+projects build and upload from the SDK.
