@@ -3,14 +3,70 @@
 
 #include <FlovaProvisioningAdapter.h>
 #include <FlovaRuntimeServices.h>
+#include <FlovaConfigurationActivation.h>
+
+static_assert(sizeof(flova::ConfigurationActivation) <= 8,
+              "configuration activation exceeded its fixed state budget");
 
 namespace {
+
+struct ActivationLink {
+  bool accept = false;
+  bool ready = false;
+  bool failed = false;
+  unsigned reports = 0;
+  unsigned drains = 0;
+  unsigned disconnects = 0;
+  void pollBootstrap() {}
+  bool publishConfigurationReport(const int& report) {
+    assert(report == 2);
+    ++reports;
+    return accept;
+  }
+  void beginMaintenance() { ++drains; }
+  bool maintenanceReady() { return ready; }
+  bool maintenanceFailed() const { return failed; }
+  void disconnect() { ++disconnects; }
+};
+
+void verifyConfigurationActivation() {
+  flova::ConfigurationActivation activation;
+  ActivationLink link;
+  const int generation = 2;
+  assert(!activation.run(link, generation, 0));
+  activation.begin(100);
+  assert(!activation.run(link, generation, 101));
+  assert(link.drains == 0 && link.disconnects == 0);
+  link.accept = true;
+  assert(!activation.run(link, generation, 102));
+  assert(link.drains == 1 && link.reports == 2);
+  assert(!activation.run(link, generation, 103));
+  assert(link.reports == 2);  // Never enqueue the accepted ACK twice.
+  link.ready = true;
+  assert(activation.run(link, generation, 104));
+  assert(!activation.active() && !activation.failed());
+
+  link = ActivationLink();
+  activation.begin(UINT32_MAX - 1000);
+  assert(!activation.run(link, generation, 3998));
+  assert(activation.run(link, generation, 3999));
+  assert(activation.failed() && link.disconnects == 1 && link.drains == 0);
+
+  link = ActivationLink();
+  link.accept = true;
+  link.ready = true;
+  link.failed = true;
+  activation.begin(0);
+  assert(activation.run(link, generation, 1));
+  assert(activation.failed());
+}
 
 class TestProvisioning final : public FlovaProvisioningAdapter {
  public:
   TestProvisioning() : started(false), stopped(false) {}
   bool startProvisioning() override { started = true; return true; }
   bool stopProvisioning() override { stopped = true; return true; }
+  bool stopAfterNetworkConnected() const override { return true; }
   bool started;
   bool stopped;
 };
@@ -47,6 +103,10 @@ class TestIdentity final : public FlovaBoardIdentity {
 }  // namespace
 
 int main() {
+  verifyConfigurationActivation();
+  FlovaProvisioningAdapter passiveProvisioning;
+  assert(!passiveProvisioning.stopAfterNetworkConnected());
+
   TestProvisioning provisioning;
   TestNetwork network;
   TestTlsClock tlsClock;
@@ -54,11 +114,12 @@ int main() {
 
   assert(provisioning.startProvisioning());
   assert(provisioning.started);
+  assert(provisioning.stopAfterNetworkConnected());
   assert(!network.began);
 
-  assert(provisioning.stopProvisioning());
   assert(network.begin());
   tlsClock.loop(network.connected());
+  assert(provisioning.stopProvisioning());
 
   assert(provisioning.stopped);
   assert(network.connected());

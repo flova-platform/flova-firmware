@@ -48,5 +48,5 @@ codec alongside the generated implementation.
 
 The current profile uses complete frames no larger than 512 bytes, with a
 fixed 12-byte frame header and bounded CBOR nesting. ESP8266 Link transport
-uses the verified 2,048-byte receive and 512-byte transmit TLS buffers; OTA
-uses its separate HTTPS profile.
+uses 16,384-byte receive and 512-byte transmit TLS buffers, including OTA.
+Application frames remain bounded to 512 bytes; TLS records may be larger.

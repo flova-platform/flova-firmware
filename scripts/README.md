@@ -39,6 +39,13 @@ adapter headers from leaking into normal examples.
 
 ## SDK release validation
 
+Check that the SDK, firmware, package manifests, dependencies, and exported
+examples all use the same canonical Flova release version:
+
+```sh
+sh scripts/check_flova_version.sh
+```
+
 Export and compile the self-contained SDK package in a temporary directory:
 
 ```sh
@@ -46,22 +53,16 @@ scripts/check_sdk_release.sh /tmp/flova-sdk-check
 ```
 
 The check builds both exported PlatformIO examples against the local package.
-ESP32 Arduino IDE users install the package from Library Manager; ESP8266 users
-use the exported PlatformIO project because its cooperative BearSSL framework
-preparation requires `extra_scripts`.
+Arduino IDE supports both targets using stock cores.
 
 Python bytecode, caches, build output, and PlatformIO output are ignored by
 the repository and must not be committed.
 
 ## ESP8266 framework integration
 
-ESP8266 Link environments run
-`packages/flova-esp8266/scripts/patch_esp8266_bearssl_nonblocking.py` before
-compilation. Registry consumers reference the packaged script with
-PlatformIO's project-level `extra_scripts` setting. The script accepts only
-the pinned Arduino framework version and exact upstream source hashes, then
-adds the cooperative BearSSL write API used by `ArduinoDeviceLink`. It is
-idempotent and fails closed if the installed framework changes.
+ESP8266 uses public stock BearSSL APIs. Package validation must use an
+unmodified framework installation; an old patched local cache is not evidence
+of compatibility. Shared IRAM is optional; the default exported project uses DRAM.
 
 ## SDK release
 

@@ -12,5 +12,8 @@ esac
 if [ "$mode" = all ]; then
   "$repo_dir/scripts/check_flova_link_hot_path.sh"
   "$repo_dir/scripts/check_passive_esp_ownership.sh"
+  for source in common encode decode print; do
+    rg -F '#define ZCBOR_CANONICAL' "$repo_dir/third_party/zcbor/flova/zcbor_$source.c" >/dev/null
+  done
 fi
 echo "Flova Link contract checks passed"

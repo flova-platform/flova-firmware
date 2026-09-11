@@ -22,85 +22,75 @@
 // capability. The Arduino package only sees the bounded Client/platform seam.
 class FlovaEsp32Platform final : public FlovaArduinoPlatform {
  public:
-  Client& linkClient() override { return client_; }
+  ~FlovaEsp32Platform() override {
+    stopping_.store(true);
+    closeLink();
+    // The worker finishes TLS using its own deadlines. Never destroy its
+    // client or storage from another task.
+    while (linkTask_ && !exited_.load()) delay(1);
+  }
+
+  bool connected() override {
+    return !linkCancel_.load() && linkOpenStatus_.load() == LinkOpenStatus::Connected;
+  }
+  int available() override {
+    return connected() ? static_cast<int>(rxProduced_.load() - rxConsumed_.load()) : 0;
+  }
+  int read() override {
+    const uint32_t tail = rxConsumed_.load();
+    if (!connected() || tail == rxProduced_.load()) return -1;
+    const uint8_t value = rx_[tail % sizeof(rx_)];
+    rxConsumed_.store(tail + 1);
+    return value;
+  }
+  bool linkClosed() const override {
+    const LinkOpenStatus state = linkOpenStatus_.load();
+    return state == LinkOpenStatus::Idle || state == LinkOpenStatus::Failed;
+  }
 
   bool startLink(const char* host, uint16_t port) override {
-    const LinkOpenStatus status = linkOpenStatus_.load();
     if (!host || !host[0] || strlen(host) >= sizeof(linkHost_) || !port ||
-        status == LinkOpenStatus::Opening ||
-        status == LinkOpenStatus::Connected)
-      return false;
+        !linkClosed() || stopping_.load()) return false;
     memcpy(linkHost_, host, strlen(host) + 1);
     linkPort_ = port;
+    rxProduced_.store(0);
+    rxConsumed_.store(0);
+    txLength_.store(0);
     linkCancel_.store(false);
-    linkReady_ = false;
+    generation_.fetch_add(1);
     linkOpenStatus_.store(LinkOpenStatus::Opening);
-    if (!linkTask_) {
-      if (xTaskCreatePinnedToCore(runLinkTask, "flova-link",
-                                  kLinkTaskStackBytes, this, 1, &linkTask_,
-                                  0) != pdPASS) {
-        resourceUnavailable_ = true;
-        linkOpenStatus_.store(LinkOpenStatus::Failed);
-        return false;
-      }
+    if (!linkTask_ &&
+        xTaskCreate(runLinkTask, "flova-link", kLinkTaskStackBytes, this,
+                    1, &linkTask_) != pdPASS) {
+      resourceUnavailable_ = true;
+      linkOpenStatus_.store(LinkOpenStatus::Failed);
+      return false;
     }
     resourceUnavailable_ = false;
-    xTaskNotifyGive(linkTask_);
     return true;
   }
 
   FlovaLinkOpenStatus pollLink() override {
-    const LinkOpenStatus status = linkOpenStatus_.load();
-    if (status == LinkOpenStatus::Connected) {
-      if (!client_.connected()) {
-        linkOpenStatus_.store(LinkOpenStatus::Failed);
-        return FlovaLinkOpenStatus::Failed;
-      }
-      if (!linkReady_) {
-        client_.setNoDelay(true);
-        linkReady_ = true;
-      }
-      return FlovaLinkOpenStatus::Connected;
-    }
-    if (status == LinkOpenStatus::Failed)
-      return FlovaLinkOpenStatus::Failed;
-    return FlovaLinkOpenStatus::InProgress;
+    if (connected()) return FlovaLinkOpenStatus::Connected;
+    return linkClosed() ? FlovaLinkOpenStatus::Failed : FlovaLinkOpenStatus::InProgress;
   }
 
   void closeLink() override {
+    generation_.fetch_add(1);
     linkCancel_.store(true);
-    linkReady_ = false;
-    const LinkOpenStatus status = linkOpenStatus_.load();
-    if (status != LinkOpenStatus::Opening) client_.stop();
-    if (status == LinkOpenStatus::Connected)
-      linkOpenStatus_.store(LinkOpenStatus::Failed);
-    clearWrite();
   }
-
-  bool resourceRecoveryRequired() const override {
-    return resourceUnavailable_;
-  }
-
-  bool linkWriteBusy() const override { return writeOffset_ < writeLength_; }
+  bool resourceRecoveryRequired() const override { return resourceUnavailable_; }
+  bool linkWriteBusy() const override { return txLength_.load() != 0; }
 
   bool submitLinkWrite(const uint8_t* data, size_t length) override {
-    if (linkWriteBusy() || !data || !length || !client_.connected())
-      return false;
-    writeData_ = data;
-    writeLength_ = length;
-    writeOffset_ = 0;
+    if (!connected() || linkWriteBusy() || !data || !length ||
+        length > sizeof(tx_)) return false;
+    memcpy(tx_, data, length);
+    txLength_.store(length);
     return true;
   }
-
   bool serviceLinkWrite() override {
-    if (!linkWriteBusy()) return true;
-    const size_t remaining = writeLength_ - writeOffset_;
-    const size_t chunk = remaining < 64 ? remaining : 64;
-    const size_t written = client_.write(writeData_ + writeOffset_, chunk);
-    if (!written) return false;
-    writeOffset_ += written;
-    if (!linkWriteBusy()) clearWrite();
-    return true;
+    return linkOpenStatus_.load() != LinkOpenStatus::Failed;
   }
 
   uint32_t otaMaxImageBytes() const override {
@@ -155,12 +145,14 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
   }
 
   flova::OtaInstallResult installOta(const FlovaLinkOtaOffer& offer) override {
+    if (!linkClosed()) return flova::OtaInstallResult::ResourceUnavailable;
     if (strncmp(offer.url, "https://", 8) != 0 || !offer.sizeBytes ||
         offer.sizeBytes > otaMaxImageBytes())
       return flova::OtaInstallResult::DownloadFailed;
 
     HTTPClient http;
     WiFiClientSecure client;
+    client.setHandshakeTimeout(10);
     client.setCACert(FLOVA_TLS_ROOT_CERTS);
     client.setTimeout(FLOVA_HTTPS_TIMEOUT_MS / 1000UL);
     if (!http.begin(client, offer.url))
@@ -200,8 +192,9 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
         delay(1);
         continue;
       }
+      const size_t remaining = offer.sizeBytes - written;
       const size_t count = stream->readBytes(
-          transferBuffer_, min(available, sizeof(transferBuffer_)));
+          transferBuffer_, min(remaining, min(available, sizeof(transferBuffer_))));
       if (!count || Update.write(transferBuffer_, count) != count) {
         abortUpdate();
         http.end();
@@ -231,26 +224,73 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
 
   static void runLinkTask(void* context) {
     FlovaEsp32Platform* self = static_cast<FlovaEsp32Platform*>(context);
-    for (;;) {
-      ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-      self->client_.stop();
-      self->client_.setCACert(FLOVA_TLS_ROOT_CERTS);
-      self->client_.setTimeout(FLOVA_HTTPS_TIMEOUT_MS / 1000UL);
-      const bool connected =
-          self->client_.connect(self->linkHost_, self->linkPort_);
-      if (connected && self->linkCancel_.load())
-        self->client_.stop();
-      self->linkOpenStatus_.store(
-          connected && !self->linkCancel_.load()
-              ? LinkOpenStatus::Connected
-              : LinkOpenStatus::Failed);
+    {
+      // This task is the sole owner for the entire socket lifetime.
+      WiFiClientSecure client;
+      while (!self->stopping_.load()) {
+        if (self->linkOpenStatus_.load() != LinkOpenStatus::Opening) {
+          vTaskDelay(1);
+          continue;
+        }
+        const uint32_t generation = self->generation_.load();
+        client.setCACert(FLOVA_TLS_ROOT_CERTS);
+        client.setHandshakeTimeout(10);
+        // The connect overload below sets the 5000 ms timeout before opening
+        // TLS. Calling setTimeout() here would apply socket options to the
+        // uninitialized TLS descriptor on this Arduino ESP32 core.
+        const uint32_t started = millis();
+        bool ok = !self->linkCancel_.load() &&
+                  client.connect(self->linkHost_, self->linkPort_, 5000);
+        // Arduino ESP32's TLS connect already enables TCP_NODELAY; do not
+        // repeat the socket option operation after the handshake.
+        if (!ok && !self->linkCancel_.load() &&
+            generation == self->generation_.load()) {
+          char detail[96] = {};
+          const int native = client.lastError(detail, sizeof(detail));
+          Serial.printf("[flova] Link open failed generation=%lu native=%d elapsed_ms=%lu\n",
+                        static_cast<unsigned long>(generation), native,
+                        static_cast<unsigned long>(millis() - started));
+        }
+        if (ok && generation == self->generation_.load() && !self->linkCancel_.load())
+          self->linkOpenStatus_.store(LinkOpenStatus::Connected);
+        size_t offset = 0;
+        uint32_t progressAt = millis();
+        while (ok && !self->stopping_.load() && !self->linkCancel_.load() &&
+               generation == self->generation_.load()) {
+          const size_t length = self->txLength_.load();
+          if (length) {
+            if (!offset) progressAt = millis();
+            const size_t count = client.write(self->tx_ + offset, length - offset);
+            if (!count) { ok = false; break; }
+            offset += count;
+            if (millis() - progressAt >= 5000UL) { ok = false; break; }
+            if (offset == length) {
+              offset = 0;
+              self->txLength_.store(0);
+            }
+          }
+          // Stop reading when the ring is full; TCP supplies backpressure.
+          uint32_t head = self->rxProduced_.load();
+          const uint32_t tail = self->rxConsumed_.load();
+          size_t budget = 128;
+          while (budget-- && head - tail < sizeof(self->rx_) && client.available() > 0) {
+            const int byte = client.read();
+            if (byte < 0) break;
+            self->rx_[head++ % sizeof(self->rx_)] = static_cast<uint8_t>(byte);
+            self->rxProduced_.store(head);
+          }
+          if (!client.connected() && client.available() == 0 &&
+              self->rxProduced_.load() == self->rxConsumed_.load()) ok = false;
+          vTaskDelay(1);
+        }
+        client.stop();
+        self->txLength_.store(0);
+        self->linkOpenStatus_.store(self->linkCancel_.load()
+            ? LinkOpenStatus::Idle : LinkOpenStatus::Failed);
+      }
     }
-  }
-
-  void clearWrite() {
-    writeData_ = nullptr;
-    writeLength_ = 0;
-    writeOffset_ = 0;
+    self->exited_.store(true);
+    vTaskDelete(nullptr);
   }
 
   void abortUpdate() { Update.abort(); }
@@ -266,16 +306,18 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
     return true;
   }
 
-  WiFiClientSecure client_;
   TaskHandle_t linkTask_ = nullptr;
   std::atomic<LinkOpenStatus> linkOpenStatus_{LinkOpenStatus::Idle};
   std::atomic<bool> linkCancel_{false};
+  std::atomic<bool> stopping_{false};
+  std::atomic<bool> exited_{false};
+  std::atomic<uint32_t> generation_{0};
+  std::atomic<uint32_t> rxProduced_{0}, rxConsumed_{0};
+  std::atomic<size_t> txLength_{0};
+  uint8_t rx_[1024] = {};
+  uint8_t tx_[526] = {};
   bool resourceUnavailable_ = false;
-  bool linkReady_ = false;
   char linkHost_[128] = {};
   uint16_t linkPort_ = 0;
-  const uint8_t* writeData_ = nullptr;
-  size_t writeLength_ = 0;
-  size_t writeOffset_ = 0;
   uint8_t transferBuffer_[512] = {};
 };

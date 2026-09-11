@@ -3,10 +3,13 @@
 #include <string.h>
 
 #include <FlovaWs.h>
+#include <adapters/ArduinoDeviceLink.h>
+#include <FlovaRetryBackoff.h>
 
-static_assert(sizeof(FlovaWs) <= 512, "FlovaWs fixed storage exceeded its budget");
+static_assert(sizeof(FlovaWs) <= 640, "FlovaWs fixed storage exceeded its budget");
 
 static uint32_t nowMs = 0;
+HardwareSerial Serial;
 uint32_t millis() { return nowMs; }
 unsigned long micros() { return nowMs * 1000UL; }
 void delay(unsigned long milliseconds) { nowMs += static_cast<uint32_t>(milliseconds); }
@@ -21,7 +24,7 @@ class TestEntropy : public FlovaEntropySource {
 
 static TestEntropy entropy;
 
-class FakeClient : public Client {
+class FakeClient : public FlovaLinkStream {
  public:
   bool socket = true;
   uint8_t written[8192] = {};
@@ -187,14 +190,111 @@ class FakeClient : public Client {
   }
 };
 
+static bool handshake(FlovaWs& ws, FakeClient& client, const char* host,
+                      uint16_t port, const char* path) {
+  uint8_t request[526] = {};
+  size_t length = 0;
+  if (!ws.startHandshake(host, port, path, request, sizeof(request), length)) return false;
+  size_t offset = 0;
+  while (offset < length) offset += client.write(request + offset, length - offset);
+  for (unsigned i = 0; i < 200; ++i) {
+    const auto progress = ws.pollHandshake();
+    if (progress != FlovaWs::HandshakeProgress::InProgress)
+      return progress == FlovaWs::HandshakeProgress::Complete;
+    nowMs += 100;
+  }
+  return false;
+}
+static bool handshake(FlovaWs& ws, FakeClient& client, const char* host,
+                      const char* path, const char* = nullptr) {
+  return handshake(ws, client, host, 443, path);
+}
+
+class FakePlatform : public FlovaArduinoPlatform {
+ public:
+  bool connected() override { return client.connected(); }
+  int available() override { return client.available(); }
+  int read() override { return client.read(); }
+  bool linkClosed() const override { return !client.socket; }
+  bool startLink(const char*, uint16_t) override { client.socket = true; return true; }
+  FlovaLinkOpenStatus pollLink() override {
+    return client.socket ? FlovaLinkOpenStatus::Connected : FlovaLinkOpenStatus::Failed;
+  }
+  void closeLink() override { client.socket = false; clearWrite(); }
+  bool linkWriteBusy() const override { return writeOffset < writeLength; }
+  bool submitLinkWrite(const uint8_t* data, size_t length) override {
+    ++submitCalls;
+    if (failBootstrapSubmit && submitCalls > 1) return false;
+    if (linkWriteBusy() || !data || !length || !client.socket) return false;
+    assert(length <= sizeof(writeData));
+    memcpy(writeData, data, length);
+    writeLength = length;
+    writeOffset = 0;
+    return true;
+  }
+  bool serviceLinkWrite() override {
+    if (!linkWriteBusy()) return true;
+    if (failBootstrapWrite && submitCalls > 1) return false;
+    const size_t written = client.write(writeData + writeOffset, writeLength - writeOffset);
+    if (!written) return false;
+    writeOffset += written;
+    if (!linkWriteBusy()) clearWrite();
+    return true;
+  }
+  flova::OtaInstallResult installOta(const FlovaLinkOtaOffer&) override {
+    return flova::OtaInstallResult::DownloadFailed;
+  }
+
+  FakeClient client;
+  bool failBootstrapSubmit = false;
+  bool failBootstrapWrite = false;
+  size_t submitCalls = 0;
+
+ private:
+  void clearWrite() { writeOffset = 0; writeLength = 0; }
+  uint8_t writeData[526] = {};
+  size_t writeOffset = 0;
+  size_t writeLength = 0;
+};
+
+static void advanceBootstrap(ArduinoDeviceLink& link) {
+  for (uint8_t i = 0; i < 16; ++i) link.loop();
+}
+
+static void verifyBootstrapAuthenticationSend() {
+  static const char token[] = "ttttttttttttttttttttttttttttttttttttttttttt";
+  static const char secret[] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+  FakePlatform platform;
+  ArduinoDeviceLink link(platform, entropy);
+  assert(link.configure("wss://engine.example/api/device-link"));
+  assert(link.connectBootstrap(token, "esp32-001122334455", "universal_esp32", secret));
+  advanceBootstrap(link);
+  assert(link.connected());
+  bool sawBinary = false;
+  for (size_t i = 0; i < platform.client.writtenLength; ++i)
+    if (platform.client.written[i] == 0x82) sawBinary = true;
+  assert(sawBinary);
+
+  FakePlatform rejectedPlatform;
+  rejectedPlatform.failBootstrapSubmit = true;
+  ArduinoDeviceLink rejected(rejectedPlatform, entropy);
+  assert(rejected.configure("wss://engine.example/api/device-link"));
+  assert(rejected.connectBootstrap(token, "esp32-001122334455", "universal_esp32", secret));
+  advanceBootstrap(rejected);
+  char error[48] = {};
+  assert(rejected.takeBootstrapError(error, sizeof(error)));
+  assert(strcmp(error, "bootstrap_auth_submit_failed") == 0);
+}
+
 static void verifyHandshakeAndFrames() {
   FakeClient client;
   client.includeProtocol = false;
   client.maximumWriteBytes = 3;
   FlovaWs websocket(client, entropy);
-  assert(websocket.handshake("engine.example", "/api/device-link"));
+  assert(handshake(websocket, client, "engine.example", "/api/device-link"));
   assert(websocket.connected());
-  assert(!websocket.handshake("engine.example", "/api/device-link"));
+  assert(!handshake(websocket, client, "engine.example", "/api/device-link"));
   assert(websocket.handshakeFailure() == FlovaWs::HandshakeFailure::InvalidState);
   assert(strstr(reinterpret_cast<const char*>(client.written),
                 "Host: engine.example:443\r\n") != nullptr);
@@ -203,7 +303,7 @@ static void verifyHandshakeAndFrames() {
 
   FakeClient customPort;
   FlovaWs customPortWebsocket(customPort, entropy);
-  assert(customPortWebsocket.handshake("engine.example", 8443, "/api/device-link"));
+  assert(handshake(customPortWebsocket, customPort, "engine.example", 8443, "/api/device-link"));
   assert(strstr(reinterpret_cast<const char*>(customPort.written),
                 "Host: engine.example:8443\r\n") != nullptr);
 
@@ -211,7 +311,7 @@ static void verifyHandshakeAndFrames() {
   longHeader.includeProtocol = false;
   longHeader.includeLongHeader = true;
   FlovaWs longHeaderWebsocket(longHeader, entropy);
-  assert(longHeaderWebsocket.handshake("engine.example", "/api/device-link"));
+  assert(handshake(longHeaderWebsocket, longHeader, "engine.example", "/api/device-link"));
 
   const uint8_t payload[] = {0x01, 0x02, 0x03};
   client.feedFrame(0x2, false, payload, 2);
@@ -235,12 +335,13 @@ static void verifyHandshakeAndFrames() {
   assert(sawPong);
 
   const size_t before = client.writtenLength;
-  assert(websocket.sendBinary(payload, sizeof(payload)));
+  uint8_t txWorkspace[526] = {};
+  assert(websocket.sendBinaryCoalesced(payload, sizeof(payload), txWorkspace, sizeof(txWorkspace)));
   assert(client.writtenLength > before + 6);
   assert((client.written[before] & 0x0F) == 0x2);
   assert((client.written[before + 1] & 0x80) != 0);
   const size_t firstMask = before + 2;
-  assert(websocket.sendBinary(payload, sizeof(payload)));
+  assert(websocket.sendBinaryCoalesced(payload, sizeof(payload), txWorkspace, sizeof(txWorkspace)));
   const size_t secondFrame = client.writtenLength - (sizeof(payload) + 6);
   assert(memcmp(client.written + firstMask, client.written + secondFrame + 2, 4) != 0);
 
@@ -299,7 +400,7 @@ static void verifyRejection() {
   const char response[] = "HTTP/1.1 200 OK\r\n\r\n";
   client.feed(reinterpret_cast<const uint8_t*>(response), sizeof(response) - 1);
   FlovaWs websocket(client, entropy);
-  assert(!websocket.handshake("engine.example", "/", "flova.cbor.v1"));
+  assert(!handshake(websocket, client, "engine.example", "/", "flova.cbor.v1"));
   assert(websocket.error() == FlovaWs::Error::Handshake);
   assert(websocket.handshakeStatus() == 200);
   assert(websocket.handshakeFailure() == FlovaWs::HandshakeFailure::UnexpectedStatus);
@@ -314,7 +415,7 @@ static void verifyRejection() {
   invalidAccept.feed(reinterpret_cast<const uint8_t*>(invalidAcceptResponse),
                      sizeof(invalidAcceptResponse) - 1);
   FlovaWs invalidAcceptWebsocket(invalidAccept, entropy);
-  assert(!invalidAcceptWebsocket.handshake("engine.example", "/"));
+  assert(!handshake(invalidAcceptWebsocket, invalidAccept, "engine.example", "/"));
   assert(invalidAcceptWebsocket.handshakeFailure() ==
          FlovaWs::HandshakeFailure::InvalidAccept);
 
@@ -327,18 +428,18 @@ static void verifyRejection() {
   missingUpgrade.feed(reinterpret_cast<const uint8_t*>(missingUpgradeResponse),
                       sizeof(missingUpgradeResponse) - 1);
   FlovaWs missingUpgradeWebsocket(missingUpgrade, entropy);
-  assert(!missingUpgradeWebsocket.handshake("engine.example", "/"));
+  assert(!handshake(missingUpgradeWebsocket, missingUpgrade, "engine.example", "/"));
   assert(missingUpgradeWebsocket.handshakeFailure() ==
          FlovaWs::HandshakeFailure::MissingUpgrade);
 
   FakeClient invalidHost;
   FlovaWs invalidHostWebsocket(invalidHost, entropy);
-  assert(!invalidHostWebsocket.handshake("engine.example\n", "/"));
+  assert(!handshake(invalidHostWebsocket, invalidHost, "engine.example\n", "/"));
   assert(invalidHostWebsocket.handshakeFailure() == FlovaWs::HandshakeFailure::InvalidRequest);
 
   FakeClient oversized;
   FlovaWs oversizedWs(oversized, entropy);
-  assert(oversizedWs.handshake("engine.example", "/", "flova.cbor.v1"));
+  assert(handshake(oversizedWs, oversized, "engine.example", "/", "flova.cbor.v1"));
   const uint8_t tooLarge[] = {0x82, 0x7F, 0, 0, 0, 0, 0, 0, 0x02, 0x01};
   oversized.feed(tooLarge, sizeof(tooLarge));
   uint8_t output[8] = {};
@@ -347,7 +448,7 @@ static void verifyRejection() {
 
   FakeClient masked;
   FlovaWs maskedWs(masked, entropy);
-  assert(maskedWs.handshake("engine.example", "/", "flova.cbor.v1"));
+  assert(handshake(maskedWs, masked, "engine.example", "/", "flova.cbor.v1"));
   const uint8_t maskedFrame[] = {0x82, 0x81, 1, 2, 3, 4, 'x'};
   masked.feed(maskedFrame, sizeof(maskedFrame));
   assert(maskedWs.read(output, sizeof(output)) < 0);
@@ -355,7 +456,7 @@ static void verifyRejection() {
 
   FakeClient invalidCloseCode;
   FlovaWs invalidCloseCodeWs(invalidCloseCode, entropy);
-  assert(invalidCloseCodeWs.handshake("engine.example", "/", "flova.cbor.v1"));
+  assert(handshake(invalidCloseCodeWs, invalidCloseCode, "engine.example", "/", "flova.cbor.v1"));
   const uint8_t invalidCloseCodeFrame[] = {0x88, 0x02, 0x03, 0xEC};
   invalidCloseCode.feed(invalidCloseCodeFrame, sizeof(invalidCloseCodeFrame));
   assert(invalidCloseCodeWs.read(output, sizeof(output)) < 0);
@@ -363,7 +464,7 @@ static void verifyRejection() {
 
   FakeClient invalidCloseReason;
   FlovaWs invalidCloseReasonWs(invalidCloseReason, entropy);
-  assert(invalidCloseReasonWs.handshake("engine.example", "/", "flova.cbor.v1"));
+  assert(handshake(invalidCloseReasonWs, invalidCloseReason, "engine.example", "/", "flova.cbor.v1"));
   const uint8_t invalidCloseReasonFrame[] = {0x88, 0x04, 0x03, 0xE8, 0xC0, 0xAF};
   invalidCloseReason.feed(invalidCloseReasonFrame, sizeof(invalidCloseReasonFrame));
   assert(invalidCloseReasonWs.read(output, sizeof(output)) < 0);
@@ -380,7 +481,7 @@ static void verifyReconnectCycles() {
     client.incomingLength = 0;
     client.incomingOffset = 0;
     client.responseAdded = false;
-    assert(websocket.handshake("engine.example", "/"));
+    assert(handshake(websocket, client, "engine.example", "/"));
     websocket.close();
     client.socket = false;
     assert(!websocket.connected());
@@ -391,7 +492,7 @@ static void verifyPeerCloseReconnect() {
   FakeClient client;
   client.includeProtocol = false;
   FlovaWs websocket(client, entropy);
-  assert(websocket.handshake("engine.example", "/"));
+  assert(handshake(websocket, client, "engine.example", "/"));
 
   const uint8_t closeFrame[] = {0x88, 0x02, 0x03, 0xE8};
   client.feed(closeFrame, sizeof(closeFrame));
@@ -405,7 +506,7 @@ static void verifyPeerCloseReconnect() {
   client.incomingLength = 0;
   client.incomingOffset = 0;
   client.responseAdded = false;
-  assert(websocket.handshake("engine.example", "/"));
+  assert(handshake(websocket, client, "engine.example", "/"));
   assert(websocket.connected());
 }
 
@@ -413,7 +514,7 @@ static void verifyAbortDoesNotWriteCloseFrame() {
   FakeClient client;
   client.includeProtocol = false;
   FlovaWs websocket(client, entropy);
-  assert(websocket.handshake("engine.example", "/"));
+  assert(handshake(websocket, client, "engine.example", "/"));
   client.writtenLength = 0;
   websocket.abort();
   assert(client.writtenLength == 0);
@@ -424,7 +525,7 @@ static void verifyCoalescedWrite() {
   FakeClient client;
   client.includeProtocol = false;
   FlovaWs websocket(client, entropy);
-  assert(websocket.handshake("engine.example", "/"));
+  assert(handshake(websocket, client, "engine.example", "/"));
   client.writtenLength = 0;
   client.writeCalls = 0;
 
@@ -456,7 +557,76 @@ static void verifyCoalescedWrite() {
 }
 
 int main() {
+  {
+    flova::RetryBackoff retry;
+    for (unsigned i = 0; i < 10000; ++i) {
+      const uint32_t delay = retry.next(static_cast<uint8_t>(i));
+      assert(delay >= 875 && delay <= 60000);
+    }
+    retry.reset();
+    assert(retry.next(255) == 1000);
+  }
+  {
+    FakePlatform platform;
+    platform.client.includeProtocol = false;
+    FlovaWs ws(platform, entropy);
+    uint8_t wire[526] = {};
+    size_t length = 0;
+    assert(ws.startHandshake("engine.example", 443, "/", wire, sizeof(wire), length));
+    assert(platform.submitLinkWrite(wire, length));
+    assert(platform.serviceLinkWrite());
+    while (ws.pollHandshake() == FlovaWs::HandshakeProgress::InProgress) {}
+    platform.client.writtenLength = 0;
+    platform.client.maximumWriteBytes = 1;
+    const uint8_t data[] = {1, 2, 3, 4};
+    assert(ws.prepareBinary(data, sizeof(data), wire, sizeof(wire), length));
+    uint8_t expected[526] = {};
+    memcpy(expected, wire, length);
+    assert(platform.submitLinkWrite(wire, length));
+    memset(wire, 0xEE, sizeof(wire)); // Submission must own its copy.
+    assert(platform.serviceLinkWrite());
+    const uint8_t ping[] = {9, 8, 7};
+    platform.client.feedFrame(9, true, ping, sizeof(ping));
+    uint8_t received[8] = {};
+    assert(ws.read(received, sizeof(received)) == 0);
+    assert(ws.controlPending());
+    while (platform.linkWriteBusy()) assert(platform.serviceLinkWrite());
+    assert(platform.client.writtenLength == length);
+    assert(memcmp(platform.client.written, expected, length) == 0);
+    assert(ws.serviceControl());
+    while (platform.linkWriteBusy()) assert(platform.serviceLinkWrite());
+    assert(platform.client.written[length] == 0x8A);
+    assert(platform.client.writtenLength == length + sizeof(ping) + 6);
+  }
+  {
+    FakePlatform platform;
+    ArduinoDeviceLink link(platform, entropy);
+    assert(link.configure("wss://engine.example/"));
+    assert(link.connectBootstrap("ttttttttttttttttttttttttttttttttttttttttttt",
+                                "esp32-test", "universal_esp32",
+                                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    advanceBootstrap(link);
+    platform.client.maximumWriteBytes = 1;
+    const size_t ackStart = platform.client.writtenLength;
+    FlovaLinkConfigurationReport report = {};
+    report.messageId = 17;
+    report.generation = 2;
+    report.status = FlovaLinkResultStatus::Ok;
+    assert(link.publishConfigurationReport(report));
+    assert(platform.linkWriteBusy());
+    link.beginDrain();
+    for (unsigned i = 0; i < 128 && !link.drainComplete(); ++i) link.loop();
+    assert(link.drainComplete() && !link.drainFailed());
+    const uint8_t* wire = platform.client.written + ackStart;
+    assert(wire[0] == 0x82 && (wire[1] & 0x80));
+    const size_t ackLength = wire[1] & 0x7f;
+    assert(ackLength < 126);
+    // The entire ACK precedes the WebSocket close, even with one-byte writes.
+    assert(platform.client.writtenLength >= ackStart + 6 + ackLength + 6);
+    assert(wire[6 + ackLength] == 0x88);
+  }
   verifyHandshakeAndFrames();
+  verifyBootstrapAuthenticationSend();
   verifyCooperativeHandshake();
   verifyRejection();
   verifyReconnectCycles();

@@ -1,4 +1,5 @@
 #pragma once
+#define FLOVA_BOARD_NAME "ESP8266"
 
 // Board defaults keep the portable runtime explicitly bounded for ESP8266
 // heap constraints. An application may define any value before including a

@@ -24,6 +24,10 @@ class FlovaProvisioningAdapter {
   virtual void loop() {}
   virtual bool startProvisioning() { return false; }
   virtual bool stopProvisioning() { return true; }
+  // SoftAP provisioning keeps its channel alive while the station associates.
+  // BLE and application-owned provisioning retain the stop-before-network
+  // lifecycle because they may own mutually exclusive board resources.
+  virtual bool stopAfterNetworkConnected() const { return false; }
   // Some setup transports release resources that can only be reacquired after
   // a board restart. The board composition, not the adapter, owns that restart.
   virtual bool requiresRestartBeforeProvisioning() const { return false; }

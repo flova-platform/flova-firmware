@@ -23,9 +23,8 @@ for target in esp32 esp8266; do
   project_dir="$work_dir/$target"
   mkdir -p "$project_dir"
   cp -R "$sdk_dir/extras/platformio/$target/." "$project_dir/"
-  sed -i "s|flova-platform/FlovaSDK@[^[:space:]]*|file://$sdk_dir|" \
+  sed -i "s|flova-platform/FlovaSDK@[^[:space:]]*|file://$work_dir/FlovaSDK.tar.gz|" \
     "$project_dir/platformio.ini"
-  pio pkg install --project-dir "$project_dir" --library "$sdk_dir" --no-save
   pio run --project-dir "$project_dir"
 done
 

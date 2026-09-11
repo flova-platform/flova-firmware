@@ -43,7 +43,7 @@ the `flova::` service interfaces and compose board services explicitly.
   the last active A/B generation until promotion succeeds.
 - Keep Device Link schema-directed and deterministic: CDDL is authoritative,
   complete frames are at most 512 bytes, and ESP8266 Link uses the verified
-  2,048-byte RX / 512-byte TX profile. OTA remains a separate 16,384-byte RX /
+  16,384-byte RX / 512-byte TX profile. OTA remains a separate 16,384-byte RX /
   512-byte TX workload.
 - Do not log credentials, provisioning tokens, device secrets, or complete
   sensitive payloads.

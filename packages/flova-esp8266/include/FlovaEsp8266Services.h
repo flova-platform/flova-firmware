@@ -281,7 +281,7 @@ class FlovaEsp8266StoredNetwork final : public FlovaNetworkRuntime {
     if (!storage_.read("wifi", &wifi, sizeof(wifi)) ||
         !flova::validWifiRuntimeData(wifi))
       return false;
-    WiFi.mode(WIFI_STA);
+    WiFi.mode((WiFi.getMode() & WIFI_AP) ? WIFI_AP_STA : WIFI_STA);
     WiFi.setAutoReconnect(true);
     WiFi.begin(wifi.ssid, wifi.password);
     return true;
@@ -293,6 +293,12 @@ class FlovaEsp8266StoredNetwork final : public FlovaNetworkRuntime {
   }
 
   bool connected() const override { return WiFi.status() == WL_CONNECTED; }
+  const char* connectionError() const override {
+    const wl_status_t status = WiFi.status();
+    if (status == WL_NO_SSID_AVAIL) return "wifi_ap_not_found";
+    if (status == WL_CONNECT_FAILED) return "wifi_auth_failed";
+    return "network_timeout";
+  }
   bool clearCredentials() override {
     WiFi.disconnect(true);
     return storage_.remove("wifi");

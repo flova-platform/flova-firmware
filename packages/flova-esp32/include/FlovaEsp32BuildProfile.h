@@ -1,4 +1,5 @@
 #pragma once
+#define FLOVA_BOARD_NAME "ESP32"
 
 // Board defaults keep the portable runtime explicitly bounded for a standard
 // ESP32. An application may define any value before including a Flova header.

@@ -17,7 +17,7 @@ scripts/check_sdk_release.sh /tmp/flova-sdk-check
 ```
 
 The check script compiles both PlatformIO examples against the exported package.
-The SDK workflow also compiles the Arduino ESP32 example and runs the complete
+The SDK workflow also compiles Arduino ESP32 and ESP8266 examples and runs the complete
 repository validation matrix before publishing.
 
 ## PlatformIO
@@ -30,9 +30,8 @@ secret.
 pio pkg publish /tmp/FlovaSDK.tar.gz --owner flova-platform
 ```
 
-Verify a clean install with `flova-platform/FlovaSDK@^0.2.0` on ESP32 and ESP8266.
-The ESP8266 project must retain the packaged `extra_scripts` entry and MMU build
-flag shown in `extras/platformio/esp8266/platformio.ini`.
+Verify a clean install with `flova-platform/FlovaSDK@^0.3.0` on ESP32 and ESP8266.
+No ESP8266 framework patch or mandatory MMU flag is needed.
 
 ## Arduino Library Manager
 
@@ -47,9 +46,7 @@ matches both package manifests, publishes PlatformIO, replaces the generated
 ```
 
 Submit `https://github.com/flova-platform/flova-firmware` to the Arduino
-Library Registry. Arduino Library Manager advertises ESP32 support only.
-ESP8266 remains available through PlatformIO because its bounded cooperative
-transport requires a pinned framework preparation script.
+Library Registry. Arduino Library Manager metadata supports ESP32 and ESP8266.
 
 Do not move or replace a published version tag. Release a new version for any
 correction. Existing firmware binary releases are historical only; new device

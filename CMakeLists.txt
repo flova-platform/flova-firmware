@@ -6,16 +6,15 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(flova-link-cbor STATIC
-  third_party/zcbor/src/zcbor_common.c
-  third_party/zcbor/src/zcbor_decode.c
-  third_party/zcbor/src/zcbor_encode.c
-  third_party/zcbor/src/zcbor_print.c
+  third_party/zcbor/flova/zcbor_common.c
+  third_party/zcbor/flova/zcbor_decode.c
+  third_party/zcbor/flova/zcbor_encode.c
+  third_party/zcbor/flova/zcbor_print.c
   protocol/generated/firmware/src/flova_link_decode.c
   protocol/generated/firmware/src/flova_link_encode.c)
 target_include_directories(flova-link-cbor PUBLIC
   third_party/zcbor/include
   protocol/generated/firmware/include)
-target_compile_definitions(flova-link-cbor PRIVATE ZCBOR_CANONICAL)
 
 add_library(flova-core INTERFACE)
 target_include_directories(flova-core INTERFACE
@@ -42,6 +41,7 @@ add_executable(flova-ws-test test/host/test_flova_ws.cpp)
 target_include_directories(flova-ws-test PRIVATE
   test/host/arduino-shim
   packages/flova-arduino/include)
+target_link_libraries(flova-ws-test PRIVATE flova-core)
 add_executable(flova-custom-board examples/custom-board-basic/src/main.cpp)
 target_link_libraries(flova-custom-board PRIVATE flova-core)
 add_executable(flova-configuration-test test/host/test_flova_configuration.cpp)

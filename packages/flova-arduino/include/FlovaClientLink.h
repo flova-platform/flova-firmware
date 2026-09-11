@@ -68,4 +68,8 @@ class FlovaClientLink : public flova::Link {
   virtual void setConnectionAllowed(bool) {}
   virtual bool resourceRecoveryRequired() const { return false; }
   virtual void disconnect() = 0;
+  virtual void beginMaintenance() { disconnect(); }
+  virtual bool maintenanceReady() { return true; }
+  virtual bool maintenanceFailed() const { return false; }
+  virtual void endMaintenance() {}
 };

@@ -18,7 +18,7 @@ pio run -e universal-esp32-ble
 ```
 
 The existing `universal-esp32` target remains SoftAP-based. Provisioning
-transport is a firmware capability, not a template setting in Flova Frontend.
+transport is a firmware capability, not a template setting in Flova Console.
 
 The 4 MiB DevKit BLE image uses the 2 MiB single-app partition and has OTA
 disabled for this MVP. Use a larger-flash production board and an explicit

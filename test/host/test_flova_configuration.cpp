@@ -60,6 +60,10 @@ int main() {
       "provision_token_attempts_exceeded"));
   assert(flova::terminalProvisioningError("provisioning_secret_mismatch"));
   assert(!flova::terminalProvisioningError("bootstrap_timeout"));
+  assert(!flova::provisioningFailureNeedsSetup("bootstrap_timeout"));
+  assert(!flova::provisioningFailureNeedsSetup("network_timeout"));
+  assert(flova::provisioningFailureNeedsSetup("provision_token_expired"));
+  assert(flova::provisioningFailureNeedsSetup("invalid_provision_token"));
 
   char storageKey[16] = {};
   assert(flova::makeNvsStorageKey("schedule.staging", storageKey,

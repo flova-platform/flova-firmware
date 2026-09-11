@@ -69,6 +69,7 @@ firmware offers after validating their declared size and SHA-256 checksum.
 ESP8266 OTA uses the platform's staged-copy updater and has no automatic
 rollback; keep wired recovery available for a failed post-update boot.
 
-For a release build, provide an explicit version with
-`-DFLOVA_FIRMWARE_VERSION=\"x.y.z\"` and upload the resulting ESP8266 binary
+External application-specific release builds may provide an explicit version
+with `-DFLOVA_FIRMWARE_VERSION=\"x.y.z\"`; official Flova builds use the
+single global release version.
 as a separate artifact from the ESP32 BLE image.

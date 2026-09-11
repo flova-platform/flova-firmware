@@ -26,24 +26,15 @@ portable C++11 core for custom hardware.
 
 ### PlatformIO
 
-For an existing ESP32 PlatformIO project, add:
+For an existing ESP32 or ESP8266 PlatformIO project, add:
 
 ```ini
-lib_deps = flova-platform/FlovaSDK@^0.2.0
-```
-
-For an existing ESP8266 PlatformIO project, add the SDK's bounded BearSSL
-setup:
-
-```ini
-build_flags = -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
-lib_deps = flova-platform/FlovaSDK@^0.2.0
-extra_scripts = pre:$PROJECT_LIBDEPS_DIR/${PIOENV}/FlovaSDK/scripts/patch_esp8266_bearssl_nonblocking.py
+lib_deps = flova-platform/FlovaSDK@^0.3.1
 ```
 
 ### Arduino IDE
 
-Arduino Library Manager currently supports ESP32:
+FlovaSDK 0.3.1 supports ESP32 and ESP8266 in Arduino IDE:
 
 1. Open **Tools → Manage Libraries**.
 2. Search for **FlovaSDK**.
@@ -55,7 +46,7 @@ Then include the ESP32 entry point:
 #include <FlovaEsp32.h>
 ```
 
-Use PlatformIO for ESP8266 projects.
+For ESP8266, include `<FlovaEsp8266.h>`.
 
 ## Quick start
 
@@ -112,14 +103,8 @@ void loop() { device.run(); }
 
 Use an ESP32 board. Arduino IDE or PlatformIO will upload the complete image.
 
-For ESP8266, use PlatformIO and include `<FlovaUniversalEsp8266.h>`:
-
-```sh
-pio run -e universal-esp8266 -t upload
-```
-
-The ESP8266 project includes the pinned cooperative BearSSL preparation step.
-Arduino IDE is not an official ESP8266 path for this reason.
+For ESP8266, use `<FlovaUniversalEsp8266.h>` with Arduino IDE or PlatformIO.
+See [transport behavior](packages/TRANSPORT.md) for ESP8266 timing and memory requirements.
 
 ## Links
 

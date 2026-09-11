@@ -25,7 +25,7 @@ fi
 cp "$release_dir/library.properties" "$release_dir/library.json" "$output_dir/"
 cp "$release_dir/README.md" "$output_dir/"
 cp "$release_dir/src/FlovaSDK.h" "$output_dir/src/"
-cp "$release_dir/examples/Basic/Basic.ino" "$output_dir/examples/Basic/"
+cp -R "$release_dir/examples/." "$output_dir/examples/"
 cp "$release_dir/.github/workflows/arduino.yml" "$output_dir/.github/workflows/"
 cp "$release_dir/extras/platformio/esp32/platformio.ini" "$output_dir/extras/platformio/esp32/"
 cp "$release_dir/extras/platformio/esp32/src/main.cpp" "$output_dir/extras/platformio/esp32/src/"
@@ -41,8 +41,13 @@ cp "$repo_dir/packages/flova-arduino/include/adapters/"*.h "$output_dir/src/adap
 cp "$repo_dir/packages/flova-esp32/include/"*.h "$output_dir/src/"
 cp "$repo_dir/packages/flova-esp32/src/"*.cpp "$output_dir/src/"
 cp "$repo_dir/packages/flova-esp8266/include/"*.h "$output_dir/src/"
-cp "$repo_dir/packages/flova-esp8266/scripts/patch_esp8266_bearssl_nonblocking.py" "$output_dir/scripts/"
 cp "$repo_dir/protocol/generated/firmware/include/"*.h "$output_dir/src/"
 cp "$repo_dir/protocol/generated/firmware/src/"*.c "$output_dir/src/"
 cp "$repo_dir/third_party/zcbor/include/"*.h "$output_dir/src/"
-cp "$repo_dir/third_party/zcbor/src/"*.c "$output_dir/src/"
+# Include upstream implementations as non-compilable fragments. Arduino and
+# PlatformIO compile only the wrappers, so no consumer flag controls the wire.
+for source in common encode decode print; do
+  cp "$repo_dir/third_party/zcbor/src/zcbor_$source.c" "$output_dir/src/zcbor_$source.inc"
+  sed "s|../src/zcbor_$source.c|zcbor_$source.inc|" \
+    "$repo_dir/third_party/zcbor/flova/zcbor_$source.c" > "$output_dir/src/zcbor_$source.c"
+done

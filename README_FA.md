@@ -26,24 +26,15 @@ FlovaSDK کیت توسعه رسمی C++ برای اتصال دستگاه‌ها 
 
 ### PlatformIO
 
-در یک پروژه موجود ESP32 در PlatformIO، این خط را اضافه کنید:
+در پروژه ESP32 یا ESP8266 در PlatformIO، این خط را اضافه کنید:
 
 ```ini
-lib_deps = flova-platform/FlovaSDK@^0.2.0
-```
-
-در یک پروژه موجود ESP8266 در PlatformIO، تنظیم محدودشده BearSSL را نیز اضافه
-کنید:
-
-```ini
-build_flags = -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
-lib_deps = flova-platform/FlovaSDK@^0.2.0
-extra_scripts = pre:$PROJECT_LIBDEPS_DIR/${PIOENV}/FlovaSDK/scripts/patch_esp8266_bearssl_nonblocking.py
+lib_deps = flova-platform/FlovaSDK@^0.3.1
 ```
 
 ### Arduino IDE
 
-Arduino Library Manager در حال حاضر از ESP32 پشتیبانی می‌کند:
+نسخه 0.3.1 از ESP32 و ESP8266 در Arduino IDE پشتیبانی می‌کند:
 
 1. از منوی **Tools → Manage Libraries** وارد مدیریت کتابخانه‌ها شوید.
 2. عبارت **FlovaSDK** را جست‌وجو کنید.
@@ -55,7 +46,7 @@ Arduino Library Manager در حال حاضر از ESP32 پشتیبانی می‌
 #include <FlovaEsp32.h>
 ```
 
-برای پروژه‌های ESP8266 از PlatformIO استفاده کنید.
+برای ESP8266، هدر `<FlovaEsp8266.h>` را اضافه کنید.
 
 ## شروع سریع
 
@@ -113,14 +104,8 @@ void loop() { device.run(); }
 از یک برد ESP32 استفاده کنید. Arduino IDE یا PlatformIO تصویر کامل را upload
 می‌کند.
 
-برای ESP8266، از PlatformIO و هدر `<FlovaUniversalEsp8266.h>` استفاده کنید:
-
-```sh
-pio run -e universal-esp8266 -t upload
-```
-
-پروژه ESP8266 مرحله آماده‌سازی BearSSL نسخه‌بندی‌شده را دارد؛ به همین دلیل
-Arduino IDE برای ESP8266 مسیر رسمی این SDK نیست.
+برای ESP8266، از هدر `<FlovaUniversalEsp8266.h>` در Arduino IDE یا PlatformIO استفاده کنید.
+جزئیات زمان اتصال و حافظه موردنیاز در [راهنمای انتقال داده](packages/TRANSPORT.md) آمده است.
 
 ## پیوندها
 
