@@ -9,7 +9,7 @@ if [ -e "$output_dir" ]; then
   exit 1
 fi
 
-mkdir -p "$output_dir/.github/workflows" "$output_dir/src/adapters" \
+mkdir -p "$output_dir/src/adapters" \
   "$output_dir/examples/Basic" \
   "$output_dir/extras/platformio/esp32/src" \
   "$output_dir/extras/platformio/esp8266/src" "$output_dir/scripts"
@@ -26,7 +26,6 @@ cp "$release_dir/library.properties" "$release_dir/library.json" "$output_dir/"
 cp "$release_dir/README.md" "$output_dir/"
 cp "$release_dir/src/FlovaSDK.h" "$output_dir/src/"
 cp -R "$release_dir/examples/." "$output_dir/examples/"
-cp "$release_dir/.github/workflows/arduino.yml" "$output_dir/.github/workflows/"
 cp "$release_dir/extras/platformio/esp32/platformio.ini" "$output_dir/extras/platformio/esp32/"
 cp "$release_dir/extras/platformio/esp32/src/main.cpp" "$output_dir/extras/platformio/esp32/src/"
 cp "$release_dir/extras/platformio/esp8266/platformio.ini" "$output_dir/extras/platformio/esp8266/"

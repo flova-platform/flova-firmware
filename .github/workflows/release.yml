@@ -75,37 +75,8 @@ jobs:
       - name: Validate exported SDK package
         run: |
           scripts/check_sdk_release.sh "$RUNNER_TEMP/flova-sdk-check"
-          mkdir -p .ci
-          cp -R "$RUNNER_TEMP/flova-sdk-check/FlovaSDK" .ci/FlovaSDK
-
-      - name: Compile Arduino ESP32 example
-        uses: arduino/compile-sketches@v1
-        with:
-          fqbn: esp32:esp32:esp32
-          platforms: |
-            - name: esp32:esp32
-              version: 2.0.17
-              source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          libraries: |
-            - source-path: ./.ci/FlovaSDK
-          sketch-paths: |
-            - packages/flova-sdk-release/examples/Basic
-
-      - name: Compile Arduino ESP8266 example
-        uses: arduino/compile-sketches@v1
-        with:
-          fqbn: esp8266:esp8266:generic
-          platforms: |
-            - name: esp8266:esp8266
-              version: 3.1.2
-              source-url: https://arduino.esp8266.com/stable/package_esp8266com_index.json
-          libraries: |
-            - source-path: ./.ci/FlovaSDK
-          sketch-paths: |
-            - packages/flova-sdk-release/examples/UniversalESP8266
 
       - name: Store SDK package
-        # Both Arduino cores compile the same exported sources without flags.
         uses: actions/upload-artifact@v4
         with:
           name: flova-sdk-${{ steps.version.outputs.version }}
@@ -113,14 +84,56 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  publish:
+  arduino:
     needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - fqbn: esp32:esp32:esp32
+            platform: esp32:esp32
+            version: 2.0.17
+            url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+            sketch: packages/flova-sdk-release/examples/Basic
+          - fqbn: esp8266:esp8266:generic
+            platform: esp8266:esp8266
+            version: 3.1.2
+            url: https://arduino.esp8266.com/stable/package_esp8266com_index.json
+            sketch: packages/flova-sdk-release/examples/UniversalESP8266
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Download SDK package
+        uses: actions/download-artifact@v4
+        with:
+          name: flova-sdk-${{ needs.validate.outputs.version }}
+          path: ${{ runner.temp }}/flova-sdk-artifact
+
+      - name: Extract SDK package
+        run: tar -xzf "$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz" -C "$RUNNER_TEMP"
+
+      - name: Compile Arduino example
+        uses: arduino/compile-sketches@v1
+        with:
+          fqbn: ${{ matrix.fqbn }}
+          platforms: |
+            - name: ${{ matrix.platform }}
+              version: ${{ matrix.version }}
+              source-url: ${{ matrix.url }}
+          libraries: |
+            - source-path: ${{ runner.temp }}/FlovaSDK
+          sketch-paths: |
+            - ${{ matrix.sketch }}
+
+  publish:
+    needs: [validate, arduino]
     if: startsWith(github.ref, 'refs/tags/sdk-v')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
-      workflows: write
     env:
       SDK_VERSION: ${{ needs.validate.outputs.version }}
       GH_TOKEN: ${{ github.token }}
@@ -144,9 +157,13 @@ jobs:
 
       - name: Publish PlatformIO package
         run: |
-          test -n "$PLATFORMIO_AUTH_TOKEN"
-          pio pkg publish "$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz" \
-            --owner flova-platform --no-interactive
+          if pio pkg show "flova-platform/FlovaSDK@$SDK_VERSION" >/dev/null 2>&1; then
+            echo "PlatformIO package already published: $SDK_VERSION"
+          else
+            test -n "$PLATFORMIO_AUTH_TOKEN"
+            pio pkg publish "$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz" \
+              --owner flova-platform --no-interactive
+          fi
 
       - name: Publish Arduino Library Manager tree
         run: |
@@ -156,8 +173,8 @@ jobs:
           archive="$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz"
 
           if git ls-remote --exit-code "$repo_url" "refs/tags/$generated_tag" >/dev/null 2>&1; then
-            echo "published tag already exists: $generated_tag" >&2
-            exit 1
+            echo "Arduino tag already published: $generated_tag"
+            exit 0
           fi
 
           if git ls-remote --exit-code "$repo_url" refs/heads/library-release >/dev/null 2>&1; then
@@ -172,8 +189,12 @@ jobs:
           git -C "$library_dir" config user.name "github-actions[bot]"
           git -C "$library_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C "$library_dir" add -A
-          git -C "$library_dir" commit -m "release: FlovaSDK $SDK_VERSION"
-          git -C "$library_dir" push origin HEAD:library-release
+          if git -C "$library_dir" diff --cached --quiet; then
+            echo "library-release already contains FlovaSDK $SDK_VERSION"
+          else
+            git -C "$library_dir" commit -m "release: FlovaSDK $SDK_VERSION"
+            git -C "$library_dir" push origin HEAD:library-release
+          fi
           git -C "$library_dir" tag -a "$generated_tag" -m "FlovaSDK $SDK_VERSION"
           git -C "$library_dir" push origin "$generated_tag"
 
@@ -181,6 +202,10 @@ jobs:
 
       - name: Publish GitHub release
         run: |
-          cp "$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz" "$RUNNER_TEMP/FlovaSDK-$SDK_VERSION.tar.gz"
-          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/FlovaSDK-$SDK_VERSION.tar.gz" \
-            --title "FlovaSDK $SDK_VERSION" --notes-file packages/flova-sdk-release/RELEASE_NOTES.md
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "GitHub release already exists: $GITHUB_REF_NAME"
+          else
+            cp "$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz" "$RUNNER_TEMP/FlovaSDK-$SDK_VERSION.tar.gz"
+            gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/FlovaSDK-$SDK_VERSION.tar.gz" \
+              --title "FlovaSDK $SDK_VERSION" --notes-file packages/flova-sdk-release/RELEASE_NOTES.md
+          fi

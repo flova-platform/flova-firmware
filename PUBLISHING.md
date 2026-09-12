@@ -17,8 +17,10 @@ scripts/check_sdk_release.sh /tmp/flova-sdk-check
 ```
 
 The check script compiles both PlatformIO examples against the exported package.
-The SDK workflow also compiles Arduino ESP32 and ESP8266 examples and runs the complete
-repository validation matrix before publishing.
+The single SDK workflow also compiles Arduino ESP32 and ESP8266 examples and runs the
+complete repository validation matrix before publishing. The generated
+`library-release` branch contains the Arduino package only; it has no separate CI
+workflow.
 
 ## PlatformIO
 
