@@ -53,6 +53,12 @@ add_executable(flova-runtime-services-test test/host/test_flova_runtime_services
 target_include_directories(flova-runtime-services-test PRIVATE packages/flova-arduino/include)
 target_link_libraries(flova-runtime-services-test PRIVATE flova-core)
 enable_testing()
+add_executable(flova-hardware-test test/host/test_flova_hardware.cpp)
+target_include_directories(flova-hardware-test PRIVATE
+  test/host/arduino-shim packages/flova-arduino/include
+  packages/flova-esp32/include packages/flova-esp8266/include)
+target_link_libraries(flova-hardware-test PRIVATE flova-core)
+add_test(NAME flova-hardware-test COMMAND flova-hardware-test)
 add_test(NAME flova-core-test COMMAND flova-core-test)
 add_test(NAME flova-configuration-installer-test COMMAND flova-configuration-installer-test)
 add_test(NAME flova-link-cbor-test COMMAND flova-link-cbor-test)

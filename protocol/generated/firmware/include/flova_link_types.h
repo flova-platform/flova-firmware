@@ -95,50 +95,6 @@ struct datastream_bind {
 	struct datastream_binding_keys datastream_bind_binding_keys;
 };
 
-struct ota_profile_ota_boot_state {
-	uint64_t ota_profile_ota_boot_state;
-};
-
-struct ota_profile_ota_rollback_reason {
-	struct zcbor_string ota_profile_ota_rollback_reason;
-};
-
-struct ota_profile {
-	uint64_t ota_profile_ota_max_image_bytes;
-	uint64_t ota_profile_ota_strategy;
-	struct zcbor_string ota_profile_ota_boot_layout_version;
-	bool ota_profile_ota_rollback_capable;
-	struct ota_profile_ota_boot_state ota_profile_ota_boot_state;
-	bool ota_profile_ota_boot_state_present;
-	struct ota_profile_ota_rollback_reason ota_profile_ota_rollback_reason;
-	bool ota_profile_ota_rollback_reason_present;
-};
-
-struct heartbeat {
-	uint64_t heartbeat_generation;
-	uint64_t heartbeat_uptime_ms;
-	uint64_t heartbeat_status;
-	struct zcbor_string heartbeat_firmware_version;
-	struct zcbor_string heartbeat_firmware_target;
-	union {
-		struct zcbor_string heartbeat_running_release_id_empty_id_m;
-		struct zcbor_string heartbeat_running_release_id_uuid_m;
-	};
-	enum {
-		heartbeat_running_release_id_empty_id_m_c,
-		heartbeat_running_release_id_uuid_m_c,
-	} heartbeat_running_release_id_choice;
-	union {
-		struct zcbor_string heartbeat_last_install_id_empty_id_m;
-		struct zcbor_string heartbeat_last_install_id_uuid_m;
-	};
-	enum {
-		heartbeat_last_install_id_empty_id_m_c,
-		heartbeat_last_install_id_uuid_m_c,
-	} heartbeat_last_install_id_choice;
-	struct ota_profile heartbeat_ota_profile;
-};
-
 struct config_reported {
 	uint64_t config_reported_reported_config_generation;
 	uint64_t config_reported_reported_config_status;
@@ -237,6 +193,10 @@ struct schedule_end {
 	struct zcbor_string schedule_end_checksum;
 };
 
+struct capabilities_pin_references {
+	bool capabilities_pin_references;
+};
+
 struct capabilities {
 	uint64_t capabilities_datastream_slots;
 	uint64_t capabilities_input_slots;
@@ -245,6 +205,8 @@ struct capabilities {
 	uint64_t capabilities_schedule_slots;
 	uint64_t capabilities_manifest_bytes;
 	uint64_t capabilities_history_bytes;
+	struct capabilities_pin_references capabilities_pin_references;
+	bool capabilities_pin_references_present;
 };
 
 struct bootstrap_auth {
@@ -263,6 +225,52 @@ struct datastream_bound_ids {
 struct datastream_bound {
 	uint64_t datastream_bound_bound_generation;
 	struct datastream_bound_ids datastream_bound_bound_ids;
+};
+
+struct ota_profile_ota_boot_state {
+	uint64_t ota_profile_ota_boot_state;
+};
+
+struct ota_profile_ota_rollback_reason {
+	struct zcbor_string ota_profile_ota_rollback_reason;
+};
+
+struct ota_profile {
+	uint64_t ota_profile_ota_max_image_bytes;
+	uint64_t ota_profile_ota_strategy;
+	struct zcbor_string ota_profile_ota_boot_layout_version;
+	bool ota_profile_ota_rollback_capable;
+	struct ota_profile_ota_boot_state ota_profile_ota_boot_state;
+	bool ota_profile_ota_boot_state_present;
+	struct ota_profile_ota_rollback_reason ota_profile_ota_rollback_reason;
+	bool ota_profile_ota_rollback_reason_present;
+};
+
+struct heartbeat {
+	uint64_t heartbeat_generation;
+	uint64_t heartbeat_uptime_ms;
+	uint64_t heartbeat_status;
+	struct zcbor_string heartbeat_firmware_version;
+	struct zcbor_string heartbeat_firmware_target;
+	union {
+		struct zcbor_string heartbeat_running_release_id_empty_id_m;
+		struct zcbor_string heartbeat_running_release_id_uuid_m;
+	};
+	enum {
+		heartbeat_running_release_id_empty_id_m_c,
+		heartbeat_running_release_id_uuid_m_c,
+	} heartbeat_running_release_id_choice;
+	union {
+		struct zcbor_string heartbeat_last_install_id_empty_id_m;
+		struct zcbor_string heartbeat_last_install_id_uuid_m;
+	};
+	enum {
+		heartbeat_last_install_id_empty_id_m_c,
+		heartbeat_last_install_id_uuid_m_c,
+	} heartbeat_last_install_id_choice;
+	struct ota_profile heartbeat_ota_profile;
+	struct capabilities heartbeat_capabilities;
+	bool heartbeat_capabilities_present;
 };
 
 struct command_result_ok {
@@ -362,6 +370,17 @@ struct datastream_record_datastream_default {
 	struct typed_value_fields_r datastream_record_datastream_default;
 };
 
+struct pin_reference_r {
+	union {
+		uint64_t pin_reference_uint16_m;
+		struct zcbor_string pin_reference_tstr1_64;
+	};
+	enum {
+		pin_reference_uint16_m_c,
+		pin_reference_tstr1_64_c,
+	} pin_reference_choice;
+};
+
 struct hardware_mapping_mapping_active_high {
 	bool hardware_mapping_mapping_active_high;
 };
@@ -384,7 +403,7 @@ struct hardware_mapping_mapping_min_output_ms {
 
 struct hardware_mapping {
 	uint64_t hardware_mapping_mapping_kind;
-	uint64_t hardware_mapping_mapping_pin;
+	struct pin_reference_r hardware_mapping_mapping_pin;
 	struct hardware_mapping_mapping_active_high hardware_mapping_mapping_active_high;
 	bool hardware_mapping_mapping_active_high_present;
 	struct hardware_mapping_mapping_pull hardware_mapping_mapping_pull;
@@ -420,8 +439,19 @@ struct system_record_system_heartbeat_ms {
 	uint64_t system_record_system_heartbeat_ms;
 };
 
+struct system_pin_reference_r {
+	union {
+		uint64_t system_pin_reference_uint8_m;
+		struct zcbor_string system_pin_reference_tstr1_64;
+	};
+	enum {
+		system_pin_reference_uint8_m_c,
+		system_pin_reference_tstr1_64_c,
+	} system_pin_reference_choice;
+};
+
 struct system_record_system_status_led_pin {
-	uint64_t system_record_system_status_led_pin;
+	struct system_pin_reference_r system_record_system_status_led_pin;
 };
 
 struct system_record_system_status_led_active_low {
@@ -433,7 +463,7 @@ struct system_record_system_batch_flush_ms {
 };
 
 struct system_record_system_factory_reset_pin {
-	uint64_t system_record_system_factory_reset_pin;
+	struct system_pin_reference_r system_record_system_factory_reset_pin;
 };
 
 struct system_record_system_factory_reset_active_low {

@@ -60,7 +60,8 @@ capabilities = {
   schedule-slots: 4 => capability-schedule-slots,
   manifest-bytes: 5 => capability-manifest-bytes,
   history-bytes: 6 => capability-history-bytes,
-  frame-bytes: 7 => 512
+  frame-bytes: 7 => 512,
+  ? pin-references: 8 => bool
 }
 
 capability-datastream-slots = uint16
@@ -82,7 +83,7 @@ datastream-bound = [bound-generation: generation, bound-ids: datastream-bound-id
 datastream-bound-ids = [1*64 compact-id]
 
 ; 0x10..0x18 device-to-Engine hot-path messages.
-heartbeat = [heartbeat-generation: generation, heartbeat-uptime-ms: uint64, heartbeat-status: uint8, heartbeat-firmware-version: tstr .size (1..32), heartbeat-firmware-target: tstr .size (1..32), heartbeat-running-release-id: empty-id / uuid, heartbeat-last-install-id: empty-id / uuid, heartbeat-ota-profile: ota-profile]
+heartbeat = [heartbeat-generation: generation, heartbeat-uptime-ms: uint64, heartbeat-status: uint8, heartbeat-firmware-version: tstr .size (1..32), heartbeat-firmware-target: tstr .size (1..32), heartbeat-running-release-id: empty-id / uuid, heartbeat-last-install-id: empty-id / uuid, heartbeat-ota-profile: ota-profile, ? heartbeat-capabilities: capabilities]
 ota-profile = {
   ota-max-image-bytes: 0 => uint32,
   ota-strategy: 1 => 0..2,
@@ -159,9 +160,12 @@ datastream-record = {
   ? datastream-mapping: 8 => hardware-mapping
 }
 
+pin-reference = uint16 / tstr .size (1..64)
+system-pin-reference = uint8 / tstr .size (1..64)
+
 hardware-mapping = {
   mapping-kind: 0 => 0..3,
-  mapping-pin: 1 => uint16,
+  mapping-pin: 1 => pin-reference,
   ? mapping-active-high: 2 => bool,
   ? mapping-pull: 3 => 0..3,
   ? mapping-debounce-ms: 4 => uint32,
@@ -172,10 +176,10 @@ hardware-mapping = {
 system-record = {
   system-kind: 0 => 1,
   ? system-heartbeat-ms: 1 => uint32,
-  ? system-status-led-pin: 2 => uint8,
+  ? system-status-led-pin: 2 => system-pin-reference,
   ? system-status-led-active-low: 3 => bool,
   ? system-batch-flush-ms: 4 => uint32,
-  ? system-factory-reset-pin: 5 => uint8,
+  ? system-factory-reset-pin: 5 => system-pin-reference,
   ? system-factory-reset-active-low: 6 => bool,
   ? system-factory-reset-profile: 7 => 0..1,
   ? system-factory-reset-tap-count: 8 => 1..8,

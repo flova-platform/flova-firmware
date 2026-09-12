@@ -254,6 +254,8 @@ class ArduinoDeviceLink final {
                    sizeof(message.otaRollbackReason))) return false;
       value.heartbeat_ota_profile.ota_profile_ota_rollback_reason_present = true;
     }
+    value.heartbeat_capabilities_present = true;
+    fillCapabilities(value.heartbeat_capabilities);
     return sendEncoded(0x10, message.messageId, value, cbor_encode_heartbeat);
   }
 
@@ -598,20 +600,52 @@ class ArduinoDeviceLink final {
     if (!setText(value.bootstrap_auth_hardware_id, bootstrapHardwareId_, sizeof(bootstrapHardwareId_)) ||
         !setText(value.bootstrap_auth_firmware_target, bootstrapFirmwareTarget_, sizeof(bootstrapFirmwareTarget_)))
       return setSendFailure(failure, SendFailure::BootstrapFields);
-    value.bootstrap_auth_bootstrap_capabilities.capabilities_datastream_slots = FLOVA_DATASTREAM_CAPACITY;
-    value.bootstrap_auth_bootstrap_capabilities.capabilities_input_slots =
-        hardwareCapabilities_.automaticMapping
-            ? hardwareCapabilities_.inputSlots
-            : 0;
-    value.bootstrap_auth_bootstrap_capabilities.capabilities_output_slots =
-        hardwareCapabilities_.automaticMapping
-            ? hardwareCapabilities_.outputSlots
-            : 0;
-    value.bootstrap_auth_bootstrap_capabilities.capabilities_command_slots = FLOVA_COMMAND_DEDUP_CAPACITY;
-    value.bootstrap_auth_bootstrap_capabilities.capabilities_schedule_slots = FLOVA_SCHEDULE_RUNTIME_ENABLED ? FLOVA_SCHEDULE_CAPACITY : 0;
-    value.bootstrap_auth_bootstrap_capabilities.capabilities_manifest_bytes = 0;
-    value.bootstrap_auth_bootstrap_capabilities.capabilities_history_bytes = 0;
+    fillCapabilities(value.bootstrap_auth_bootstrap_capabilities);
     return sendEncoded(0x06, 0, value, cbor_encode_bootstrap_auth, failure);
+  }
+
+  void fillCapabilities(struct capabilities& caps) const {
+    caps.capabilities_datastream_slots = FLOVA_DATASTREAM_CAPACITY;
+    caps.capabilities_input_slots = hardwareCapabilities_.automaticMapping ? hardwareCapabilities_.inputSlots : 0;
+    caps.capabilities_output_slots = hardwareCapabilities_.automaticMapping ? hardwareCapabilities_.outputSlots : 0;
+    caps.capabilities_command_slots = FLOVA_COMMAND_DEDUP_CAPACITY;
+    caps.capabilities_schedule_slots = FLOVA_SCHEDULE_RUNTIME_ENABLED ? FLOVA_SCHEDULE_CAPACITY : 0;
+    caps.capabilities_manifest_bytes = 0;
+    caps.capabilities_history_bytes = 0;
+    caps.capabilities_pin_references_present = true;
+    caps.capabilities_pin_references.capabilities_pin_references = hardwareCapabilities_.automaticMapping;
+  }
+
+  static bool readPin(uint16_t& pin, char (&reference)[65], const pin_reference_r& input) {
+    reference[0] = 0;
+    if (input.pin_reference_choice == pin_reference_r::pin_reference_uint16_m_c) {
+      if (input.pin_reference_uint16_m > UINT16_MAX) return false;
+      pin = static_cast<uint16_t>(input.pin_reference_uint16_m);
+      return true;
+    }
+    return readPinText(reference, input.pin_reference_tstr1_64);
+  }
+
+  static bool readPin(uint8_t& pin, char (&reference)[65], const system_pin_reference_r& input) {
+    reference[0] = 0;
+    if (input.system_pin_reference_choice == system_pin_reference_r::system_pin_reference_uint8_m_c) {
+      if (input.system_pin_reference_uint8_m > UINT8_MAX) return false;
+      pin = static_cast<uint8_t>(input.system_pin_reference_uint8_m);
+      return true;
+    }
+    return readPinText(reference, input.system_pin_reference_tstr1_64);
+  }
+
+  static bool readPinText(char (&reference)[65], const zcbor_string& text) {
+    if (!text.len || text.len > 64) return false;
+    for (size_t i = 0; i < text.len; ++i) {
+      const uint8_t c = text.value[i];
+      const bool letter = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+      if (!letter && (i == 0 || !((c >= '0' && c <= '9') || c == '_'))) return false;
+      reference[i] = c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c;
+    }
+    reference[text.len] = 0;
+    return true;
   }
 
   static bool setSendFailure(SendFailure* output, SendFailure failure) {
@@ -988,10 +1022,10 @@ class ArduinoDeviceLink final {
         }
         if (source.datastream_record_datastream_mapping_present) {
           const hardware_mapping& mapping = source.datastream_record_datastream_mapping.datastream_record_datastream_mapping;
-          if (mapping.hardware_mapping_mapping_kind > 3 || mapping.hardware_mapping_mapping_pin > UINT16_MAX) return false;
+          if (mapping.hardware_mapping_mapping_kind > 3) return false;
           out.data.datastream.hasMapping = true;
           out.data.datastream.mapping.kind = static_cast<flova::config::MappingKind>(mapping.hardware_mapping_mapping_kind);
-          out.data.datastream.mapping.pin = static_cast<uint16_t>(mapping.hardware_mapping_mapping_pin);
+          if (!readPin(out.data.datastream.mapping.pin, out.data.datastream.mapping.pinReference, mapping.hardware_mapping_mapping_pin)) return false;
           out.data.datastream.mapping.hasActiveHigh = mapping.hardware_mapping_mapping_active_high_present;
           out.data.datastream.mapping.activeHigh = mapping.hardware_mapping_mapping_active_high.hardware_mapping_mapping_active_high;
           out.data.datastream.mapping.hasPull = mapping.hardware_mapping_mapping_pull_present;
@@ -1011,13 +1045,13 @@ class ArduinoDeviceLink final {
         out.data.system.hasHeartbeatMs = source.system_record_system_heartbeat_ms_present;
         out.data.system.heartbeatMs = static_cast<uint32_t>(source.system_record_system_heartbeat_ms.system_record_system_heartbeat_ms);
         out.data.system.hasStatusLedPin = source.system_record_system_status_led_pin_present;
-        out.data.system.statusLedPin = static_cast<uint8_t>(source.system_record_system_status_led_pin.system_record_system_status_led_pin);
+        if (out.data.system.hasStatusLedPin && !readPin(out.data.system.statusLedPin, out.data.system.statusLedPinReference, source.system_record_system_status_led_pin.system_record_system_status_led_pin)) return false;
         out.data.system.hasStatusLedActiveLow = source.system_record_system_status_led_active_low_present;
         out.data.system.statusLedActiveLow = source.system_record_system_status_led_active_low.system_record_system_status_led_active_low;
         out.data.system.hasBatchFlushMs = source.system_record_system_batch_flush_ms_present;
         out.data.system.batchFlushMs = static_cast<uint32_t>(source.system_record_system_batch_flush_ms.system_record_system_batch_flush_ms);
         out.data.system.hasFactoryResetPin = source.system_record_system_factory_reset_pin_present;
-        out.data.system.factoryResetPin = static_cast<uint8_t>(source.system_record_system_factory_reset_pin.system_record_system_factory_reset_pin);
+        if (out.data.system.hasFactoryResetPin && !readPin(out.data.system.factoryResetPin, out.data.system.factoryResetPinReference, source.system_record_system_factory_reset_pin.system_record_system_factory_reset_pin)) return false;
         out.data.system.hasFactoryResetActiveLow = source.system_record_system_factory_reset_active_low_present;
         out.data.system.factoryResetActiveLow = source.system_record_system_factory_reset_active_low.system_record_system_factory_reset_active_low;
         out.data.system.hasFactoryResetProfile = source.system_record_system_factory_reset_profile_present;

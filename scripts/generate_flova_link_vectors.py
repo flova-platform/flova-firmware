@@ -96,6 +96,10 @@ VECTORS = [
     (0x2B, "schedule_record", [8, 0, {0: 2, 1: 12, 2: True, 3: 1_800_000_000_000, 4: 1_800_086_400_000, 5: [[0, 1, 0, True]]}]),
     (0x2C, "schedule_end", [8, 1, SHA]),
     (0x7F, "error", ["malformed_payload"]),
+    (0x10, "heartbeat_pin_references", [7, 123_456, 1, "1.0.0", "universal_esp32", b"", b"", {0: 1_310_720, 1: 0, 2: "legacy", 3: False}, {**CAPS, 8: True}]),
+    (0x06, "bootstrap_pin_references", {0: b"t" * 32, 1: SECRET, 2: "esp-aabbcc", 3: "universal-esp8266", 4: {**CAPS, 8: True}}),
+    (0x29, "config_record_symbolic", {0: 8, 1: 0, 2: {0: 0, 1: 1, 2: UUID1, 3: "analog", 4: 2, 8: {0: 2, 1: "A0"}}}),
+    (0x29, "config_system_symbolic", {0: 8, 1: 1, 2: {0: 1, 2: "GPIO2", 5: "GPIO0"}}),
 ]
 
 

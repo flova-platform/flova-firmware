@@ -448,6 +448,8 @@ class FlovaClient {
     char keyTarget[FLOVA_TEXT_CAPACITY] = {};
     uint16_t mappedPins[FLOVA_HARDWARE_INPUT_CAPACITY +
                        FLOVA_HARDWARE_OUTPUT_CAPACITY] = {};
+    uint8_t mappedInputPulls[FLOVA_HARDWARE_INPUT_CAPACITY +
+                             FLOVA_HARDWARE_OUTPUT_CAPACITY] = {};
     size_t mappedPinCount = 0;
     size_t inputMappingCount = 0;
     size_t outputMappingCount = 0;
@@ -856,8 +858,8 @@ class FlovaClient {
     configurationWork_.phase = ConfigurationWorkPhase::Semantic;
   }
 
-  bool validateConfigurationUnit(const flova::config::Unit& unit) {
-    if (!device_.validateConfigurationUnit(unit) || !hardware_.validate(unit))
+  bool validateConfigurationUnit(flova::config::Unit& unit) {
+    if (!hardware_.resolve(unit) || !device_.validateConfigurationUnit(unit) || !hardware_.validate(unit))
       return false;
     const flova::HardwareCapabilities capabilities = hardware_.capabilities();
     if (unit.kind == flova::config::UnitKind::Datastream) {
@@ -881,7 +883,8 @@ class FlovaClient {
             return false;
         }
         const uint16_t pin = unit.data.datastream.mapping.pin;
-        if ((configurationWork_.statusLedPin != UINT16_MAX &&
+        if (configurationWork_.systemSeen ||
+            (configurationWork_.statusLedPin != UINT16_MAX &&
              configurationWork_.statusLedPin == pin) ||
             configurationWork_.mappedPinCount >=
                 sizeof(configurationWork_.mappedPins) /
@@ -889,6 +892,10 @@ class FlovaClient {
           return false;
         for (size_t i = 0; i < configurationWork_.mappedPinCount; ++i)
           if (configurationWork_.mappedPins[i] == pin) return false;
+        configurationWork_.mappedInputPulls[configurationWork_.mappedPinCount] =
+            kind == flova::config::MappingKind::DigitalInput
+                ? (unit.data.datastream.mapping.hasPull ? unit.data.datastream.mapping.pull : 0)
+                : UINT8_MAX;
         configurationWork_.mappedPins[configurationWork_.mappedPinCount++] = pin;
       }
       return flova::copyBounded(unit.data.datastream.key,
@@ -903,6 +910,18 @@ class FlovaClient {
         for (size_t i = 0; i < configurationWork_.mappedPinCount; ++i)
           if (configurationWork_.mappedPins[i] == configurationWork_.statusLedPin)
             return false;
+      }
+      if (capabilities.automaticMapping && unit.data.system.hasFactoryResetPin) {
+        const uint16_t pin = unit.data.system.factoryResetPin;
+        if (pin == configurationWork_.statusLedPin) return false;
+        uint8_t pull = !unit.data.system.hasFactoryResetActiveLow ||
+                               unit.data.system.factoryResetActiveLow ? 1 : 0;
+        for (size_t i = 0; i < configurationWork_.mappedPinCount; ++i) {
+          if (configurationWork_.mappedPins[i] != pin) continue;
+          pull = configurationWork_.mappedInputPulls[i];
+          if (pull == UINT8_MAX) return false;
+        }
+        if (!hardware_.validateInputMode(pin, pull)) return false;
       }
       return true;
     }
@@ -1096,8 +1115,8 @@ class FlovaClient {
       failConfigurationWork(false);
       return;
     }
-    const flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
-    if (!device_.applyConfigurationUnit(unit) || !hardware_.apply(unit) ||
+    flova::config::Unit& unit = configurationDecodeWorkspace_.typedUnit;
+    if (!hardware_.resolve(unit) || !device_.applyConfigurationUnit(unit) || !hardware_.apply(unit) ||
         !applyScheduleUnit(unit)) {
       hardware_.failSafe();
       failConfigurationWork(false);

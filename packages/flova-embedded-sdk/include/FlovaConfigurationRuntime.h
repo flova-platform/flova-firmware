@@ -36,6 +36,7 @@ struct Value {
 struct HardwareMapping {
   MappingKind kind;
   uint16_t pin;
+  char pinReference[65];
   bool hasActiveHigh;
   bool activeHigh;
   bool hasPull;
@@ -69,12 +70,14 @@ struct System {
   uint32_t heartbeatMs;
   bool hasStatusLedPin;
   uint8_t statusLedPin;
+  char statusLedPinReference[65];
   bool hasStatusLedActiveLow;
   bool statusLedActiveLow;
   bool hasBatchFlushMs;
   uint32_t batchFlushMs;
   bool hasFactoryResetPin;
   uint8_t factoryResetPin;
+  char factoryResetPinReference[65];
   bool hasFactoryResetActiveLow;
   bool factoryResetActiveLow;
   bool hasFactoryResetProfile;
