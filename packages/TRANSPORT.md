@@ -38,6 +38,12 @@ The stock DRAM profile must be physically validated with the intended sketch's
 memory use before deployment. A compile result alone proves neither available
 TLS heap nor successful provisioning.
 
+Connection and OTA HTTP setup explicitly select DRAM for TLS contexts and TCP
+allocations. Stock BearSSL independently prefers IRAM for record buffers and
+falls back to DRAM. Never wrap the entire handshake in an IRAM heap selector:
+the contexts then compete with the 16 KB receive buffer and invalidate the
+separate DRAM/IRAM preflight budgets.
+
 ## Build and diagnostics
 
 The package compiles unchanged upstream zcbor through canonical C wrappers;

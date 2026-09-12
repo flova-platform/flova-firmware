@@ -12,6 +12,11 @@ esac
 if [ "$mode" = all ]; then
   "$repo_dir/scripts/check_flova_link_hot_path.sh"
   "$repo_dir/scripts/check_passive_esp_ownership.sh"
+  # BearSSL selects IRAM for record buffers internally; contexts belong in DRAM.
+  if rg -n 'HeapSelectIram' "$repo_dir/packages/flova-esp8266/include/FlovaEsp8266Platform.h"; then
+    echo "ESP8266 transport must not move TLS contexts into the record-buffer heap" >&2
+    exit 1
+  fi
   for source in common encode decode print; do
     rg -F '#define ZCBOR_CANONICAL' "$repo_dir/third_party/zcbor/flova/zcbor_$source.c" >/dev/null
   done
