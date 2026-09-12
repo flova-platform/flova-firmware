@@ -28,6 +28,8 @@ class Hardware {
   virtual HardwareCapabilities capabilities() const {
     return HardwareCapabilities();
   }
+  virtual bool resolve(config::Unit&) { return true; }
+  virtual bool validateInputMode(uint16_t, uint8_t) { return true; }
   virtual bool validate(const config::Unit&) { return true; }
   virtual bool apply(const config::Unit& unit) = 0;
   virtual void resetConfiguration() {}

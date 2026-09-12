@@ -60,7 +60,9 @@ class FlovaUniversalEsp8266 final {
   ArduinoFlovaLogger logger_;
   ArduinoFlovaHardware hardware_{flova::esp8266::validDigitalPin,
                                  flova::esp8266::validDigitalPin,
-                                 flova::esp8266::validAnalogPin};
+                                 flova::esp8266::validAnalogPin,
+                                 flova::esp8266::resolvePin,
+                                 flova::esp8266::inputMode};
   FlovaEsp8266Provisioning provisioning_;
   FlovaEsp8266StoredNetwork network_;
   ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock_;

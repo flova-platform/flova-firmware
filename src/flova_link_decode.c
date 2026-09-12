@@ -29,14 +29,15 @@ static bool decode_repeated_ota_desired_ota_target(zcbor_state_t *state, struct 
 static bool decode_repeated_ota_desired_ota_release_id(zcbor_state_t *state, struct ota_desired_ota_release_id *result);
 static bool decode_repeated_datastream_binding_keys_tstr1_48(zcbor_state_t *state, struct zcbor_string *result);
 static bool decode_datastream_binding_keys(zcbor_state_t *state, struct datastream_binding_keys *result);
-static bool decode_repeated_ota_profile_ota_boot_state(zcbor_state_t *state, struct ota_profile_ota_boot_state *result);
-static bool decode_repeated_ota_profile_ota_rollback_reason(zcbor_state_t *state, struct ota_profile_ota_rollback_reason *result);
-static bool decode_ota_profile(zcbor_state_t *state, struct ota_profile *result);
 static bool decode_typed_value_fields(zcbor_state_t *state, struct typed_value_fields_r *result);
 static bool decode_correlation_id(zcbor_state_t *state, struct correlation_id_r *result);
+static bool decode_repeated_capabilities_pin_references(zcbor_state_t *state, struct capabilities_pin_references *result);
 static bool decode_capabilities(zcbor_state_t *state, struct capabilities *result);
 static bool decode_repeated_datastream_bound_ids_compact_id_m(zcbor_state_t *state, uint64_t *result);
 static bool decode_datastream_bound_ids(zcbor_state_t *state, struct datastream_bound_ids *result);
+static bool decode_repeated_ota_profile_ota_boot_state(zcbor_state_t *state, struct ota_profile_ota_boot_state *result);
+static bool decode_repeated_ota_profile_ota_rollback_reason(zcbor_state_t *state, struct ota_profile_ota_rollback_reason *result);
+static bool decode_ota_profile(zcbor_state_t *state, struct ota_profile *result);
 static bool decode_command_result_ok(zcbor_state_t *state, struct command_result_ok *result);
 static bool decode_command_result_error(zcbor_state_t *state, struct command_result_error *result);
 static bool decode_repeated_config_begin_config_command_id(zcbor_state_t *state, struct config_begin_config_command_id *result);
@@ -48,6 +49,7 @@ static bool decode_typed_value(zcbor_state_t *state, struct typed_value_fields_r
 static bool decode_repeated_datastream_record_datastream_minimum(zcbor_state_t *state, struct datastream_record_datastream_minimum *result);
 static bool decode_repeated_datastream_record_datastream_maximum(zcbor_state_t *state, struct datastream_record_datastream_maximum *result);
 static bool decode_repeated_datastream_record_datastream_default(zcbor_state_t *state, struct datastream_record_datastream_default *result);
+static bool decode_pin_reference(zcbor_state_t *state, struct pin_reference_r *result);
 static bool decode_repeated_hardware_mapping_mapping_active_high(zcbor_state_t *state, struct hardware_mapping_mapping_active_high *result);
 static bool decode_repeated_hardware_mapping_mapping_pull(zcbor_state_t *state, struct hardware_mapping_mapping_pull *result);
 static bool decode_repeated_hardware_mapping_mapping_debounce_ms(zcbor_state_t *state, struct hardware_mapping_mapping_debounce_ms *result);
@@ -57,6 +59,7 @@ static bool decode_hardware_mapping(zcbor_state_t *state, struct hardware_mappin
 static bool decode_repeated_datastream_record_datastream_mapping(zcbor_state_t *state, struct datastream_record_datastream_mapping *result);
 static bool decode_datastream_record(zcbor_state_t *state, struct datastream_record *result);
 static bool decode_repeated_system_record_system_heartbeat_ms(zcbor_state_t *state, struct system_record_system_heartbeat_ms *result);
+static bool decode_system_pin_reference(zcbor_state_t *state, struct system_pin_reference_r *result);
 static bool decode_repeated_system_record_system_status_led_pin(zcbor_state_t *state, struct system_record_system_status_led_pin *result);
 static bool decode_repeated_system_record_system_status_led_active_low(zcbor_state_t *state, struct system_record_system_status_led_active_low *result);
 static bool decode_repeated_system_record_system_batch_flush_ms(zcbor_state_t *state, struct system_record_system_batch_flush_ms *result);
@@ -169,6 +172,126 @@ static bool decode_datastream_binding_keys(
 	return res;
 }
 
+static bool decode_typed_value_fields(
+		zcbor_state_t *state, struct typed_value_fields_r *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((((zcbor_uint_decode(state, &(*result).typed_value_fields_choice, sizeof((*result).typed_value_fields_choice)))) && ((((((*result).typed_value_fields_choice == typed_value_fields_value_bool_type_l_c) && ((((1)
+	&& ((zcbor_bool_decode(state, (&(*result).typed_value_fields_value_bool_type_l_value_bool))))))))
+	|| (((*result).typed_value_fields_choice == typed_value_fields_value_int_type_l_c) && ((((1)
+	&& ((zcbor_int64_decode(state, (&(*result).typed_value_fields_value_int_type_l_value_int))))))))
+	|| (((*result).typed_value_fields_choice == typed_value_fields_value_f32_type_l_c) && ((((1)
+	&& ((zcbor_float32_decode(state, (&(*result).typed_value_fields_value_f32_type_l_value_f32))))))))
+	|| (((*result).typed_value_fields_choice == typed_value_fields_value_f64_type_l_c) && ((((1)
+	&& ((zcbor_float64_decode(state, (&(*result).typed_value_fields_value_f64_type_l_value_f64))))))))
+	|| (((*result).typed_value_fields_choice == typed_value_fields_value_text_type_l_c) && ((((1)
+	&& ((zcbor_tstr_decode(state, (&(*result).typed_value_fields_value_text_type_l_value_text)))
+	&& ((((((*result).typed_value_fields_value_text_type_l_value_text.len >= 0)
+	&& ((*result).typed_value_fields_value_text_type_l_value_text.len <= 96)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))))))) || (zcbor_error(state, ZCBOR_ERR_WRONG_VALUE), false))))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_correlation_id(
+		zcbor_state_t *state, struct correlation_id_r *result)
+{
+	zcbor_log("%s\r\n", __func__);
+	bool int_res;
+
+	bool res = (((zcbor_union_start_code(state) && (int_res = ((((zcbor_bstr_decode(state, (&(*result).correlation_id_empty_id_m)))
+	&& ((((((*result).correlation_id_empty_id_m.len == 0)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).correlation_id_choice = correlation_id_empty_id_m_c), true))
+	|| (zcbor_union_elem_code(state) && (((zcbor_bstr_decode(state, (&(*result).correlation_id_uuid_m)))
+	&& ((((((*result).correlation_id_uuid_m.len == 16)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).correlation_id_choice = correlation_id_uuid_m_c), true)))), zcbor_union_end_code(state), int_res))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_capabilities_pin_references(
+		zcbor_state_t *state, struct capabilities_pin_references *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (8))))
+	&& (zcbor_bool_decode(state, (&(*result).capabilities_pin_references)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_capabilities(
+		zcbor_state_t *state, struct capabilities *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_map_start_decode(state) && (((((zcbor_uint64_expect(state, (0))))
+	&& (zcbor_uint64_decode(state, (&(*result).capabilities_datastream_slots)))
+	&& ((((((((*result).capabilities_datastream_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& (((zcbor_uint64_expect(state, (1))))
+	&& (zcbor_uint64_decode(state, (&(*result).capabilities_input_slots)))
+	&& ((((((((*result).capabilities_input_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& (((zcbor_uint64_expect(state, (2))))
+	&& (zcbor_uint64_decode(state, (&(*result).capabilities_output_slots)))
+	&& ((((((((*result).capabilities_output_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& (((zcbor_uint64_expect(state, (3))))
+	&& (zcbor_uint64_decode(state, (&(*result).capabilities_command_slots)))
+	&& ((((((((*result).capabilities_command_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& (((zcbor_uint64_expect(state, (4))))
+	&& (zcbor_uint64_decode(state, (&(*result).capabilities_schedule_slots)))
+	&& ((((((((*result).capabilities_schedule_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& (((zcbor_uint64_expect(state, (5))))
+	&& (zcbor_uint64_decode(state, (&(*result).capabilities_manifest_bytes)))
+	&& ((((((((*result).capabilities_manifest_bytes <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& (((zcbor_uint64_expect(state, (6))))
+	&& (zcbor_uint64_decode(state, (&(*result).capabilities_history_bytes)))
+	&& ((((((((*result).capabilities_history_bytes <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& (((zcbor_uint64_expect(state, (7))))
+	&& (zcbor_uint64_expect(state, (512))))
+	&& zcbor_present_decode(&((*result).capabilities_pin_references_present), (zcbor_decoder_t *)decode_repeated_capabilities_pin_references, state, (&(*result).capabilities_pin_references))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_map_end_decode(state))));
+
+	if (false) {
+		/* For testing that the types of the arguments are correct.
+		 * A compiler error here means a bug in zcbor.
+		 */
+		decode_repeated_capabilities_pin_references(state, (&(*result).capabilities_pin_references));
+	}
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_datastream_bound_ids_compact_id_m(
+		zcbor_state_t *state, uint64_t *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_uint64_decode(state, (&(*result))))
+	&& ((((((((*result) <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_datastream_bound_ids(
+		zcbor_state_t *state, struct datastream_bound_ids *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_list_start_decode(state) && ((zcbor_multi_decode(1, 64, &(*result).datastream_bound_ids_compact_id_m_count, (zcbor_decoder_t *)decode_repeated_datastream_bound_ids_compact_id_m, state, (*&(*result).datastream_bound_ids_compact_id_m), sizeof(uint64_t))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+
+	if (false) {
+		/* For testing that the types of the arguments are correct.
+		 * A compiler error here means a bug in zcbor.
+		 */
+		decode_repeated_datastream_bound_ids_compact_id_m(state, (*&(*result).datastream_bound_ids_compact_id_m));
+	}
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_repeated_ota_profile_ota_boot_state(
 		zcbor_state_t *state, struct ota_profile_ota_boot_state *result)
 {
@@ -222,106 +345,6 @@ static bool decode_ota_profile(
 		 */
 		decode_repeated_ota_profile_ota_boot_state(state, (&(*result).ota_profile_ota_boot_state));
 		decode_repeated_ota_profile_ota_rollback_reason(state, (&(*result).ota_profile_ota_rollback_reason));
-	}
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_typed_value_fields(
-		zcbor_state_t *state, struct typed_value_fields_r *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((((zcbor_uint_decode(state, &(*result).typed_value_fields_choice, sizeof((*result).typed_value_fields_choice)))) && ((((((*result).typed_value_fields_choice == typed_value_fields_value_bool_type_l_c) && ((((1)
-	&& ((zcbor_bool_decode(state, (&(*result).typed_value_fields_value_bool_type_l_value_bool))))))))
-	|| (((*result).typed_value_fields_choice == typed_value_fields_value_int_type_l_c) && ((((1)
-	&& ((zcbor_int64_decode(state, (&(*result).typed_value_fields_value_int_type_l_value_int))))))))
-	|| (((*result).typed_value_fields_choice == typed_value_fields_value_f32_type_l_c) && ((((1)
-	&& ((zcbor_float32_decode(state, (&(*result).typed_value_fields_value_f32_type_l_value_f32))))))))
-	|| (((*result).typed_value_fields_choice == typed_value_fields_value_f64_type_l_c) && ((((1)
-	&& ((zcbor_float64_decode(state, (&(*result).typed_value_fields_value_f64_type_l_value_f64))))))))
-	|| (((*result).typed_value_fields_choice == typed_value_fields_value_text_type_l_c) && ((((1)
-	&& ((zcbor_tstr_decode(state, (&(*result).typed_value_fields_value_text_type_l_value_text)))
-	&& ((((((*result).typed_value_fields_value_text_type_l_value_text.len >= 0)
-	&& ((*result).typed_value_fields_value_text_type_l_value_text.len <= 96)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))))))) || (zcbor_error(state, ZCBOR_ERR_WRONG_VALUE), false))))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_correlation_id(
-		zcbor_state_t *state, struct correlation_id_r *result)
-{
-	zcbor_log("%s\r\n", __func__);
-	bool int_res;
-
-	bool res = (((zcbor_union_start_code(state) && (int_res = ((((zcbor_bstr_decode(state, (&(*result).correlation_id_empty_id_m)))
-	&& ((((((*result).correlation_id_empty_id_m.len == 0)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).correlation_id_choice = correlation_id_empty_id_m_c), true))
-	|| (zcbor_union_elem_code(state) && (((zcbor_bstr_decode(state, (&(*result).correlation_id_uuid_m)))
-	&& ((((((*result).correlation_id_uuid_m.len == 16)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).correlation_id_choice = correlation_id_uuid_m_c), true)))), zcbor_union_end_code(state), int_res))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_capabilities(
-		zcbor_state_t *state, struct capabilities *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_map_start_decode(state) && (((((zcbor_uint64_expect(state, (0))))
-	&& (zcbor_uint64_decode(state, (&(*result).capabilities_datastream_slots)))
-	&& ((((((((*result).capabilities_datastream_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (1))))
-	&& (zcbor_uint64_decode(state, (&(*result).capabilities_input_slots)))
-	&& ((((((((*result).capabilities_input_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (2))))
-	&& (zcbor_uint64_decode(state, (&(*result).capabilities_output_slots)))
-	&& ((((((((*result).capabilities_output_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (3))))
-	&& (zcbor_uint64_decode(state, (&(*result).capabilities_command_slots)))
-	&& ((((((((*result).capabilities_command_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (4))))
-	&& (zcbor_uint64_decode(state, (&(*result).capabilities_schedule_slots)))
-	&& ((((((((*result).capabilities_schedule_slots <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (5))))
-	&& (zcbor_uint64_decode(state, (&(*result).capabilities_manifest_bytes)))
-	&& ((((((((*result).capabilities_manifest_bytes <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (6))))
-	&& (zcbor_uint64_decode(state, (&(*result).capabilities_history_bytes)))
-	&& ((((((((*result).capabilities_history_bytes <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
-	&& (((zcbor_uint64_expect(state, (7))))
-	&& (zcbor_uint64_expect(state, (512))))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_map_end_decode(state))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_repeated_datastream_bound_ids_compact_id_m(
-		zcbor_state_t *state, uint64_t *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_uint64_decode(state, (&(*result))))
-	&& ((((((((*result) <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
-
-	log_result(state, res, __func__);
-	return res;
-}
-
-static bool decode_datastream_bound_ids(
-		zcbor_state_t *state, struct datastream_bound_ids *result)
-{
-	zcbor_log("%s\r\n", __func__);
-
-	bool res = (((zcbor_list_start_decode(state) && ((zcbor_multi_decode(1, 64, &(*result).datastream_bound_ids_compact_id_m_count, (zcbor_decoder_t *)decode_repeated_datastream_bound_ids_compact_id_m, state, (*&(*result).datastream_bound_ids_compact_id_m), sizeof(uint64_t))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
-
-	if (false) {
-		/* For testing that the types of the arguments are correct.
-		 * A compiler error here means a bug in zcbor.
-		 */
-		decode_repeated_datastream_bound_ids_compact_id_m(state, (*&(*result).datastream_bound_ids_compact_id_m));
 	}
 
 	log_result(state, res, __func__);
@@ -516,6 +539,22 @@ static bool decode_repeated_datastream_record_datastream_default(
 	return res;
 }
 
+static bool decode_pin_reference(
+		zcbor_state_t *state, struct pin_reference_r *result)
+{
+	zcbor_log("%s\r\n", __func__);
+	bool int_res;
+
+	bool res = (((zcbor_union_start_code(state) && (int_res = ((((zcbor_uint64_decode(state, (&(*result).pin_reference_uint16_m)))
+	&& ((((((*result).pin_reference_uint16_m <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).pin_reference_choice = pin_reference_uint16_m_c), true))
+	|| (zcbor_union_elem_code(state) && (((zcbor_tstr_decode(state, (&(*result).pin_reference_tstr1_64)))
+	&& ((((*result).pin_reference_tstr1_64.len >= 1)
+	&& ((*result).pin_reference_tstr1_64.len <= 64)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).pin_reference_choice = pin_reference_tstr1_64_c), true)))), zcbor_union_end_code(state), int_res))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_repeated_hardware_mapping_mapping_active_high(
 		zcbor_state_t *state, struct hardware_mapping_mapping_active_high *result)
 {
@@ -589,8 +628,7 @@ static bool decode_hardware_mapping(
 	&& (zcbor_uint64_decode(state, (&(*result).hardware_mapping_mapping_kind)))
 	&& ((((*result).hardware_mapping_mapping_kind <= 3)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
 	&& (((zcbor_uint64_expect(state, (1))))
-	&& (zcbor_uint64_decode(state, (&(*result).hardware_mapping_mapping_pin)))
-	&& ((((((*result).hardware_mapping_mapping_pin <= UINT16_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& (decode_pin_reference(state, (&(*result).hardware_mapping_mapping_pin))))
 	&& zcbor_present_decode(&((*result).hardware_mapping_mapping_active_high_present), (zcbor_decoder_t *)decode_repeated_hardware_mapping_mapping_active_high, state, (&(*result).hardware_mapping_mapping_active_high))
 	&& zcbor_present_decode(&((*result).hardware_mapping_mapping_pull_present), (zcbor_decoder_t *)decode_repeated_hardware_mapping_mapping_pull, state, (&(*result).hardware_mapping_mapping_pull))
 	&& zcbor_present_decode(&((*result).hardware_mapping_mapping_debounce_ms_present), (zcbor_decoder_t *)decode_repeated_hardware_mapping_mapping_debounce_ms, state, (&(*result).hardware_mapping_mapping_debounce_ms))
@@ -676,14 +714,29 @@ static bool decode_repeated_system_record_system_heartbeat_ms(
 	return res;
 }
 
+static bool decode_system_pin_reference(
+		zcbor_state_t *state, struct system_pin_reference_r *result)
+{
+	zcbor_log("%s\r\n", __func__);
+	bool int_res;
+
+	bool res = (((zcbor_union_start_code(state) && (int_res = ((((zcbor_uint64_decode(state, (&(*result).system_pin_reference_uint8_m)))
+	&& ((((((*result).system_pin_reference_uint8_m <= UINT8_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).system_pin_reference_choice = system_pin_reference_uint8_m_c), true))
+	|| (zcbor_union_elem_code(state) && (((zcbor_tstr_decode(state, (&(*result).system_pin_reference_tstr1_64)))
+	&& ((((*result).system_pin_reference_tstr1_64.len >= 1)
+	&& ((*result).system_pin_reference_tstr1_64.len <= 64)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).system_pin_reference_choice = system_pin_reference_tstr1_64_c), true)))), zcbor_union_end_code(state), int_res))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_repeated_system_record_system_status_led_pin(
 		zcbor_state_t *state, struct system_record_system_status_led_pin *result)
 {
 	zcbor_log("%s\r\n", __func__);
 
 	bool res = ((((zcbor_uint64_expect(state, (2))))
-	&& (zcbor_uint64_decode(state, (&(*result).system_record_system_status_led_pin)))
-	&& ((((((*result).system_record_system_status_led_pin <= UINT8_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+	&& (decode_system_pin_reference(state, (&(*result).system_record_system_status_led_pin)))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -720,8 +773,7 @@ static bool decode_repeated_system_record_system_factory_reset_pin(
 	zcbor_log("%s\r\n", __func__);
 
 	bool res = ((((zcbor_uint64_expect(state, (5))))
-	&& (zcbor_uint64_decode(state, (&(*result).system_record_system_factory_reset_pin)))
-	&& ((((((*result).system_record_system_factory_reset_pin <= UINT8_MAX)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))));
+	&& (decode_system_pin_reference(state, (&(*result).system_record_system_factory_reset_pin)))));
 
 	log_result(state, res, __func__);
 	return res;
@@ -1396,7 +1448,8 @@ static bool decode_heartbeat(
 	&& ((((((*result).heartbeat_last_install_id_empty_id_m.len == 0)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).heartbeat_last_install_id_choice = heartbeat_last_install_id_empty_id_m_c), true))
 	|| (zcbor_union_elem_code(state) && (((zcbor_bstr_decode(state, (&(*result).heartbeat_last_install_id_uuid_m)))
 	&& ((((((*result).heartbeat_last_install_id_uuid_m.len == 16)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))) && (((*result).heartbeat_last_install_id_choice = heartbeat_last_install_id_uuid_m_c), true)))), zcbor_union_end_code(state), int_res)))
-	&& ((decode_ota_profile(state, (&(*result).heartbeat_ota_profile))))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
+	&& ((decode_ota_profile(state, (&(*result).heartbeat_ota_profile))))
+	&& ((*result).heartbeat_capabilities_present = ((decode_capabilities(state, (&(*result).heartbeat_capabilities)))), 1)) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_list_end_decode(state))));
 
 	log_result(state, res, __func__);
 	return res;

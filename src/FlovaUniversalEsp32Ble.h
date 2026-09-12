@@ -65,7 +65,9 @@ class FlovaUniversalEsp32Ble final {
   ArduinoFlovaLogger logger_;
   ArduinoFlovaHardware hardware_{flova::esp32::validInputPin,
                                  flova::esp32::validOutputPin,
-                                 flova::esp32::validAnalogPin};
+                                 flova::esp32::validAnalogPin,
+                                 flova::esp32::resolvePin,
+                                 flova::esp32::inputMode};
   FlovaEsp32BleProvisioning provisioning_;
   FlovaEsp32PlatformNetwork network_;
   ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock_;
