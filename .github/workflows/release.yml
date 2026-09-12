@@ -120,6 +120,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+      workflows: write
     env:
       SDK_VERSION: ${{ needs.validate.outputs.version }}
       GH_TOKEN: ${{ github.token }}
