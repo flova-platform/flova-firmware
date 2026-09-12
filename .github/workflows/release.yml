@@ -112,7 +112,9 @@ jobs:
           path: ${{ runner.temp }}/flova-sdk-artifact
 
       - name: Extract SDK package
-        run: tar -xzf "$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz" -C "$RUNNER_TEMP"
+        run: |
+          mkdir -p "$RUNNER_TEMP/FlovaSDK"
+          tar -xzf "$RUNNER_TEMP/flova-sdk-artifact/FlovaSDK.tar.gz" -C "$RUNNER_TEMP/FlovaSDK"
 
       - name: Compile Arduino example
         uses: arduino/compile-sketches@v1
