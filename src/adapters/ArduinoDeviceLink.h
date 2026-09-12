@@ -21,6 +21,18 @@ extern "C" {
 // Network bytes are copied into the fixed queue; board code drains it from
 // loop(), where application hardware is allowed to run.
 class ArduinoDeviceLink final {
+  enum class SendFailure : uint8_t {
+    None,
+    WriteBusy,
+    CborSchema,
+    CborCanonical,
+    FrameHeader,
+    WebSocketFrame,
+    TransportSubmit,
+    TransportWrite,
+    BootstrapFields,
+  };
+
  public:
   static const size_t kFrameBytes = flova::link::kMaximumFrameBytes;
   static const size_t kPayloadBytes = flova::link::kMaximumPayloadBytes;
@@ -37,8 +49,16 @@ class ArduinoDeviceLink final {
                 "generated CONFIG_RECORD decode workspace exceeded its budget");
 
   ArduinoDeviceLink(FlovaArduinoPlatform& platform, FlovaEntropySource& entropy)
-      : platform_(platform), websocket_(platform.linkClient(), entropy) {}
-  ~ArduinoDeviceLink() { disconnect(); }
+      : platform_(platform), websocket_(platform, entropy) {}
+  ~ArduinoDeviceLink() { disconnect(false); }
+  void beginDrain() {
+    drainFailed_ = false;
+    draining_ = true;
+    drainStartedAt_ = millis();
+    websocket_.close();
+  }
+  bool drainComplete() const { return !draining_ && platform_.linkClosed(); }
+  bool drainFailed() const { return drainFailed_; }
 
   bool configure(const char* url) {
     if (!url || strlen(url) >= sizeof(url_)) return false;
@@ -304,7 +324,18 @@ class ArduinoDeviceLink final {
     callbackContext_ = context;
   }
   void loop() {
+    if (draining_) {
+      const bool ok = platform_.serviceLinkWrite() && websocket_.serviceControl();
+      if (!ok || millis() - drainStartedAt_ >= 5000UL ||
+          (!platform_.linkWriteBusy() && !websocket_.controlPending())) {
+        drainFailed_ = !ok || millis() - drainStartedAt_ >= 5000UL;
+        draining_ = false;
+        disconnect(false);
+      }
+      return;
+    }
     if (!active_ && !connecting_) return;
+    if (!websocket_.serviceControl()) { disconnect(false); return; }
     if (!platform_.serviceLinkWrite()) {
       connectionAttemptFailed_ = true;
       disconnect();
@@ -336,7 +367,12 @@ class ArduinoDeviceLink final {
       }
       connecting_ = false;
       active_ = true;
-      if (bootstrap_ ? !sendBootstrapAuthentication() : !sendAuthentication()) {
+      SendFailure failure = SendFailure::None;
+      const bool sent = bootstrap_
+          ? sendBootstrapAuthentication(&failure)
+          : sendAuthentication(&failure);
+      if (!sent) {
+        if (bootstrap_) setBootstrapSendError(failure);
         connectionAttemptFailed_ = true;
         disconnect();
       }
@@ -400,9 +436,10 @@ class ArduinoDeviceLink final {
     bootstrapErrorPending_ = false;
     return pending;
   }
-  void disconnect(bool notifyPeer = true) {
+  void disconnect(bool notifyPeer = false) {
     if (disconnecting_) return;
     disconnecting_ = true;
+    draining_ = false;
     const bool hadConnection = active_ || connecting_ || authenticated_ || bootstrap_ ||
                                pendingFrameCount_ != 0 || websocket_.connected();
     active_ = false;
@@ -418,11 +455,14 @@ class ArduinoDeviceLink final {
     pendingCallback_ = false;
     if (notifyPeer) websocket_.close();
     else websocket_.abort();
-    if (hadConnection) platform_.closeLink();
+    if (hadConnection || !platform_.linkClosed()) platform_.closeLink();
     disconnecting_ = false;
   }
 
  private:
+  bool draining_ = false;
+  bool drainFailed_ = false;
+  uint32_t drainStartedAt_ = 0;
   typedef int (*Encoder)(uint8_t*, size_t, const void*, size_t*);
 
   bool openConnection(bool bootstrap) {
@@ -451,11 +491,7 @@ class ArduinoDeviceLink final {
   }
 
   void pumpWebSocket() {
-    if (pendingFrameCount_ >= kPendingFrameSlots) {
-      connectionAttemptFailed_ = true;
-      disconnect();
-      return;
-    }
+    if (pendingFrameCount_ >= kPendingFrameSlots) return;
     const uint8_t slot = pendingFrameTail_;
     const size_t capacity = kFrameBytes - pendingFrameLength_;
     const int length = websocket_.read(pendingFrames_[slot] + pendingFrameLength_, capacity);
@@ -484,24 +520,38 @@ class ArduinoDeviceLink final {
   }
 
   template <typename T>
-  bool sendEncoded(uint8_t type, uint64_t messageId, const T& value, int (*encoder)(uint8_t*, size_t, const T*, size_t*)) {
+  bool sendEncoded(uint8_t type, uint64_t messageId, const T& value,
+                   int (*encoder)(uint8_t*, size_t, const T*, size_t*),
+                   SendFailure* failure = nullptr) {
+    if (failure) *failure = SendFailure::None;
 #if FLOVA_LINK_PERFORMANCE_LOGGING
     const uint32_t startedAt = millis();
 #endif
     size_t payloadLength = 0;
     uint8_t* frame = tx_ + FlovaWs::kMaximumOutgoingHeaderBytes;
-    if (platform_.linkWriteBusy()) return false;
-    if (flova::link::encodeCanonical(frame + flova::link::kHeaderBytes, kPayloadBytes, value, encoder, payloadLength) != flova::link::CborResult::Complete ||
-        !flova::link::encodeFrameHeader(frame, kFrameBytes, type, 0, messageId, payloadLength)) return false;
+    if (platform_.linkWriteBusy() || websocket_.controlPending())
+      return setSendFailure(failure, SendFailure::WriteBusy);
+    if (encoder(frame + flova::link::kHeaderBytes, kPayloadBytes, &value,
+                &payloadLength) != 0 ||
+        !payloadLength || payloadLength > kPayloadBytes)
+      return setSendFailure(failure, SendFailure::CborSchema);
+    if (!flova::link::validateCanonicalCbor(frame + flova::link::kHeaderBytes,
+                                            payloadLength))
+      return setSendFailure(failure, SendFailure::CborCanonical);
+    if (!flova::link::encodeFrameHeader(frame, kFrameBytes, type, 0, messageId,
+                                        payloadLength))
+      return setSendFailure(failure, SendFailure::FrameHeader);
 #if FLOVA_LINK_PERFORMANCE_LOGGING
     const uint32_t encodedAt = millis();
 #endif
     size_t wireLength = 0;
     if (!websocket_.prepareBinary(frame, flova::link::kHeaderBytes + payloadLength,
                                   tx_, sizeof(tx_), wireLength))
-      return false;
-    const bool sent = platform_.submitLinkWrite(tx_, wireLength) &&
-                      platform_.serviceLinkWrite();
+      return setSendFailure(failure, SendFailure::WebSocketFrame);
+    if (!platform_.submitLinkWrite(tx_, wireLength))
+      return setSendFailure(failure, SendFailure::TransportSubmit);
+    const bool sent = platform_.serviceLinkWrite();
+    if (!sent) return setSendFailure(failure, SendFailure::TransportWrite);
 #if FLOVA_LINK_PERFORMANCE_LOGGING
     Serial.printf("[flova] Link send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu writes=%u wire_bytes=%u accepted=%u\n",
                   static_cast<unsigned>(type),
@@ -515,13 +565,13 @@ class ArduinoDeviceLink final {
     return sent;
   }
 
-  bool sendAuthentication() {
+  bool sendAuthentication(SendFailure* failure = nullptr) {
     struct auth value = {};
     value.auth_device_id.value = deviceId_;
     value.auth_device_id.len = sizeof(deviceId_);
     value.auth_secret.value = secret_;
     value.auth_secret.len = sizeof(secret_);
-    return sendEncoded(0x01, 0, value, cbor_encode_auth);
+    return sendEncoded(0x01, 0, value, cbor_encode_auth, failure);
   }
 
   bool sendDatastreamBinding() {
@@ -538,7 +588,8 @@ class ArduinoDeviceLink final {
     return sendEncoded(0x09, 0, value, cbor_encode_datastream_bind);
   }
 
-  bool sendBootstrapAuthentication() {
+  bool sendBootstrapAuthentication(SendFailure* failure = nullptr) {
+    if (failure) *failure = SendFailure::None;
     struct bootstrap_auth value = {};
     value.bootstrap_auth_bootstrap_token.value = bootstrapToken_;
     value.bootstrap_auth_bootstrap_token.len = bootstrapTokenLength_;
@@ -546,7 +597,7 @@ class ArduinoDeviceLink final {
     value.bootstrap_auth_bootstrap_secret.len = sizeof(bootstrapSecret_);
     if (!setText(value.bootstrap_auth_hardware_id, bootstrapHardwareId_, sizeof(bootstrapHardwareId_)) ||
         !setText(value.bootstrap_auth_firmware_target, bootstrapFirmwareTarget_, sizeof(bootstrapFirmwareTarget_)))
-      return false;
+      return setSendFailure(failure, SendFailure::BootstrapFields);
     value.bootstrap_auth_bootstrap_capabilities.capabilities_datastream_slots = FLOVA_DATASTREAM_CAPACITY;
     value.bootstrap_auth_bootstrap_capabilities.capabilities_input_slots =
         hardwareCapabilities_.automaticMapping
@@ -560,7 +611,30 @@ class ArduinoDeviceLink final {
     value.bootstrap_auth_bootstrap_capabilities.capabilities_schedule_slots = FLOVA_SCHEDULE_RUNTIME_ENABLED ? FLOVA_SCHEDULE_CAPACITY : 0;
     value.bootstrap_auth_bootstrap_capabilities.capabilities_manifest_bytes = 0;
     value.bootstrap_auth_bootstrap_capabilities.capabilities_history_bytes = 0;
-    return sendEncoded(0x06, 0, value, cbor_encode_bootstrap_auth);
+    return sendEncoded(0x06, 0, value, cbor_encode_bootstrap_auth, failure);
+  }
+
+  static bool setSendFailure(SendFailure* output, SendFailure failure) {
+    if (output) *output = failure;
+    return false;
+  }
+
+  void setBootstrapSendError(SendFailure failure) {
+    const char* error = "bootstrap_auth_send_failed";
+    switch (failure) {
+      case SendFailure::WriteBusy: error = "bootstrap_auth_write_busy"; break;
+      case SendFailure::CborSchema: error = "bootstrap_auth_cbor_schema"; break;
+      case SendFailure::CborCanonical: error = "bootstrap_auth_cbor_canonical"; break;
+      case SendFailure::FrameHeader: error = "bootstrap_auth_frame_failed"; break;
+      case SendFailure::WebSocketFrame: error = "bootstrap_auth_ws_failed"; break;
+      case SendFailure::TransportSubmit: error = "bootstrap_auth_submit_failed"; break;
+      case SendFailure::TransportWrite: error = "bootstrap_auth_write_failed"; break;
+      case SendFailure::BootstrapFields: error = "bootstrap_auth_fields_failed"; break;
+      case SendFailure::None: break;
+    }
+    strncpy(bootstrapError_, error, sizeof(bootstrapError_) - 1);
+    bootstrapError_[sizeof(bootstrapError_) - 1] = 0;
+    bootstrapErrorPending_ = true;
   }
 
   void handleFrame(const flova::link::FrameView& frame) {

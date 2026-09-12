@@ -1,11 +1,9 @@
 #include <Arduino.h>
-#include <FlovaUniversalEsp32.h>
+#include <FlovaUniversalEsp8266.h>
 
-FlovaUniversalEsp32 device;
-
+FlovaUniversalEsp8266 device;
 void setup() {
   Serial.begin(115200);
   device.begin();
 }
-
 void loop() { device.run(); }

@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <Client.h>
+#include <FlovaLinkStream.h>
 
 #include <FlovaClientLink.h>
 
@@ -16,10 +16,14 @@ enum class FlovaLinkOpenStatus : uint8_t {
 // Board policy for the bounded Arduino Device Link core. The core owns the
 // protocol queues and WebSocket parser; a board owns the concrete client,
 // TLS/resource setup, non-blocking write behavior, and OTA implementation.
-class FlovaArduinoPlatform {
+class FlovaArduinoPlatform : public FlovaLinkStream {
  public:
   virtual ~FlovaArduinoPlatform() {}
-  virtual Client& linkClient() = 0;
+  size_t write(const uint8_t* data, size_t length) override {
+    return submitLinkWrite(data, length) ? length : 0;
+  }
+  bool writeBusy() const override { return linkWriteBusy(); }
+  virtual bool linkClosed() const = 0;
   virtual bool beginLink() { return true; }
   virtual bool startLink(const char* host, uint16_t port) = 0;
   virtual FlovaLinkOpenStatus pollLink() = 0;

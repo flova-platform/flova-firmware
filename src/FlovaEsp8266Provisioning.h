@@ -57,6 +57,8 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
     return true;
   }
 
+  bool stopAfterNetworkConnected() const override { return true; }
+
  private:
   void handleSetup() {
     server_.sendHeader("Cache-Control", "no-store");

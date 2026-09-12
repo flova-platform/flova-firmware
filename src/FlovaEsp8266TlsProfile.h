@@ -14,7 +14,7 @@
 #define FLOVA_ESP8266_OTA_TLS_RX_BYTES 16384
 #endif
 #ifndef FLOVA_ESP8266_LINK_TLS_RX_BYTES
-#define FLOVA_ESP8266_LINK_TLS_RX_BYTES 2048
+#define FLOVA_ESP8266_LINK_TLS_RX_BYTES 16384
 #endif
 #ifndef FLOVA_ESP8266_TLS_TX_BYTES
 #define FLOVA_ESP8266_TLS_TX_BYTES 512
@@ -24,7 +24,7 @@ namespace flova {
 
 static const unsigned long kHttpsTimeoutMs = FLOVA_HTTPS_TIMEOUT_MS;
 enum class TlsUse : uint8_t { Link, Ota };
-enum class TlsResourceStatus : uint8_t { Ready, MemoryProfileMissing, InsufficientMemory };
+enum class TlsResourceStatus : uint8_t { Ready, InsufficientMemory };
 
 struct TlsHeapStats {
   uint32_t dramFree = 0;
@@ -69,7 +69,6 @@ inline TlsResourceStatus tlsResourceStatus(TlsUse use,
                                            TlsHeapStats* observed = nullptr) {
   const TlsHeapStats stats = tlsHeapStats();
   if (observed) *observed = stats;
-  if (!stats.iramEnabled) return TlsResourceStatus::MemoryProfileMissing;
   const uint32_t receiveAllocation = tlsReceiveBytes(use) + kBearSslInputOverheadBytes;
   const uint32_t transmitAllocation = FLOVA_ESP8266_TLS_TX_BYTES + kBearSslOutputOverheadBytes;
   const uint32_t iramRequired = receiveAllocation + transmitAllocation + kTlsIramReserveBytes;
@@ -79,6 +78,13 @@ inline TlsResourceStatus tlsResourceStatus(TlsUse use,
       (sslContextBytes > x509ContextBytes ? sslContextBytes : x509ContextBytes) +
       kTlsDramBlockReserveBytes;
   const uint32_t dramRequired = sslContextBytes + x509ContextBytes + kTlsDramReserveBytes;
+  if (!stats.iramEnabled) {
+    const uint32_t largest = receiveAllocation > dramLargestAllocation
+                                 ? receiveAllocation : dramLargestAllocation;
+    return stats.dramFree >= dramRequired + receiveAllocation + transmitAllocation &&
+                   stats.dramMaxBlock >= largest
+               ? TlsResourceStatus::Ready : TlsResourceStatus::InsufficientMemory;
+  }
   return stats.iramFree >= iramRequired && stats.iramMaxBlock >= receiveAllocation &&
                  stats.dramFree >= dramRequired && stats.dramMaxBlock >= dramLargestAllocation
              ? TlsResourceStatus::Ready
@@ -92,10 +98,8 @@ inline void logTlsHeap(const char* stage, const TlsHeapStats& stats) {
                   stats.iramFragmentation);
 }
 
-inline const char* tlsResourceError(TlsResourceStatus status) {
-  return status == TlsResourceStatus::MemoryProfileMissing
-             ? "tls_memory_profile_missing"
-             : "insufficient_tls_heap";
+inline const char* tlsResourceError(TlsResourceStatus) {
+  return "insufficient_tls_heap";
 }
 
 inline void configureOtaTls(BearSSL::WiFiClientSecure& client) {
@@ -104,7 +108,7 @@ inline void configureOtaTls(BearSSL::WiFiClientSecure& client) {
 
 inline void configureLinkTls(BearSSL::WiFiClientSecure& client,
                              BearSSL::X509List& trustAnchors, time_t now) {
-  client.setTimeout(FLOVA_HTTPS_TIMEOUT_MS / 1000UL);
+  client.setTimeout(FLOVA_HTTPS_TIMEOUT_MS);
   client.setBufferSizes(FLOVA_ESP8266_LINK_TLS_RX_BYTES, FLOVA_ESP8266_TLS_TX_BYTES);
   client.setTrustAnchors(&trustAnchors);
   if (now >= 1700000000) client.setX509Time(now);

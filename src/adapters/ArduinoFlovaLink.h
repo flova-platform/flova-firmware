@@ -5,6 +5,7 @@
 #include <FlovaDevice.h>
 #include <FlovaClientLink.h>
 #include <FlovaArduinoPlatform.h>
+#include <FlovaRetryBackoff.h>
 #include "ArduinoDeviceLink.h"
 
 // Canonical flova::Link adapter for Arduino projects. It deliberately maps
@@ -29,6 +30,16 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   void pollBootstrap() { transport_.loop(); }
+  void beginMaintenance() override {
+    maintenance_ = true;
+    transport_.beginDrain();
+  }
+  bool maintenanceReady() override {
+    transport_.loop();
+    return transport_.drainComplete();
+  }
+  void endMaintenance() override { maintenance_ = false; }
+  bool maintenanceFailed() const override { return transport_.drainFailed(); }
 
   bool takeBootstrapCommitted(FlovaLinkBootstrapCommitted& output) {
     if (!bootstrapCommittedPending_) return false;
@@ -214,12 +225,14 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
   void poll() override {
+    if (maintenance_) { transport_.loop(); return; }
     if (!connectionAllowed_) {
       disconnect();
       bound_ = false;
       return;
     }
     transport_.loop();
+    if (transport_.connected()) reconnectBackoff_.reset();
     if (heartbeatAckSupported_ && pendingHeartbeatId_ &&
         millis() - pendingHeartbeatAt_ >= kHeartbeatAckTimeoutMs) {
       Serial.println("[flova] Link heartbeat acknowledgement timed out");
@@ -231,7 +244,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
         static_cast<int32_t>(millis() - nextReconnectAt_) >= 0) {
       bound_ = false;
       transport_.connect(deviceIdText_, secretText_);
-      nextReconnectAt_ = millis() + 5000UL;
+      nextReconnectAt_ = millis() + reconnectBackoff_.next(static_cast<uint8_t>(messageNonce_));
     }
   }
 
@@ -267,6 +280,8 @@ class ArduinoFlovaLink : public FlovaClientLink {
   }
 
  private:
+  bool maintenance_ = false;
+  flova::RetryBackoff reconnectBackoff_;
   static uint32_t readNonce(FlovaEntropySource& entropy) {
     uint32_t value = 0;
     for (uint8_t i = 0; i < 4; ++i)

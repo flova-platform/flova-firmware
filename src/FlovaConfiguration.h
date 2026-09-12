@@ -154,6 +154,10 @@ inline bool terminalProvisioningError(const char* code) {
           !strcmp(code, "provisioning_secret_mismatch"));
 }
 
+inline bool provisioningFailureNeedsSetup(const char* code) {
+  return terminalProvisioningError(code);
+}
+
 template <size_t N>
 inline void sanitizeProvisioningError(const char* input, char (&output)[N]) {
   if (!N) return;

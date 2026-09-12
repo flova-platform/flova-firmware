@@ -15,6 +15,7 @@ class FlovaNetworkRuntime {
   virtual bool clearCredentials() { return true; }
   virtual void loop() {}
   virtual bool connected() const { return true; }
+  virtual const char* connectionError() const { return "network_timeout"; }
 };
 
 // TLS certificate validation may require a board-specific UTC bootstrap before

@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include <FlovaDevice.h>
+#include "FlovaSdkVersion.h"
 #include <FlovaConfiguration.h>
 #include <FlovaClientLink.h>
 #include <FlovaArduinoPlatform.h>
@@ -22,18 +23,22 @@
 #include "adapters/ArduinoFlovaServices.h"
 #include "FlovaProvisioningAdapter.h"
 #include "FlovaRuntimeServices.h"
+#include "FlovaRetryBackoff.h"
+#include "FlovaConfigurationActivation.h"
 
 #ifndef FLOVA_FIRMWARE_VERSION
-#define FLOVA_FIRMWARE_VERSION "0.1.0"
+#define FLOVA_FIRMWARE_VERSION FLOVA_VERSION
 #endif
 
 #include "FlovaFirmwareMetadata.h"
+#include "FlovaStartup.h"
 
 enum class FlovaLifecycle : uint8_t {
   Idle,
   AwaitingProvisioning,
   Setup,
   WaitingForNetwork,
+  Backoff,
   RestoringConfiguration,
   Bootstrapping,
   RestartRequired,
@@ -89,6 +94,7 @@ class FlovaClient {
     flovaFirmwareMetadataRuntimePointer = flovaFirmwareMetadata;
 #endif
     if (lifecycle_ != FlovaLifecycle::Idle) return false;
+    flovaPrintStartup();
     managedProvisioning_ = allowProvisioning;
     pending_.lastError[0] = 0;
     if (!storage_.begin()) {
@@ -141,11 +147,6 @@ class FlovaClient {
                     : "[flova] stored configuration absent_or_invalid");
 
     if (hasPending && !hasConfiguration) {
-      if (pending_.attempts >= kMaximumBootstrapAttempts) {
-        if (!storage_.remove("prov_pending")) writeError("storage_failed");
-        writeError("bootstrap_attempts_exhausted");
-        return provisioningFallback();
-      }
       // A reset can interrupt an otherwise valid bootstrap. The Engine binds
       // the handoff idempotently, so retry the verified pending generation.
       pending_.inProgress = 0;
@@ -182,14 +183,13 @@ class FlovaClient {
   }
 
   void run() {
-    if (lifecycle_ == FlovaLifecycle::Setup ||
-        lifecycle_ == FlovaLifecycle::AwaitingProvisioning)
+    const bool setupLifecycle = lifecycle_ == FlovaLifecycle::Setup ||
+                                lifecycle_ == FlovaLifecycle::AwaitingProvisioning;
+    if (setupLifecycle || provisioningDuringNetworkStart_)
       provisioning_.loop();
     network_.loop();
-    tlsClock_.loop(network_.connected());
-    if (lifecycle_ == FlovaLifecycle::Setup ||
-        lifecycle_ == FlovaLifecycle::AwaitingProvisioning) {
-      if (!handoffAccepted_) return;
+    tlsClock_.loop(network_.connected() && !provisioningDuringNetworkStart_);
+    if ((setupLifecycle || provisioningDuringNetworkStart_) && handoffAccepted_) {
       handoffAccepted_ = false;
       if (!markBootstrapAttempt()) {
         writeError("storage_failed");
@@ -198,12 +198,16 @@ class FlovaClient {
       }
       lifecycle_ = FlovaLifecycle::WaitingForNetwork;
       bootstrapStartedAt_ = millis();
-      if (!provisioning_.stopProvisioning())
+      provisioningDuringNetworkStart_ =
+          provisioning_.stopAfterNetworkConnected();
+      if (!provisioningDuringNetworkStart_ &&
+          !provisioning_.stopProvisioning())
         failBootstrap("provisioning_stop_failed");
       else if (!network_.begin())
         failBootstrap("network_start_failed");
       return;
     }
+    if (setupLifecycle) return;
     if (lifecycle_ == FlovaLifecycle::RestartRequired ||
         lifecycle_ == FlovaLifecycle::RestartScheduled ||
         lifecycle_ == FlovaLifecycle::Failed || lifecycle_ == FlovaLifecycle::Idle) return;
@@ -213,26 +217,43 @@ class FlovaClient {
       return;
     }
 
+    if (lifecycle_ == FlovaLifecycle::Backoff) {
+      if (static_cast<int32_t>(millis() - bootstrapRetryAt_) < 0) return;
+      if (provisioningDuringNetworkStart_ && !network_.connected() &&
+          !network_.begin()) {
+        failBootstrap("network_start_failed");
+        return;
+      }
+      lifecycle_ = FlovaLifecycle::WaitingForNetwork;
+      bootstrapStartedAt_ = millis();
+    }
     if (lifecycle_ == FlovaLifecycle::WaitingForNetwork) {
       if (pending_.handoff.token[0]) {
         if (millis() - bootstrapStartedAt_ >= kBootstrapTimeoutMs) {
           failBootstrap(network_.connected() ? "clock_sync_failed"
-                                             : "network_timeout");
+                                             : network_.connectionError());
           return;
         }
-        if (!network_.connected() || !tlsClock_.ready()) return;
+        if (!network_.connected()) return;
+        if (provisioningDuringNetworkStart_) {
+          if (!provisioning_.stopProvisioning()) {
+            failBootstrap("provisioning_stop_failed");
+            return;
+          }
+          provisioningDuringNetworkStart_ = false;
+          bootstrapBackoff_.reset();
+          // SoftAP shutdown is asynchronous. Return to the board loop before
+          // beginning NTP or TLS work; STA is already associated.
+          bootstrapStartedAt_ = millis();
+          return;
+        }
+        if (!tlsClock_.ready()) return;
         if (!link_.beginBootstrap(pending_.handoff.linkUrl, pending_.handoff.token,
                                   provisioningConfig_.hardwareId,
                                   provisioningConfig_.firmwareTarget,
                                   pending_.handoff.linkSecret)) {
           if (link_.resourceRecoveryRequired()) {
-            flova::markProvisioningFailure(pending_, "resource_recovery");
-            if (!storage_.write("prov_pending", &pending_, sizeof(pending_))) {
-              writeError("storage_failed");
-              provisioningFallback();
-              return;
-            }
-            requestRestart(FlovaRestartReason::ResourceRecovery);
+            failBootstrap("resource_unavailable");
             return;
           }
           failBootstrap("bootstrap_start_failed");
@@ -276,12 +297,16 @@ class FlovaClient {
     }
 
     if (lifecycle_ == FlovaLifecycle::Runtime) {
-      link_.setConnectionAllowed(network_.connected() && tlsClock_.ready());
-      if (link_.resourceRecoveryRequired()) {
-        link_.disconnect();
-        requestRestart(FlovaRestartReason::ResourceRecovery);
+      if (configurationActivation_.active()) {
+        if (configurationActivation_.run(link_, configurationReportWorkspace_, millis())) {
+          if (configurationActivation_.failed())
+            logger_.log("[flova] configuration ACK drain failed; report active generation after restart");
+          requestRestart(FlovaRestartReason::ConfigurationActivation);
+        }
         return;
       }
+      if (otaDraining_) { finishOta(); return; }
+      link_.setConnectionAllowed(network_.connected() && tlsClock_.ready());
       hardware_.setConnected(link_.connected());
       hardware_.run();
       if (lifecycle_ != FlovaLifecycle::Runtime) return;
@@ -298,7 +323,9 @@ class FlovaClient {
         return;
       }
       drainConfiguration(false);
+      if (configurationActivation_.active()) return;
       processOta();
+      if (otaDraining_) return;
       serviceOtaBoot();
       reportRuntimeStatus();
     }
@@ -324,7 +351,8 @@ class FlovaClient {
 
   FlovaProvisioningResponse provision(const flova::ProvisioningHandoff& input) {
     if (lifecycle_ != FlovaLifecycle::Setup &&
-        lifecycle_ != FlovaLifecycle::AwaitingProvisioning)
+        lifecycle_ != FlovaLifecycle::AwaitingProvisioning &&
+        !provisioningDuringNetworkStart_)
       return FlovaProvisioningResponse::Invalid;
     const FlovaProvisioningResponse result = acceptProvisioning(input);
     if (result == FlovaProvisioningResponse::Accepted) handoffAccepted_ = true;
@@ -375,7 +403,10 @@ class FlovaClient {
   flova::Datastream<T> datastream(const char* key) { return device_.datastream<T>(key); }
 
  private:
-  static const uint8_t kMaximumBootstrapAttempts = 3;
+  flova::ConfigurationActivation configurationActivation_;
+  bool otaDraining_ = false;
+  flova::RetryBackoff bootstrapBackoff_;
+  uint32_t bootstrapRetryAt_ = 0;
   static const uint32_t kBootstrapTimeoutMs = 30000UL;
   static const uint32_t kOtaHealthWindowMs = 30000UL;
   static const uint32_t kOtaHealthDeadlineMs = 120000UL;
@@ -482,6 +513,7 @@ class FlovaClient {
   }
 
   bool beginSetup() {
+    provisioningDuringNetworkStart_ = false;
     if (!network_.stop()) {
       writeError("network_stop_failed");
       lifecycle_ = FlovaLifecycle::Failed;
@@ -537,7 +569,8 @@ class FlovaClient {
   void beginDeviceRuntime() {
     if (!device_.begin()) {
       if (link_.resourceRecoveryRequired()) {
-        requestRestart(FlovaRestartReason::ResourceRecovery);
+        bootstrapRetryAt_ = millis() + bootstrapBackoff_.next(entropy_.byte());
+        lifecycle_ = FlovaLifecycle::Backoff;
         return;
       }
       writeError("runtime_device_begin_failed");
@@ -551,7 +584,21 @@ class FlovaClient {
 
   bool markBootstrapAttempt() {
     flova::markProvisioningAttempt(pending_);
-    return storage_.write("prov_pending", &pending_, sizeof(pending_));
+    return persistPending();
+  }
+
+  bool persistPending() {
+    const uint8_t expectedAttempts = pending_.attempts;
+    const uint8_t expectedInProgress = pending_.inProgress;
+    char expectedError[flova::kProvisioningErrorBytes] = {};
+    strncpy(expectedError, pending_.lastError, sizeof(expectedError) - 1);
+    if (!storage_.write("prov_pending", &pending_, sizeof(pending_))) return false;
+    memset(&pending_, 0, sizeof(pending_));
+    return storage_.read("prov_pending", &pending_, sizeof(pending_)) &&
+           flova::verifyProvisioningImage(pending_) &&
+           pending_.attempts == expectedAttempts &&
+           pending_.inProgress == expectedInProgress &&
+           strcmp(pending_.lastError, expectedError) == 0;
   }
 
   flova::config::Ack applyConfiguration(
@@ -670,11 +717,6 @@ class FlovaClient {
       ack.status = flova::config::Status::StorageFailure;
     }
     publishConfigurationReport(ack.status, phase, bootstrapping);
-    if (phase == FlovaLinkConfigurationPhase::End && ack.accepted() &&
-        !bootstrapping) {
-      link_.disconnect();
-      requestRestart(FlovaRestartReason::ConfigurationActivation);
-    }
   }
 
   void startConfigurationRestore(ConfigurationWorkMode mode,
@@ -1143,10 +1185,6 @@ class FlovaClient {
                                FlovaLinkConfigurationPhase::End,
                                bootstrapping);
     configurationWork_ = ConfigurationWork();
-    if (!bootstrapping) {
-      link_.disconnect();
-      requestRestart(FlovaRestartReason::ConfigurationActivation);
-    }
   }
 
   void publishConfigurationReport(flova::config::Status status,
@@ -1173,7 +1211,12 @@ class FlovaClient {
                static_cast<unsigned>(status));
       logger_.log(message);
     }
-    link_.publishConfigurationReport(configurationReportWorkspace_);
+    if (!bootstrapping && phase == FlovaLinkConfigurationPhase::End &&
+        configurationReportWorkspace_.status == FlovaLinkResultStatus::Ok) {
+      configurationActivation_.begin(millis());
+    } else {
+      link_.publishConfigurationReport(configurationReportWorkspace_);
+    }
     if (phase == FlovaLinkConfigurationPhase::End &&
         configurationReportWorkspace_.status == FlovaLinkResultStatus::Ok) {
       configurationCommitted_ = true;
@@ -1364,6 +1407,14 @@ class FlovaClient {
       otaResultPending_ = true;
       return;
     }
+    decltype(otaPendingRecord_) verified = {};
+    if (!storage_.read("ota_pending", &verified, sizeof(verified)) ||
+        memcmp(&verified, &otaPendingRecord_, sizeof(verified)) != 0) {
+      otaResult_.status = FlovaLinkResultStatus::Error;
+      strncpy(otaResult_.errorCode, "storage_verify_failed", sizeof(otaResult_.errorCode) - 1);
+      otaResultPending_ = true;
+      return;
+    }
     otaPendingRecordValid_ = true;
     FlovaLinkOtaReport accepted = {};
     accepted.messageId = nextControlMessageId();
@@ -1375,8 +1426,17 @@ class FlovaClient {
       otaPendingRecordValid_ = false;
       return;
     }
-    link_.disconnect();
-    const flova::OtaInstallResult result = link_.installOta(offer);
+    otaDraining_ = true;
+    link_.beginMaintenance();
+  }
+
+  void finishOta() {
+    if (!link_.maintenanceReady()) return;
+    otaDraining_ = false;
+    const flova::OtaInstallResult result = link_.maintenanceFailed()
+        ? flova::OtaInstallResult::DownloadFailed
+        : link_.installOta(otaOfferWorkspace_);
+    link_.endMaintenance();
     if (result == flova::OtaInstallResult::Installed) {
       requestRestart(FlovaRestartReason::OtaActivation);
       return;
@@ -1473,33 +1533,41 @@ class FlovaClient {
   }
 
   void failBootstrap(const char* error) {
+    const bool attemptWasInProgress = pending_.inProgress != 0;
+    char previousError[flova::kProvisioningErrorBytes] = {};
+    strncpy(previousError, pending_.lastError, sizeof(previousError) - 1);
     flova::markProvisioningFailure(pending_, error);
-    writeError(error);
-    char retryReason[flova::kProvisioningErrorBytes] = {};
-    strncpy(retryReason, pending_.lastError, sizeof(retryReason) - 1);
+    if (strcmp(previousError, pending_.lastError) != 0) writeError(error);
     link_.disconnect();
-    if (flova::terminalProvisioningError(error) ||
-        pending_.attempts >= kMaximumBootstrapAttempts) {
+    // Persist the transition once. Backoff retries keep counters in RAM and do
+    // not rewrite flash repeatedly for an unchanged outage.
+    if (attemptWasInProgress && !persistPending()) {
+      writeError("storage_failed");
+      provisioningFallback();
+      return;
+    }
+    // A local codec/configuration defect cannot be repaired by reconnecting.
+    if ((error && strstr(error, "cbor")) ||
+        (error && strncmp(error, "configuration_", 14) == 0)) {
+      lifecycle_ = FlovaLifecycle::Failed;
+      logger_.log("[flova] bootstrap stopped: local configuration or codec failure");
+      return;
+    }
+    // Only server-confirmed terminal credentials require a fresh setup session.
+    // Network, clock, TLS, and socket failures retain the verified handoff.
+    if (flova::provisioningFailureNeedsSetup(error)) {
       resetPendingConfiguration();
       if (!storage_.remove("prov_pending")) writeError("storage_failed");
       provisioningFallback();
       return;
     }
-    if (!storage_.write("prov_pending", &pending_, sizeof(pending_)) ||
-        !markBootstrapAttempt()) {
-      writeError("storage_failed");
-      provisioningFallback();
-      return;
-    }
-    char retryMessage[128] = {};
-    snprintf(retryMessage, sizeof(retryMessage),
-             "[flova] bootstrap retry attempt=%u/%u reason=%s",
-             static_cast<unsigned>(pending_.attempts),
-             static_cast<unsigned>(kMaximumBootstrapAttempts),
-             retryReason);
-    logger_.log(retryMessage);
-    lifecycle_ = FlovaLifecycle::WaitingForNetwork;
-    bootstrapStartedAt_ = millis();
+    const uint32_t delayMs = bootstrapBackoff_.next(entropy_.byte());
+    bootstrapRetryAt_ = millis() + delayMs;
+    lifecycle_ = FlovaLifecycle::Backoff;
+    char message[128] = {};
+    snprintf(message, sizeof(message), "[flova] bootstrap retry delay_ms=%lu reason=%s",
+             static_cast<unsigned long>(delayMs), pending_.lastError);
+    logger_.log(message);
   }
 
   void resetPendingConfiguration() {
@@ -1677,6 +1745,7 @@ class FlovaClient {
   bool compilingSchedules_ = false;
   bool managedProvisioning_ = false;
   bool handoffAccepted_ = false;
+  bool provisioningDuringNetworkStart_ = false;
   FlovaLinkOtaReport otaResult_ = {};
   FlovaLinkOtaOffer otaOfferWorkspace_ = {};
   bool otaResultPending_ = false;
