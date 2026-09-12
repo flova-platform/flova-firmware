@@ -1,4 +1,11 @@
-FlovaSDK 0.3.3 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO.
+FlovaSDK 0.3.4 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO.
+
+- Universal ESP32 and ESP8266 firmware now accepts symbolic pin references.
+  Examples include ESP8266 `A0`/`ADC0`/`TOUT` and ESP32 `ADC1_CH4`.
+- Pin capability and electrical validation stays inside the universal firmware;
+  custom SDK applications continue to own their hardware configuration.
+- Configurations with symbolic references are sent only after a device advertises
+  support, preserving compatibility with existing firmware.
 
 - Canonical Device Link encoding is consistent across build tools.
 - ESP32 uses one task for the complete Link socket lifetime.

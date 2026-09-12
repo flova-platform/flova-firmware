@@ -1,12 +1,13 @@
-# FlovaSDK 0.3.3 release validation
+# FlovaSDK 0.3.4 release validation
 
-This document records the FlovaSDK 0.3.3 package and release validation. CI
+This document records the FlovaSDK 0.3.4 package and release validation. CI
 publication and physical-device acceptance remain separate gates from the
 local build checks below.
 
 Passed during implementation:
 
-- Seven CMake/CTest host suites, including 10,000 WebSocket reconnect cycles,
+- Eight CMake/CTest host suites, including symbolic pin resolution for ESP32
+  and ESP8266, 10,000 WebSocket reconnect cycles,
   canonical codec vectors, partial-write/control ordering, copied TX ownership,
   graceful drain, and bounded retry checks.
 - The seven host suites with Clang AddressSanitizer and UndefinedBehaviorSanitizer.

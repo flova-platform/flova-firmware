@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/package/schema/library.json",
   "name": "Flova Embedded SDK",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Portable C++11 local-first Flova embedded device runtime",
   "keywords": ["flova", "iot", "datastream", "embedded"],
   "homepage": "https://github.com/flova-platform/flova-firmware",

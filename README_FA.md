@@ -29,21 +29,21 @@ FlovaSDK کیت توسعه رسمی C++ برای اتصال دستگاه‌ها 
 در پروژه ESP32 در PlatformIO، این خط را اضافه کنید:
 
 ```ini
-lib_deps = flova-platform/FlovaSDK@^0.3.3
+lib_deps = flova-platform/FlovaSDK@^0.3.4
 ```
 
 برای ESP8266 از فایل آماده‌ی `extras/platformio/esp8266/platformio.ini`
 استفاده کنید؛ این فایل چیدمان حافظه‌ی لازم برای heap در IRAM را فعال می‌کند:
 
 ```ini
-lib_deps = flova-platform/FlovaSDK@^0.3.3
+lib_deps = flova-platform/FlovaSDK@^0.3.4
 build_flags =
   -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
 ```
 
 ### Arduino IDE
 
-نسخه 0.3.3 از ESP32 و ESP8266 در Arduino IDE پشتیبانی می‌کند:
+نسخه 0.3.4 از ESP32 و ESP8266 در Arduino IDE پشتیبانی می‌کند:
 
 1. از منوی **Tools → Manage Libraries** وارد مدیریت کتابخانه‌ها شوید.
 2. عبارت **FlovaSDK** را جست‌وجو کنید.
