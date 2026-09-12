@@ -1,6 +1,6 @@
-# FlovaSDK 0.3.2 release validation
+# FlovaSDK 0.3.3 release validation
 
-This document records the FlovaSDK 0.3.2 package and release validation. CI
+This document records the FlovaSDK 0.3.3 package and release validation. CI
 publication and physical-device acceptance remain separate gates from the
 local build checks below.
 

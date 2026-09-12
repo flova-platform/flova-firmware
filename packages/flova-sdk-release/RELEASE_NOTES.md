@@ -1,4 +1,4 @@
-FlovaSDK 0.3.2 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO.
+FlovaSDK 0.3.3 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO.
 
 - Canonical Device Link encoding is consistent across build tools.
 - ESP32 uses one task for the complete Link socket lifetime.
@@ -9,6 +9,7 @@ FlovaSDK 0.3.2 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO
 - Temporary bootstrap failures retain pending provisioning and retry with backoff.
 - OTA waits for Link output and closure before starting its download.
 - A FLOVA startup banner identifies the SDK version and target.
+- The local setup portal is Persian, RTL, and follows the Flova lime-green design.
 
 ESP8266 TLS connection operations can pause the application loop. Link and OTA
 require sufficient contiguous heap and the documented shared IRAM profile. OTA
