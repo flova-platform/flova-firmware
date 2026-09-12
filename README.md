@@ -26,15 +26,24 @@ portable C++11 core for custom hardware.
 
 ### PlatformIO
 
-For an existing ESP32 or ESP8266 PlatformIO project, add:
+For an existing ESP32 PlatformIO project, add:
 
 ```ini
-lib_deps = flova-platform/FlovaSDK@^0.3.1
+lib_deps = flova-platform/FlovaSDK@^0.3.2
+```
+
+For ESP8266, use the packaged `extras/platformio/esp8266/platformio.ini`.
+It includes the required shared IRAM heap profile:
+
+```ini
+lib_deps = flova-platform/FlovaSDK@^0.3.2
+build_flags =
+  -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
 ```
 
 ### Arduino IDE
 
-FlovaSDK 0.3.1 supports ESP32 and ESP8266 in Arduino IDE:
+FlovaSDK 0.3.2 supports ESP32 and ESP8266 in Arduino IDE:
 
 1. Open **Tools → Manage Libraries**.
 2. Search for **FlovaSDK**.
@@ -46,7 +55,8 @@ Then include the ESP32 entry point:
 #include <FlovaEsp32.h>
 ```
 
-For ESP8266, include `<FlovaEsp8266.h>`.
+For ESP8266, include `<FlovaEsp8266.h>` and select
+**Tools → MMU → 16KB cache + 48KB IRAM and 2nd Heap (shared)** before compiling.
 
 ## Quick start
 

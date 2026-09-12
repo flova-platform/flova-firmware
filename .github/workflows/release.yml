@@ -97,7 +97,7 @@ jobs:
             version: 2.0.17
             url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
             sketch: packages/flova-sdk-release/examples/Basic
-          - fqbn: esp8266:esp8266:generic
+          - fqbn: esp8266:esp8266:generic:mmu=4816H
             platform: esp8266:esp8266
             version: 3.1.2
             url: https://arduino.esp8266.com/stable/package_esp8266com_index.json

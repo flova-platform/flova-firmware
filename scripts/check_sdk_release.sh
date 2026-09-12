@@ -17,6 +17,11 @@ for target in esp32 esp8266; do
     exit 1
   }
 done
+grep -F -q -- '-DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED' \
+  "$sdk_dir/extras/platformio/esp8266/platformio.ini" || {
+  echo "ESP8266 PlatformIO example is missing the IRAM heap profile" >&2
+  exit 1
+}
 pio pkg pack "$sdk_dir" -o "$work_dir/FlovaSDK.tar.gz"
 
 for target in esp32 esp8266; do

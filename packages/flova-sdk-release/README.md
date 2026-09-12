@@ -33,9 +33,18 @@ table automatically.
 
 Use Arduino IDE or the packaged `extras/platformio/esp8266/platformio.ini`
 with `<FlovaUniversalEsp8266.h>`. Stock Arduino ESP8266 core 3.1.2 is supported;
-no framework patch is needed. TLS connect operations can pause the application
-loop for seconds. Link and OTA require sufficient contiguous heap for full TLS
-records; allocation failures are reported without erasing provisioning.
+no framework patch is needed. The packaged PlatformIO profile selects the
+`16KB cache + 48KB IRAM and 2nd Heap (shared)` layout required for Flova's
+full-record BearSSL buffers.
+
+For Arduino IDE, select the same profile before compiling:
+
+1. Open **Tools → MMU**.
+2. Select **16KB cache + 48KB IRAM and 2nd Heap (shared)**.
+
+TLS connect operations can pause the application loop for seconds. Link and OTA
+require sufficient contiguous heap for full TLS records; allocation failures
+are reported without erasing provisioning.
 
 For custom applications, use `<FlovaEsp32.h>` or `<FlovaEsp8266.h>` instead of
 the universal composition and own provisioning, networking, and hardware

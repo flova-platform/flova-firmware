@@ -1,7 +1,8 @@
-# FlovaSDK 0.3.1 implementation handoff
+# FlovaSDK 0.3.2 release validation
 
-Implementation is in the working tree; no release has been published and the
-connected ESP32 has not been flashed with this redesign.
+This document records the FlovaSDK 0.3.2 package and release validation. CI
+publication and physical-device acceptance remain separate gates from the
+local build checks below.
 
 Passed during implementation:
 
