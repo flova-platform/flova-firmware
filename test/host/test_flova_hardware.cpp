@@ -56,6 +56,10 @@ int main() {
   assert(!hardware.validate(unit));
   assert(!hardware.validateInputMode(16, 1));
 
+  unit = {};
+  unit.kind = flova::config::UnitKind::Datastream;
+  assert(hardware.resolve(unit) && hardware.validate(unit));
+
   // A custom SDK application never resolves, rejects, or applies user-owned pins.
   ArduinoFlovaManualHardware manual;
   strcpy(unit.data.datastream.mapping.pinReference, "CUSTOM_PERIPHERAL");
