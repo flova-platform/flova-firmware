@@ -29,6 +29,11 @@ binary can be flashed to every unit. A new unit waits until the selected setup
 channel supplies its short-lived Engine Link URL/token handoff, then generates
 its secret locally.
 
+Use `setStatusListener()` for edge-triggered lifecycle changes. The callback
+runs from `client.run()` and distinguishes application network readiness from
+Flova Link connectivity and full datastream readiness. Keep it short and
+non-blocking; use `event.current.errorCode` for bounded diagnostic codes.
+
 Replace the application's Wi-Fi credentials in `src/main.cpp`. Build from the
 repository root with:
 

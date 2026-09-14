@@ -1,4 +1,10 @@
-FlovaSDK 0.3.4 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO.
+FlovaSDK 0.3.5 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO.
+
+- Added bounded status snapshots and edge-triggered status listeners for
+  lifecycle, local network/TLS, Flova Link, runtime readiness, configuration
+  generation, and sanitized error transitions.
+- Exposed the same status helpers through all ESP32 and ESP8266 SDK facades.
+- Added host coverage and a custom Arduino example for status observation.
 
 - Universal ESP32 and ESP8266 firmware now accepts symbolic pin references.
   Examples include ESP8266 `A0`/`ADC0`/`TOUT` and ESP32 `ADC1_CH4`.

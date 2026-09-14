@@ -22,6 +22,16 @@ flova::WriteResult writeRelay(void* context, bool value) {
 }
 
 FlovaEsp32 client;
+
+void onFlovaStatus(void*, const FlovaStatusEvent& event) {
+  Serial.printf("[flova] status event=%u lifecycle=%u network=%u link=%u ready=%u error=%s\n",
+                static_cast<unsigned>(event.kind),
+                static_cast<unsigned>(event.current.lifecycle),
+                event.current.networkConnected ? 1U : 0U,
+                event.current.linkConnected ? 1U : 0U,
+                event.current.ready ? 1U : 0U,
+                event.current.errorCode);
+}
 // "LED" is the developer/API key. Engine resolves it to a compact numeric
 // runtime ID during binding; the string is not sent with every update.
 flova::Datastream<bool> relay = client.datastream<bool>("LED");
@@ -44,6 +54,7 @@ void setup() {
   relay.onWrite(writeRelay, &relayContext)
       .persist(flova::PersistencePolicy::Persistent);
 
+  client.setStatusListener(onFlovaStatus);
   // begin() restores Flova-private state and starts local runtime immediately.
   // Cloud connection and binding continue later from run(). It does
   // not start a SoftAP, replace a server, change Wi-Fi mode, or reboot.

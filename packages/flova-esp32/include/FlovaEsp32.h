@@ -66,11 +66,18 @@ class FlovaEsp32 final {
   bool provisioning() const { return client_.provisioning(); }
   FlovaLifecycle lifecycle() const { return client_.lifecycle(); }
   bool connected() const { return client_.connected(); }
+  bool networkConnected() const { return client_.networkConnected(); }
+  bool tlsReady() const { return client_.tlsReady(); }
   bool runtimeReady() const { return client_.runtimeReady(); }
   bool ready() const { return client_.ready(); }
   const char* lastError() const { return client_.lastError(); }
   const flova::Diagnostics& diagnostics() const { return client_.diagnostics(); }
   flova::Device& device() { return client_.device(); }
+  void status(FlovaStatusSnapshot& output) const { client_.status(output); }
+  void setStatusListener(FlovaStatusListener listener,
+                         void* context = nullptr) {
+    client_.setStatusListener(listener, context);
+  }
   bool setFirmwareTarget(const char* target) { return client_.setFirmwareTarget(target); }
   void enableOta(bool enabled = true) { client_.setOtaEnabled(enabled); }
   void setOtaProfile(FlovaOtaStrategy strategy, const char* bootLayoutVersion,
