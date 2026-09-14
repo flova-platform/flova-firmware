@@ -58,6 +58,36 @@ enum class FlovaRestartReason : uint8_t {
 
 typedef void (*FlovaRestartHandler)(void* context, FlovaRestartReason reason);
 
+enum class FlovaStatusEventKind : uint8_t {
+  LifecycleChanged,
+  NetworkChanged,
+  LinkChanged,
+  ReadyChanged,
+  ConfigurationChanged,
+  ErrorChanged,
+};
+
+struct FlovaStatusSnapshot {
+  FlovaLifecycle lifecycle;
+  bool networkConnected;
+  bool tlsReady;
+  bool linkConnected;
+  bool runtimeReady;
+  bool ready;
+  FlovaRestartReason restartReason;
+  uint32_t configurationGeneration;
+  char errorCode[FLOVA_LINK_TEXT_BYTES];
+};
+
+struct FlovaStatusEvent {
+  FlovaStatusEventKind kind;
+  FlovaStatusSnapshot previous;
+  FlovaStatusSnapshot current;
+};
+
+typedef void (*FlovaStatusListener)(void* context,
+                                    const FlovaStatusEvent& event);
+
 // Internal Arduino orchestration. Board packages expose the public API.
 class FlovaClient {
   struct ProvisioningConfig {
@@ -183,6 +213,12 @@ class FlovaClient {
   }
 
   void run() {
+    runLifecycle();
+    dispatchStatusChanges();
+  }
+
+ private:
+  void runLifecycle() {
     const bool setupLifecycle = lifecycle_ == FlovaLifecycle::Setup ||
                                 lifecycle_ == FlovaLifecycle::AwaitingProvisioning;
     if (setupLifecycle || provisioningDuringNetworkStart_)
@@ -331,6 +367,7 @@ class FlovaClient {
     }
   }
 
+ public:
   bool startProvisioning() {
     link_.disconnect();
     if (!storage_.remove("config") || !storage_.remove("prov_pending") ||
@@ -367,10 +404,23 @@ class FlovaClient {
   const char* lastError() const { return pending_.lastError; }
   FlovaLifecycle lifecycle() const { return lifecycle_; }
   bool connected() const { return link_.connected(); }
+  bool networkConnected() const { return network_.connected(); }
+  bool tlsReady() const { return tlsClock_.ready(); }
   bool runtimeReady() const { return lifecycle_ == FlovaLifecycle::Runtime; }
   bool ready() const { return lifecycle_ == FlovaLifecycle::Runtime && device_.ready(); }
   const flova::Diagnostics& diagnostics() const { return device_.diagnostics(); }
   flova::Device& device() { return device_; }
+  void status(FlovaStatusSnapshot& output) const { captureStatus(output); }
+  void setStatusListener(FlovaStatusListener listener,
+                         void* context = nullptr) {
+    statusListener_ = listener;
+    statusContext_ = context;
+    statusSnapshotValid_ = false;
+    if (statusListener_) {
+      captureStatus(statusSnapshot_);
+      statusSnapshotValid_ = true;
+    }
+  }
   void setRestartHandler(FlovaRestartHandler handler, void* context = nullptr) {
     restartHandler_ = handler;
     restartContext_ = context;
@@ -403,6 +453,55 @@ class FlovaClient {
   flova::Datastream<T> datastream(const char* key) { return device_.datastream<T>(key); }
 
  private:
+  void captureStatus(FlovaStatusSnapshot& output) const {
+    output.lifecycle = lifecycle_;
+    output.networkConnected = network_.connected();
+    output.tlsReady = tlsClock_.ready();
+    output.linkConnected = link_.connected();
+    output.runtimeReady = lifecycle_ == FlovaLifecycle::Runtime;
+    output.ready = output.runtimeReady && device_.ready();
+    output.restartReason = restartReason_;
+    output.configurationGeneration = activeConfigurationGeneration_
+                                         ? activeConfigurationGeneration_
+                                         : link_.configurationGeneration();
+    strncpy(output.errorCode, pending_.lastError,
+            sizeof(output.errorCode) - 1);
+    output.errorCode[sizeof(output.errorCode) - 1] = 0;
+  }
+
+  void dispatchStatusChanges() {
+    if (!statusListener_) return;
+    captureStatus(statusCurrent_);
+    if (!statusSnapshotValid_) {
+      statusSnapshot_ = statusCurrent_;
+      statusSnapshotValid_ = true;
+      return;
+    }
+    if (statusSnapshot_.lifecycle != statusCurrent_.lifecycle)
+      dispatchStatusEvent(FlovaStatusEventKind::LifecycleChanged);
+    if (statusSnapshot_.networkConnected != statusCurrent_.networkConnected ||
+        statusSnapshot_.tlsReady != statusCurrent_.tlsReady)
+      dispatchStatusEvent(FlovaStatusEventKind::NetworkChanged);
+    if (statusSnapshot_.linkConnected != statusCurrent_.linkConnected)
+      dispatchStatusEvent(FlovaStatusEventKind::LinkChanged);
+    if (statusSnapshot_.runtimeReady != statusCurrent_.runtimeReady ||
+        statusSnapshot_.ready != statusCurrent_.ready)
+      dispatchStatusEvent(FlovaStatusEventKind::ReadyChanged);
+    if (statusSnapshot_.configurationGeneration !=
+        statusCurrent_.configurationGeneration)
+      dispatchStatusEvent(FlovaStatusEventKind::ConfigurationChanged);
+    if (strcmp(statusSnapshot_.errorCode, statusCurrent_.errorCode) != 0)
+      dispatchStatusEvent(FlovaStatusEventKind::ErrorChanged);
+    statusSnapshot_ = statusCurrent_;
+  }
+
+  void dispatchStatusEvent(FlovaStatusEventKind kind) {
+    statusEventWorkspace_.kind = kind;
+    statusEventWorkspace_.previous = statusSnapshot_;
+    statusEventWorkspace_.current = statusCurrent_;
+    statusListener_(statusContext_, statusEventWorkspace_);
+  }
+
   flova::ConfigurationActivation configurationActivation_;
   bool otaDraining_ = false;
   flova::RetryBackoff bootstrapBackoff_;
@@ -1781,6 +1880,12 @@ class FlovaClient {
   FlovaRestartHandler restartHandler_ = nullptr;
   void* restartContext_ = nullptr;
   FlovaRestartReason restartReason_ = FlovaRestartReason::None;
+  FlovaStatusListener statusListener_ = nullptr;
+  void* statusContext_ = nullptr;
+  bool statusSnapshotValid_ = false;
+  FlovaStatusSnapshot statusSnapshot_ = {};
+  FlovaStatusSnapshot statusCurrent_ = {};
+  FlovaStatusEvent statusEventWorkspace_ = {};
   uint32_t factoryResetRequestedAt_ = 0;
   char factoryResetCommandId_[FLOVA_LINK_TEXT_BYTES] = {};
 };
