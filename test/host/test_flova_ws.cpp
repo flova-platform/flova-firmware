@@ -218,8 +218,10 @@ class FakePlatform : public FlovaArduinoPlatform {
   bool linkClosed() const override { return !client.socket; }
   bool startLink(const char*, uint16_t) override { client.socket = true; return true; }
   FlovaLinkOpenStatus pollLink() override {
+    if (failOpen) { client.socket = false; return FlovaLinkOpenStatus::Failed; }
     return client.socket ? FlovaLinkOpenStatus::Connected : FlovaLinkOpenStatus::Failed;
   }
+  const char* linkError() const override { return "insufficient_tls_heap"; }
   void closeLink() override { client.socket = false; clearWrite(); }
   bool linkWriteBusy() const override { return writeOffset < writeLength; }
   bool submitLinkWrite(const uint8_t* data, size_t length) override {
@@ -248,6 +250,7 @@ class FakePlatform : public FlovaArduinoPlatform {
   FakeClient client;
   bool failBootstrapSubmit = false;
   bool failBootstrapWrite = false;
+  bool failOpen = false;
   size_t submitCalls = 0;
 
  private:
@@ -259,6 +262,95 @@ class FakePlatform : public FlovaArduinoPlatform {
 
 static void advanceBootstrap(ArduinoDeviceLink& link) {
   for (uint8_t i = 0; i < 16; ++i) link.loop();
+}
+
+template <typename T, typename Encoder>
+static void feedLinkFrame(FakePlatform& platform, uint8_t type, uint64_t id,
+                          const T& value, Encoder encode) {
+  uint8_t frame[512] = {};
+  size_t bytes = 0;
+  assert(encode(frame + 12, 500, &value, &bytes) == 0);
+  assert(flova::link::encodeFrameHeader(frame, sizeof(frame), type, 0, id, bytes));
+  platform.client.feedFrame(2, true, frame, bytes + 12);
+}
+
+static unsigned bindingCallbacks;
+static void acceptBinding(const FlovaLinkInboundMessage& message) {
+  if (message.type != FlovaLinkMessageType::DatastreamBound) return;
+  assert(message.body.datastreamBound.count == 64);
+  for (unsigned i = 0; i < 64; ++i) assert(message.body.datastreamBound.ids[i] == i + 1);
+  ++bindingCallbacks;
+}
+
+static void verifyBindingBatches() {
+  // Include rejection after a successful batch, when the next response must
+  // still be correlated with the outstanding request and earlier IDs.
+  for (unsigned failure = 0; failure < 5; ++failure) {
+    FakePlatform platform;
+    ArduinoDeviceLink link(platform, entropy);
+    char keys[64][49] = {};
+    const char* names[64] = {};
+    for (unsigned i = 0; i < 64; ++i) {
+      memset(keys[i], 'x', 48);
+      keys[i][0] = 'A' + i / 26;
+      keys[i][1] = 'a' + i % 26;
+      names[i] = keys[i];
+    }
+    assert(link.configure("wss://engine.example/api/device-link"));
+    assert(link.setDatastreamKeys(names, 64));
+    link.setConfigurationGeneration(7);
+    link.setCallback(acceptBinding);
+    bindingCallbacks = 0;
+    assert(link.connect("00112233-4455-6677-8899-aabbccddeeff", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    advanceBootstrap(link);
+    platform.client.writtenLength = 0;
+    struct auth_ok auth = {1700000000000ULL, 30000, 1};
+    feedLinkFrame(platform, 2, 0, auth, cbor_encode_auth_ok);
+    unsigned offset = 0;
+    while (offset < 64) {
+      advanceBootstrap(link);
+      const uint8_t* wire = platform.client.written;
+      assert(platform.client.writtenLength >= 8 && wire[0] == 0x82);
+      size_t count = wire[1] & 127;
+      size_t maskAt = 2;
+      if (count == 126) { count = (wire[2] << 8) | wire[3]; maskAt = 4; }
+      assert(count <= 512 && platform.client.writtenLength == maskAt + 4 + count);
+      uint8_t frameBytes[512] = {};
+      for (size_t i = 0; i < count; ++i) frameBytes[i] = wire[maskAt + 4 + i] ^ wire[maskAt + (i % 4)];
+      flova::link::FrameView frame = {};
+      assert(flova::link::decodeWebSocketBinaryMessage(frameBytes, count, frame) == flova::link::FrameResult::Complete);
+      assert(frame.messageType == 9);
+      struct datastream_bind request = {};
+      size_t consumed = 0;
+      assert(cbor_decode_datastream_bind(frame.payload, frame.payloadLength, &request, &consumed) == 0);
+      const size_t batch = request.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48_count;
+      assert(batch == (64 - offset > 9 ? 9 : 64 - offset));
+      for (size_t i = 0; i < batch; ++i) {
+        const auto& key = request.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48[i];
+        assert(key.len == 48 && memcmp(key.value, names[offset + i], 48) == 0);
+      }
+      assert(bindingCallbacks == 0 && !link.connected());
+      platform.client.writtenLength = 0;
+      if (offset && failure == 4) {
+        nowMs += 15001;
+        link.loop();
+        assert(platform.linkClosed());
+        break;
+      }
+      struct datastream_bound reply = {};
+      reply.datastream_bound_bound_generation = offset && failure == 2 ? 8 : 7;
+      reply.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m_count = batch;
+      for (size_t i = 0; i < batch; ++i)
+        reply.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m[i] = offset + i + 1;
+      if (offset && failure == 3) reply.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m[0] = 1;
+      feedLinkFrame(platform, 10, frame.messageId + (offset && failure == 1 ? 1 : 0), reply, cbor_encode_datastream_bound);
+      advanceBootstrap(link);
+      if (offset && failure) { assert(platform.linkClosed()); break; }
+      offset += batch;
+    }
+    assert(bindingCallbacks == (failure ? 0U : 1U));
+    assert(link.connected() == !failure);
+  }
 }
 
 static void verifyBootstrapAuthenticationSend() {
@@ -285,6 +377,17 @@ static void verifyBootstrapAuthenticationSend() {
   char error[48] = {};
   assert(rejected.takeBootstrapError(error, sizeof(error)));
   assert(strcmp(error, "bootstrap_auth_submit_failed") == 0);
+
+  FakePlatform openFailurePlatform;
+  openFailurePlatform.failOpen = true;
+  ArduinoDeviceLink openFailure(openFailurePlatform, entropy);
+  assert(openFailure.configure("wss://engine.example/api/device-link"));
+  assert(openFailure.connectBootstrap(token, "esp8266-001122334455",
+                                      "universal_esp8266", secret));
+  openFailure.loop();
+  memset(error, 0, sizeof(error));
+  assert(openFailure.takeBootstrapError(error, sizeof(error)));
+  assert(strcmp(error, "insufficient_tls_heap") == 0);
 }
 
 static void verifyHandshakeAndFrames() {
@@ -627,6 +730,7 @@ int main() {
   }
   verifyHandshakeAndFrames();
   verifyBootstrapAuthenticationSend();
+  verifyBindingBatches();
   verifyCooperativeHandshake();
   verifyRejection();
   verifyReconnectCycles();

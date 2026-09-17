@@ -1,5 +1,7 @@
 #pragma once
 
+#include <FlovaFlashLog.h>
+
 #include <Arduino.h>
 #include <ESP8266HTTPClient.h>
 #include <Updater.h>
@@ -13,17 +15,22 @@
 
 class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
  public:
-  ~FlovaEsp8266Platform() override { client_.stop(0); delete trustAnchors_; }
+  ~FlovaEsp8266Platform() override { releaseClient(); delete trustAnchors_; }
+  FlovaEsp8266Platform() = default;
+  FlovaEsp8266Platform(const FlovaEsp8266Platform&) = delete;
+  FlovaEsp8266Platform& operator=(const FlovaEsp8266Platform&) = delete;
 
-  bool connected() override { return client_.connected(); }
-  int available() override { return client_.available(); }
-  int read() override { return client_.read(); }
+  bool connected() override { return client_ && client_->connected(); }
+  int available() override { return client_ ? client_->available() : 0; }
+  int read() override { return client_ ? client_->read() : -1; }
   bool linkClosed() const override { return !open_; }
 
   bool beginLink() override {
-    if (trustAnchors_) return true;
-    trustAnchors_ = new (std::nothrow) BearSSL::X509List(FLOVA_TLS_ROOT_CERTS);
-    resourceUnavailable_ = !trustAnchors_;
+    if (trustAnchors_) return trustAnchors_->getCount() != 0;
+    static const char roots[] PROGMEM = FLOVA_TLS_ROOT_CERTS;
+    trustAnchors_ = new (std::nothrow) BearSSL::X509List(roots);
+    resourceUnavailable_ = !trustAnchors_ || !trustAnchors_->getCount();
+    if (resourceUnavailable_) { delete trustAnchors_; trustAnchors_ = nullptr; }
     return !resourceUnavailable_;
   }
 
@@ -35,6 +42,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
     opening_ = true;
     open_ = true;
     resourceUnavailable_ = false;
+    linkError_ = "link_open_failed";
     return true;
   }
 
@@ -46,43 +54,52 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       flova::logTlsHeap("before Link", heap);
       if (resources != flova::TlsResourceStatus::Ready) {
         resourceUnavailable_ = true;
+        linkError_ = flova::tlsResourceError(resources);
         closeLink();
         return FlovaLinkOpenStatus::Failed;
       }
-      flova::configureLinkTls(client_, *trustAnchors_, time(nullptr));
+      if (!createClient()) {
+        resourceUnavailable_ = true;
+        linkError_ = "tls_client_allocation_failed";
+        closeLink();
+        return FlovaLinkOpenStatus::Failed;
+      }
+      flova::configureLinkTls(*client_, *trustAnchors_, time(nullptr));
       // Stock BearSSL is synchronous. This operation can pause device.run();
       // no polling facade can make its cryptographic work nonblocking.
       const uint32_t started = millis();
       bool connected = false;
       // BearSSL selects IRAM for record buffers itself. Keep its contexts and
       // TCP allocations in DRAM, matching the separate preflight budgets.
-      { HeapSelectDram dram; connected = client_.connect(linkHost_, linkPort_); }
+      { HeapSelectDram dram; connected = client_->connect(linkHost_, linkPort_); }
       if (!connected) {
-        flova::logLinkTlsFailure(client_);
-        Serial.printf("[flova] Link open elapsed_ms=%lu\n",
+        linkError_ = "link_tls_failed";
+        flova::logLinkTlsFailure(*client_);
+        FLOVA_SERIAL_PRINTF("[flova] Link open elapsed_ms=%lu\n",
                       static_cast<unsigned long>(millis() - started));
         closeLink();
         return FlovaLinkOpenStatus::Failed;
       }
-      client_.setTimeout(5000);
-      client_.setNoDelay(true);
+      client_->setTimeout(5000);
+      client_->setNoDelay(true);
     }
-    return client_.connected() ? FlovaLinkOpenStatus::Connected
+    return client_ && client_->connected() ? FlovaLinkOpenStatus::Connected
                                : FlovaLinkOpenStatus::Failed;
   }
 
   void closeLink() override {
     clearWrite();
-    client_.stop(0);
+    releaseClient();
     opening_ = false;
     open_ = false;
   }
   bool resourceRecoveryRequired() const override { return resourceUnavailable_; }
+  const char* linkError() const override { return linkError_; }
   bool linkWriteBusy() const override { return writeOffset_ < writeLength_; }
 
   bool submitLinkWrite(const uint8_t* data, size_t length) override {
     if (linkWriteBusy() || !data || !length || length > sizeof(writeData_) ||
-        !client_.connected()) return false;
+        (!client_ || !client_->connected())) return false;
     memcpy(writeData_, data, length);
     writeLength_ = length;
     writeOffset_ = 0;
@@ -91,7 +108,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
 
   bool serviceLinkWrite() override {
     if (!linkWriteBusy()) return true;
-    const size_t written = client_.write(writeData_ + writeOffset_,
+    const size_t written = client_->write(writeData_ + writeOffset_,
                                          writeLength_ - writeOffset_);
     if (!written) return false;
     writeOffset_ += written;
@@ -105,7 +122,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   bool otaRollbackCapable() const override { return false; }
 
   flova::OtaInstallResult installOta(const FlovaLinkOtaOffer& offer) override {
-    if (!linkClosed()) return flova::OtaInstallResult::ResourceUnavailable;
+    if (!linkClosed() || !trustAnchors_) return flova::OtaInstallResult::ResourceUnavailable;
     if (strncmp(offer.url, "https://", 8) != 0 || !offer.sizeBytes ||
         offer.sizeBytes > otaMaxImageBytes())
       return flova::OtaInstallResult::DownloadFailed;
@@ -115,11 +132,12 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
     if (resources != flova::TlsResourceStatus::Ready)
       return flova::OtaInstallResult::ResourceUnavailable;
 
+    if (!createClient()) return flova::OtaInstallResult::ResourceUnavailable;
+    // The HTTP borrower must be destroyed before releasing the TLS owner.
+    ClientRelease release{*this};
     HTTPClient http;
-    BearSSL::WiFiClientSecure client;
+    BearSSL::WiFiClientSecure& client = *client_;
     flova::configureOtaTls(client);
-    if (!trustAnchors_)
-      return flova::OtaInstallResult::ResourceUnavailable;
     client.setTrustAnchors(trustAnchors_);
     if (!http.begin(client, offer.url))
       return flova::OtaInstallResult::DownloadFailed;
@@ -153,13 +171,13 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
         continue;
       }
       const size_t remaining = offer.sizeBytes - written;
-      const size_t count = stream->readBytes(transferBuffer_, min(remaining, min(available, sizeof(transferBuffer_))));
-      if (!count || Update.write(transferBuffer_, count) != count) {
+      const size_t count = stream->readBytes(writeData_, min(remaining, min(available, sizeof(writeData_))));
+      if (!count || Update.write(writeData_, count) != count) {
         abortUpdate();
         http.end();
         return flova::OtaInstallResult::FlashFailed;
       }
-      br_sha256_update(&hash, transferBuffer_, count);
+      br_sha256_update(&hash, writeData_, count);
       written += count;
       lastProgressAt = millis();
     }
@@ -175,6 +193,19 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   }
 
  private:
+  bool createClient() {
+    if (client_) return true;
+    HeapSelectDram dram;
+    client_ = new (std::nothrow) BearSSL::WiFiClientSecure;
+    return client_ != nullptr;
+  }
+  void releaseClient() {
+    if (client_) { client_->stop(0); delete client_; client_ = nullptr; }
+  }
+  struct ClientRelease {
+    FlovaEsp8266Platform& owner;
+    ~ClientRelease() { owner.releaseClient(); }
+  };
   void clearWrite() {
     writeLength_ = 0;
     writeOffset_ = 0;
@@ -193,7 +224,7 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
     return true;
   }
 
-  BearSSL::WiFiClientSecure client_;
+  BearSSL::WiFiClientSecure* client_ = nullptr;
   BearSSL::X509List* trustAnchors_ = nullptr;
   bool open_ = false;
   bool opening_ = false;
@@ -203,5 +234,5 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
   size_t writeLength_ = 0;
   size_t writeOffset_ = 0;
   bool resourceUnavailable_ = false;
-  uint8_t transferBuffer_[512] = {};
+  const char* linkError_ = "link_open_failed";
 };

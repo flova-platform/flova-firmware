@@ -13,6 +13,7 @@ void setup() {
   delay(50);
   Serial.println();
   Serial.println("[flova] esp8266 boot");
+  flova::logTlsHeap("boot", flova::tlsHeapStats());
 
   // Fresh devices enter setup AP mode. Configured devices restore validated
   // identity and reconnect without requiring a reboot after provisioning.
@@ -27,4 +28,18 @@ void loop() {
   // Keep this loop unblocked. It services setup/runtime Link, applies dynamic
   // hardware writes, and performs bounded OTA/restart work.
   device.run();
+  static uint32_t lastReport = 0;
+  static uint32_t minimumHeap = UINT32_MAX;
+  static uint32_t minimumBlock = UINT32_MAX;
+  static uint32_t minimumStack = UINT32_MAX;
+  const auto heap = flova::tlsHeapStats();
+  if (heap.dramFree < minimumHeap) minimumHeap = heap.dramFree;
+  if (heap.dramMaxBlock < minimumBlock) minimumBlock = heap.dramMaxBlock;
+  if (heap.stackFree < minimumStack) minimumStack = heap.stackFree;
+  if (millis() - lastReport >= 5000) {
+    lastReport = millis();
+    flova::logTlsHeap("sample", heap);
+    Serial.printf_P(PSTR("[flova] memory minimum_heap=%u minimum_block=%u minimum_stack=%u lifecycle=%u\n"),
+        minimumHeap, minimumBlock, minimumStack, static_cast<unsigned>(device.lifecycle()));
+  }
 }

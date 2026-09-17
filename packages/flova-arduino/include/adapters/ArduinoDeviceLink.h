@@ -1,6 +1,9 @@
 #pragma once
 
+#include <FlovaFlashLog.h>
+
 #include <Arduino.h>
+#include <FlovaPhaseStorage.h>
 
 #include <FlovaLinkCbor.h>
 #include <FlovaLinkCodec.h>
@@ -75,44 +78,32 @@ class ArduinoDeviceLink final {
         if (strcmp(keys[prior], keys[i]) == 0) return false;
       bindingKeys_[i] = keys[i];
     }
+    bindingKeyReader_ = nullptr;
+    bindingKeyContext_ = nullptr;
     bindingCount_ = count;
     bindingPending_ = false;
+    bindingOffset_ = bindingBatchCount_ = 0;
     return true;
   }
 
-  bool decodeStoredConfigurationRecord(const uint8_t* payload, size_t length,
-                                       FlovaLinkConfigurationRecord& output) {
-    if (!payload || length > kPayloadBytes) return false;
-    memset(&configurationDecodeWorkspace_, 0, sizeof(configurationDecodeWorkspace_));
-    struct config_record& value = configurationDecodeWorkspace_;
-    if (flova::link::decodeCanonical(payload, length, value, cbor_decode_config_record,
-                                     cbor_encode_config_record, tx_, kPayloadBytes) != flova::link::CborResult::Complete)
-      return false;
-    output = FlovaLinkConfigurationRecord();
-    output.phase = FlovaLinkConfigurationPhase::Record;
-    output.generation = static_cast<uint32_t>(value.config_record_record_generation);
-    output.sequence = static_cast<uint32_t>(value.config_record_record_sequence);
-    output.recordType = static_cast<uint8_t>(value.config_record_record_body.config_record_body_choice);
-    size_t encodedLength = 0;
-    if (cbor_encode_config_record(output.record, FLOVA_LINK_RECORD_BYTES, &value, &encodedLength) != 0 || encodedLength > FLOVA_LINK_RECORD_BYTES)
-      return false;
-    output.recordLength = static_cast<uint16_t>(encodedLength);
-    output.hasTypedUnit = readConfigurationUnit(output.typedUnit, value.config_record_record_body);
-    if (output.recordType == 0) {
-      const datastream_record& datastream = value.config_record_record_body.config_record_body_datastream_record_m;
-      output.datastreamId = static_cast<DatastreamId>(datastream.datastream_record_datastream_compact_id);
-      copyText(output.datastreamKey, datastream.datastream_record_datastream_key);
-    }
-    return output.hasTypedUnit;
+  bool setDatastreamKeyReader(flova::DatastreamKeyReader reader, void* context,
+                              uint8_t count) {
+    if (count > kMaximumDatastreamBindings || (count && !reader)) return false;
+    bindingKeyReader_ = reader;
+    bindingKeyContext_ = context;
+    bindingCount_ = count;
+    bindingPending_ = false;
+    bindingOffset_ = bindingBatchCount_ = 0;
+    return true;
   }
 
   bool decodeStoredConfigurationUnit(const uint8_t* payload, size_t length,
                                      flova::config::Unit& output) {
-    if (!payload || length > kPayloadBytes) return false;
-    memset(&configurationDecodeWorkspace_, 0, sizeof(configurationDecodeWorkspace_));
-    struct config_record& value = configurationDecodeWorkspace_;
+    if (!payload || length > kPayloadBytes || !ensureWorkspace()) return false;
+    memset(&workspace_->configurationDecodeWorkspace_, 0, sizeof(workspace_->configurationDecodeWorkspace_));
+    struct config_record& value = workspace_->configurationDecodeWorkspace_;
     if (flova::link::decodeCanonical(payload, length, value, cbor_decode_config_record,
-                                     cbor_encode_config_record, tx_, kPayloadBytes) != flova::link::CborResult::Complete)
+                                     cbor_encode_config_record, workspace_->tx_, kPayloadBytes) != flova::link::CborResult::Complete)
       return false;
     return readConfigurationUnit(output, value.config_record_record_body);
   }
@@ -126,12 +117,21 @@ class ArduinoDeviceLink final {
            (bootstrap_ || (authenticated_ && !bindingPending_));
   }
 
+  bool tlsOpening() const { return connecting_ && transportOpening_; }
+
   bool connectionInProgress() const {
     return connecting_ || (active_ && (!authenticated_ || bindingPending_));
   }
 
+  bool setIdentity(const char* deviceId, const char* secret) {
+    identityValid_ = parseUuid(deviceId, deviceId_) && decodeSecret(secret, secret_);
+    return identityValid_;
+  }
   bool connect(const char* deviceId, const char* secret) {
-    if (!parseUuid(deviceId, deviceId_) || !decodeSecret(secret, secret_) || !parseUrl()) return false;
+    return setIdentity(deviceId, secret) && connect();
+  }
+  bool connect() {
+    if (!identityValid_ || !parseUrl()) return false;
     disconnect();
     connectionAttemptFailed_ = false;
     resourceUnavailable_ = false;
@@ -339,6 +339,7 @@ class ArduinoDeviceLink final {
     if (!active_ && !connecting_) return;
     if (!websocket_.serviceControl()) { disconnect(false); return; }
     if (!platform_.serviceLinkWrite()) {
+      if (bootstrap_) setBootstrapError("link_transport_write_failed");
       connectionAttemptFailed_ = true;
       disconnect();
       return;
@@ -349,6 +350,10 @@ class ArduinoDeviceLink final {
         if (status == FlovaLinkOpenStatus::InProgress) return;
         if (status == FlovaLinkOpenStatus::Failed ||
             !startWebSocketHandshake()) {
+          if (bootstrap_)
+            setBootstrapError(status == FlovaLinkOpenStatus::Failed
+                                  ? platform_.linkError()
+                                  : "link_ws_start_failed");
           connectionAttemptFailed_ = true;
           disconnect();
           return;
@@ -359,10 +364,11 @@ class ArduinoDeviceLink final {
       const FlovaWs::HandshakeProgress progress = websocket_.pollHandshake();
       if (progress == FlovaWs::HandshakeProgress::InProgress) return;
       if (progress == FlovaWs::HandshakeProgress::Failed) {
-        Serial.printf("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
+        FLOVA_SERIAL_PRINTF("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
                       static_cast<unsigned>(websocket_.error()),
                       FlovaWs::handshakeFailureName(websocket_.handshakeFailure()),
                       static_cast<unsigned>(websocket_.handshakeStatus()));
+        if (bootstrap_) setBootstrapError("link_ws_handshake_failed");
         connectionAttemptFailed_ = true;
         disconnect();
         return;
@@ -379,6 +385,13 @@ class ArduinoDeviceLink final {
         disconnect();
       }
       return;
+    }
+    if (active_ && bindingPending_) {
+      if (bindingBatchCount_) {
+        if (millis() - bindingSentAt_ >= 15000UL) { disconnect(); return; }
+      } else if (!platform_.linkWriteBusy() && !websocket_.controlPending()) {
+        if (!sendDatastreamBinding()) { disconnect(); return; }
+      }
     }
     for (uint8_t i = 0; i < kPendingFrameSlots && active_; ++i) {
       pumpWebSocket();
@@ -400,28 +413,31 @@ class ArduinoDeviceLink final {
     pendingFrameHead_ = static_cast<uint8_t>((pendingFrameHead_ + 1) % kPendingFrameSlots);
     --pendingFrameCount_;
     flova::link::FrameView frame = {};
-    if (flova::link::decodeWebSocketBinaryMessage(pendingFrames_[slot], frameLength, frame) !=
+    if (flova::link::decodeWebSocketBinaryMessage(workspace_->pendingFrames_[slot], frameLength, frame) !=
         flova::link::FrameResult::Complete) {
-      Serial.println("[flova] Link frame rejected=invalid_header");
+      FLOVA_SERIAL_PRINTLN("[flova] Link frame rejected=invalid_header");
       disconnect();
       return;
     }
 #if FLOVA_LINK_PERFORMANCE_LOGGING
-    Serial.printf("[flova] Link frame received type=0x%02x id=%llu bytes=%u queue_ms=%lu\n",
+    FLOVA_SERIAL_PRINTF("[flova] Link frame received type=0x%02x id=%llu bytes=%u queue_ms=%lu\n",
                   static_cast<unsigned>(frame.messageType),
                   static_cast<unsigned long long>(frame.messageId),
                   static_cast<unsigned>(frameLength),
                   static_cast<unsigned long>(millis() - pendingFrameQueuedAtMs_[slot]));
 #endif
+    dispatching_ = true;
     handleFrame(frame);
     // Configuration decoding uses generated CBOR structs that may be larger
     // than a small Arduino callback stack. Dispatch after handleFrame() has
     // returned and those temporary structs have been released.
     if (pendingCallback_ && (callback_ || callbackWithContext_) && active_) {
       pendingCallback_ = false;
-      if (callbackWithContext_) callbackWithContext_(callbackContext_, inbound_);
-      else callback_(inbound_);
+      if (callbackWithContext_) callbackWithContext_(callbackContext_, workspace_->inbound_);
+      else callback_(workspace_->inbound_);
     }
+    dispatching_ = false;
+    releaseIdleWorkspace();
   }
   bool takeBootstrapError() {
     const bool pending = bootstrapErrorPending_;
@@ -449,6 +465,7 @@ class ArduinoDeviceLink final {
     transportOpening_ = false;
     authenticated_ = false;
     bindingPending_ = false;
+    bindingOffset_ = bindingBatchCount_ = 0;
     bootstrap_ = false;
     pendingFrameCount_ = 0;
     pendingFrameHead_ = 0;
@@ -459,15 +476,41 @@ class ArduinoDeviceLink final {
     else websocket_.abort();
     if (hadConnection || !platform_.linkClosed()) platform_.closeLink();
     disconnecting_ = false;
+    releaseIdleWorkspace();
+  }
+
+  // Offline configuration reads may borrow the same bounded workspace. Release
+  // it before constructing TLS and after the last callback borrow has ended.
+  void releaseIdleWorkspace() {
+    if (!active_ && !connecting_ && !dispatching_) {
+      workspace_.reset();
+    }
   }
 
  private:
+  struct Workspace {
+    uint8_t tx_[kTransmitWorkspaceBytes] = {};
+    uint8_t pendingFrames_[kPendingFrameSlots][kFrameBytes] = {};
+    FlovaLinkInboundMessage inbound_ = {};
+    union {
+      struct config_record configurationDecodeWorkspace_ = {};
+      char bindingNames_[9][FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1];
+    };
+  };
+  bool ensureWorkspace() {
+    workspace_.create();
+    if (!workspace_) resourceUnavailable_ = true;
+    return static_cast<bool>(workspace_);
+  }
+  FlovaPhaseStorage<Workspace> workspace_;
+  bool dispatching_ = false;
   bool draining_ = false;
   bool drainFailed_ = false;
   uint32_t drainStartedAt_ = 0;
   typedef int (*Encoder)(uint8_t*, size_t, const void*, size_t*);
 
   bool openConnection(bool bootstrap) {
+    releaseIdleWorkspace();
     if (!platform_.startLink(host_, port_)) {
       resourceUnavailable_ = platform_.resourceRecoveryRequired();
       connectionAttemptFailed_ = true;
@@ -481,10 +524,11 @@ class ArduinoDeviceLink final {
   }
 
   bool startWebSocketHandshake() {
+    if (!ensureWorkspace()) return false;
     size_t requestLength = 0;
-    if (!websocket_.startHandshake(host_, port_, path_, tx_, sizeof(tx_),
+    if (!websocket_.startHandshake(host_, port_, path_, workspace_->tx_, sizeof(workspace_->tx_),
                                    requestLength) ||
-        !platform_.submitLinkWrite(tx_, requestLength) ||
+        !platform_.submitLinkWrite(workspace_->tx_, requestLength) ||
         !platform_.serviceLinkWrite()) {
       platform_.closeLink();
       return false;
@@ -496,10 +540,10 @@ class ArduinoDeviceLink final {
     if (pendingFrameCount_ >= kPendingFrameSlots) return;
     const uint8_t slot = pendingFrameTail_;
     const size_t capacity = kFrameBytes - pendingFrameLength_;
-    const int length = websocket_.read(pendingFrames_[slot] + pendingFrameLength_, capacity);
+    const int length = websocket_.read(workspace_->pendingFrames_[slot] + pendingFrameLength_, capacity);
     if (length < 0) {
       connectionAttemptFailed_ = true;
-      Serial.printf("[flova] Link websocket error code=%u\n",
+      FLOVA_SERIAL_PRINTF("[flova] Link websocket error code=%u\n",
                     static_cast<unsigned>(websocket_.error()));
       disconnect(false);
       return;
@@ -530,7 +574,7 @@ class ArduinoDeviceLink final {
     const uint32_t startedAt = millis();
 #endif
     size_t payloadLength = 0;
-    uint8_t* frame = tx_ + FlovaWs::kMaximumOutgoingHeaderBytes;
+    uint8_t* frame = workspace_->tx_ + FlovaWs::kMaximumOutgoingHeaderBytes;
     if (platform_.linkWriteBusy() || websocket_.controlPending())
       return setSendFailure(failure, SendFailure::WriteBusy);
     if (encoder(frame + flova::link::kHeaderBytes, kPayloadBytes, &value,
@@ -548,14 +592,14 @@ class ArduinoDeviceLink final {
 #endif
     size_t wireLength = 0;
     if (!websocket_.prepareBinary(frame, flova::link::kHeaderBytes + payloadLength,
-                                  tx_, sizeof(tx_), wireLength))
+                                  workspace_->tx_, sizeof(workspace_->tx_), wireLength))
       return setSendFailure(failure, SendFailure::WebSocketFrame);
-    if (!platform_.submitLinkWrite(tx_, wireLength))
+    if (!platform_.submitLinkWrite(workspace_->tx_, wireLength))
       return setSendFailure(failure, SendFailure::TransportSubmit);
     const bool sent = platform_.serviceLinkWrite();
     if (!sent) return setSendFailure(failure, SendFailure::TransportWrite);
 #if FLOVA_LINK_PERFORMANCE_LOGGING
-    Serial.printf("[flova] Link send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu writes=%u wire_bytes=%u accepted=%u\n",
+    FLOVA_SERIAL_PRINTF("[flova] Link send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu writes=%u wire_bytes=%u accepted=%u\n",
                   static_cast<unsigned>(type),
                   static_cast<unsigned long long>(messageId),
                   static_cast<unsigned>(flova::link::kHeaderBytes + payloadLength),
@@ -577,17 +621,29 @@ class ArduinoDeviceLink final {
   }
 
   bool sendDatastreamBinding() {
+    // Nine maximum-length (48-byte UTF-8) keys plus CBOR metadata fit in
+    // the 500-byte payload. Only one request may be outstanding.
+    const uint8_t remaining = bindingCount_ - bindingOffset_;
+    bindingBatchCount_ = remaining > 9 ? 9 : remaining;
+    if (!bindingBatchCount_) return false;
     struct datastream_bind value = {};
     value.datastream_bind_binding_generation = configurationGeneration_;
-    value.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48_count = bindingCount_;
-    for (uint8_t i = 0; i < bindingCount_; ++i) {
-      const size_t length = strlen(bindingKeys_[i]);
+    value.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48_count = bindingBatchCount_;
+    for (uint8_t i = 0; i < bindingBatchCount_; ++i) {
+      const char* key = bindingKeys_[bindingOffset_ + i];
+      if (bindingKeyReader_) {
+        if (!bindingKeyReader_(bindingKeyContext_, bindingOffset_ + i,
+                              workspace_->bindingNames_[i], sizeof(workspace_->bindingNames_[i]))) return false;
+        key = workspace_->bindingNames_[i];
+      }
+      const size_t length = strlen(key);
       if (!length || length > FLOVA_MAX_DATASTREAM_KEY_LENGTH) return false;
       value.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48[i].value =
-          reinterpret_cast<const uint8_t*>(bindingKeys_[i]);
+          reinterpret_cast<const uint8_t*>(key);
       value.datastream_bind_binding_keys.datastream_binding_keys_tstr1_48[i].len = length;
     }
-    return sendEncoded(0x09, 0, value, cbor_encode_datastream_bind);
+    bindingSentAt_ = millis();
+    return sendEncoded(0x09, ++bindingRequestId_, value, cbor_encode_datastream_bind);
   }
 
   bool sendBootstrapAuthentication(SendFailure* failure = nullptr) {
@@ -666,6 +722,11 @@ class ArduinoDeviceLink final {
       case SendFailure::BootstrapFields: error = "bootstrap_auth_fields_failed"; break;
       case SendFailure::None: break;
     }
+    setBootstrapError(error);
+  }
+
+  void setBootstrapError(const char* error) {
+    if (!error || !*error) error = "bootstrap_transport_failed";
     strncpy(bootstrapError_, error, sizeof(bootstrapError_) - 1);
     bootstrapError_[sizeof(bootstrapError_) - 1] = 0;
     bootstrapErrorPending_ = true;
@@ -677,9 +738,9 @@ class ArduinoDeviceLink final {
       if (decode(frame, value, cbor_decode_auth_ok, cbor_encode_auth_ok)) {
         authenticated_ = true;
         bindingPending_ = bindingCount_ != 0;
-        if (bindingPending_ && !sendDatastreamBinding()) disconnect();
+        bindingOffset_ = bindingBatchCount_ = 0;
       } else {
-        Serial.println("[flova] Link auth response rejected=auth_ok_decode_failed");
+        FLOVA_SERIAL_PRINTLN("[flova] Link auth response rejected=auth_ok_decode_failed");
         disconnect();
       }
       return;
@@ -688,11 +749,11 @@ class ArduinoDeviceLink final {
     if (frame.messageType == 0x03) {
       zcbor_string reason = {};
       if (decode(frame, reason, cbor_decode_auth_error, cbor_encode_auth_error)) {
-        Serial.printf("[flova] Link auth rejected reason=%.*s\n",
+        FLOVA_SERIAL_PRINTF("[flova] Link auth rejected reason=%.*s\n",
                       static_cast<int>(reason.len),
                       reinterpret_cast<const char*>(reason.value));
       } else {
-        Serial.println("[flova] Link auth rejected reason=auth_error_decode_failed");
+        FLOVA_SERIAL_PRINTLN("[flova] Link auth rejected reason=auth_error_decode_failed");
       }
       disconnect();
       return;
@@ -701,12 +762,12 @@ class ArduinoDeviceLink final {
       struct bootstrap_committed value = {};
       if (!decode(frame, value, cbor_decode_bootstrap_committed,
                   cbor_encode_bootstrap_committed)) return disconnect();
-      inbound_ = FlovaLinkInboundMessage();
-      inbound_.type = FlovaLinkMessageType::BootstrapCommitted;
-      inbound_.messageId = frame.messageId;
-      copyId(inbound_.body.bootstrapCommitted.deviceId, value.bootstrap_committed_committed_device_id);
-      inbound_.body.bootstrapCommitted.generation = static_cast<uint32_t>(value.bootstrap_committed_committed_generation);
-      inbound_.body.bootstrapCommitted.serverUtcMs = value.bootstrap_committed_committed_server_utc_ms;
+      workspace_->inbound_ = FlovaLinkInboundMessage();
+      workspace_->inbound_.type = FlovaLinkMessageType::BootstrapCommitted;
+      workspace_->inbound_.messageId = frame.messageId;
+      copyId(workspace_->inbound_.body.bootstrapCommitted.deviceId, value.bootstrap_committed_committed_device_id);
+      workspace_->inbound_.body.bootstrapCommitted.generation = static_cast<uint32_t>(value.bootstrap_committed_committed_generation);
+      workspace_->inbound_.body.bootstrapCommitted.serverUtcMs = value.bootstrap_committed_committed_server_utc_ms;
       pendingCallback_ = true;
       return;
     }
@@ -716,7 +777,7 @@ class ArduinoDeviceLink final {
                  cbor_encode_bootstrap_error)) {
         copyText(bootstrapError_, reason);
         bootstrapErrorPending_ = true;
-        Serial.printf("[flova] bootstrap error=%.*s\n",
+        FLOVA_SERIAL_PRINTF("[flova] bootstrap error=%.*s\n",
                       static_cast<int>(reason.len),
                       reinterpret_cast<const char*>(reason.value));
       }
@@ -728,33 +789,33 @@ class ArduinoDeviceLink final {
     if (frame.messageType == 0x21) {
       // INGESTION_ACK has an empty payload; the frame id identifies the
       // state message being acknowledged.
-      inbound_ = FlovaLinkInboundMessage();
-      inbound_.type = FlovaLinkMessageType::Acknowledgement;
-      inbound_.messageId = frame.messageId;
-      inbound_.body.acknowledgement.acknowledgedMessageId = frame.messageId;
+      workspace_->inbound_ = FlovaLinkInboundMessage();
+      workspace_->inbound_.type = FlovaLinkMessageType::Acknowledgement;
+      workspace_->inbound_.messageId = frame.messageId;
+      workspace_->inbound_.body.acknowledgement.acknowledgedMessageId = frame.messageId;
       pendingCallback_ = true;
       return;
     }
     if (frame.messageType == 0x26) {
       struct flow_control value = {};
       if (!decode(frame, value, cbor_decode_flow_control, cbor_encode_flow_control)) return disconnect();
-      inbound_ = FlovaLinkInboundMessage();
-      inbound_.type = FlovaLinkMessageType::FlowControl;
-      inbound_.messageId = frame.messageId;
-      inbound_.body.acknowledgement.acknowledgedMessageId = frame.messageId;
-      inbound_.body.acknowledgement.retryAfterMs = static_cast<uint32_t>(value.flow_control_flow_retry_after_ms);
-      copyText(inbound_.body.acknowledgement.reasonCode, value.flow_control_flow_reason);
+      workspace_->inbound_ = FlovaLinkInboundMessage();
+      workspace_->inbound_.type = FlovaLinkMessageType::FlowControl;
+      workspace_->inbound_.messageId = frame.messageId;
+      workspace_->inbound_.body.acknowledgement.acknowledgedMessageId = frame.messageId;
+      workspace_->inbound_.body.acknowledgement.retryAfterMs = static_cast<uint32_t>(value.flow_control_flow_retry_after_ms);
+      copyText(workspace_->inbound_.body.acknowledgement.reasonCode, value.flow_control_flow_reason);
       pendingCallback_ = true;
       return;
     }
     if (frame.messageType == 0x27) {
       zcbor_string reason = {};
       if (!decode(frame, reason, cbor_decode_message_rejected, cbor_encode_message_rejected)) return disconnect();
-      inbound_ = FlovaLinkInboundMessage();
-      inbound_.type = FlovaLinkMessageType::Rejection;
-      inbound_.messageId = frame.messageId;
-      inbound_.body.acknowledgement.acknowledgedMessageId = frame.messageId;
-      copyText(inbound_.body.acknowledgement.reasonCode, reason);
+      workspace_->inbound_ = FlovaLinkInboundMessage();
+      workspace_->inbound_.type = FlovaLinkMessageType::Rejection;
+      workspace_->inbound_.messageId = frame.messageId;
+      workspace_->inbound_.body.acknowledgement.acknowledgedMessageId = frame.messageId;
+      copyText(workspace_->inbound_.body.acknowledgement.reasonCode, reason);
       pendingCallback_ = true;
       return;
     }
@@ -770,46 +831,50 @@ class ArduinoDeviceLink final {
               int (*encoder)(uint8_t*, size_t, const T*, size_t*)) {
     return flova::link::decodeCanonical(frame.payload, frame.payloadLength, value, decoder,
                                         encoder,
-                                        tx_, kPayloadBytes) == flova::link::CborResult::Complete;
+                                        workspace_->tx_, kPayloadBytes) == flova::link::CborResult::Complete;
   }
 
   void handleCommand(const flova::link::FrameView& frame) {
     struct command value = {};
     if (!decode(frame, value, cbor_decode_command, cbor_encode_command) ||
         value.command_id.len != sizeof(deviceId_)) return disconnect();
-    inbound_ = FlovaLinkInboundMessage();
-    inbound_.type = FlovaLinkMessageType::Command;
-    inbound_.messageId = frame.messageId;
-    inbound_.body.command.configurationGeneration = static_cast<uint32_t>(value.command_generation);
-    inbound_.body.command.datastreamId = static_cast<DatastreamId>(value.command_compact_id);
-    inbound_.body.command.desiredVersion = static_cast<uint32_t>(value.command_desired_version);
-    inbound_.body.command.expiresAtUtcMs = value.command_expires_at_utc_ms;
-    copyId(inbound_.body.command.commandId, value.command_id);
-    if (!readCorrelation(inbound_.body.command.correlationId, value.command_correlation_id) ||
-        !readTypedValue(inbound_.body.command.value, value.command_typed_value_fields_m)) return disconnect();
+    workspace_->inbound_ = FlovaLinkInboundMessage();
+    workspace_->inbound_.type = FlovaLinkMessageType::Command;
+    workspace_->inbound_.messageId = frame.messageId;
+    workspace_->inbound_.body.command.configurationGeneration = static_cast<uint32_t>(value.command_generation);
+    workspace_->inbound_.body.command.datastreamId = static_cast<DatastreamId>(value.command_compact_id);
+    workspace_->inbound_.body.command.desiredVersion = static_cast<uint32_t>(value.command_desired_version);
+    workspace_->inbound_.body.command.expiresAtUtcMs = value.command_expires_at_utc_ms;
+    copyId(workspace_->inbound_.body.command.commandId, value.command_id);
+    if (!readCorrelation(workspace_->inbound_.body.command.correlationId, value.command_correlation_id) ||
+        !readTypedValue(workspace_->inbound_.body.command.value, value.command_typed_value_fields_m)) return disconnect();
     pendingCallback_ = true;
   }
 
   void handleDatastreamBound(const flova::link::FrameView& frame) {
     struct datastream_bound value = {};
-    if (!decode(frame, value, cbor_decode_datastream_bound, cbor_encode_datastream_bound) ||
-        value.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m_count != bindingCount_ ||
-        value.datastream_bound_bound_generation > UINT32_MAX)
+    if (!bindingPending_ || !bindingBatchCount_ || frame.messageId != bindingRequestId_ ||
+        !decode(frame, value, cbor_decode_datastream_bound, cbor_encode_datastream_bound) ||
+        value.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m_count != bindingBatchCount_ ||
+        value.datastream_bound_bound_generation != configurationGeneration_)
       return disconnect();
-    inbound_ = FlovaLinkInboundMessage();
-    inbound_.type = FlovaLinkMessageType::DatastreamBound;
-    inbound_.messageId = frame.messageId;
-    inbound_.body.datastreamBound.generation = static_cast<uint32_t>(value.datastream_bound_bound_generation);
-    inbound_.body.datastreamBound.count = static_cast<uint8_t>(
-        value.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m_count);
-    for (uint8_t i = 0; i < inbound_.body.datastreamBound.count; ++i) {
+    for (uint8_t i = 0; i < bindingBatchCount_; ++i) {
       const DatastreamId id = static_cast<DatastreamId>(
           value.datastream_bound_bound_ids.datastream_bound_ids_compact_id_m[i]);
       if (!flovaValidDatastreamId(id)) return disconnect();
-      for (uint8_t prior = 0; prior < i; ++prior)
-        if (inbound_.body.datastreamBound.ids[prior] == id) return disconnect();
-      inbound_.body.datastreamBound.ids[i] = id;
+      for (uint8_t prior = 0; prior < bindingOffset_ + i; ++prior)
+        if (bindingIds_[prior] == id) return disconnect();
+      bindingIds_[bindingOffset_ + i] = id;
     }
+    bindingOffset_ += bindingBatchCount_;
+    bindingBatchCount_ = 0;
+    if (bindingOffset_ != bindingCount_) return;
+    workspace_->inbound_ = FlovaLinkInboundMessage();
+    workspace_->inbound_.type = FlovaLinkMessageType::DatastreamBound;
+    workspace_->inbound_.messageId = frame.messageId;
+    workspace_->inbound_.body.datastreamBound.generation = configurationGeneration_;
+    workspace_->inbound_.body.datastreamBound.count = bindingCount_;
+    memcpy(workspace_->inbound_.body.datastreamBound.ids, bindingIds_, bindingCount_ * sizeof(DatastreamId));
     bindingPending_ = false;
     pendingCallback_ = true;
   }
@@ -817,94 +882,83 @@ class ArduinoDeviceLink final {
   void handleOta(const flova::link::FrameView& frame) {
     struct ota_desired value = {};
     if (!decode(frame, value, cbor_decode_ota_desired, cbor_encode_ota_desired)) return disconnect();
-    inbound_ = FlovaLinkInboundMessage();
-    inbound_.type = FlovaLinkMessageType::OtaOffer;
-    inbound_.messageId = frame.messageId;
-    copyId(inbound_.body.otaOffer.installId, value.ota_desired_ota_install_id);
-    if (!copyTextBounded(inbound_.body.otaOffer.version,
-                         sizeof(inbound_.body.otaOffer.version),
+    workspace_->inbound_ = FlovaLinkInboundMessage();
+    workspace_->inbound_.type = FlovaLinkMessageType::OtaOffer;
+    workspace_->inbound_.messageId = frame.messageId;
+    copyId(workspace_->inbound_.body.otaOffer.installId, value.ota_desired_ota_install_id);
+    if (!copyTextBounded(workspace_->inbound_.body.otaOffer.version,
+                         sizeof(workspace_->inbound_.body.otaOffer.version),
                          value.ota_desired_ota_version) ||
-        !copyTextBounded(inbound_.body.otaOffer.url,
-                         sizeof(inbound_.body.otaOffer.url),
+        !copyTextBounded(workspace_->inbound_.body.otaOffer.url,
+                         sizeof(workspace_->inbound_.body.otaOffer.url),
                          value.ota_desired_ota_url))
       return disconnect();
     if (value.ota_desired_ota_target_present)
-      if (!copyTextBounded(inbound_.body.otaOffer.firmwareTarget,
-                           sizeof(inbound_.body.otaOffer.firmwareTarget),
+      if (!copyTextBounded(workspace_->inbound_.body.otaOffer.firmwareTarget,
+                           sizeof(workspace_->inbound_.body.otaOffer.firmwareTarget),
                            value.ota_desired_ota_target.ota_desired_ota_target))
         return disconnect();
     if (value.ota_desired_ota_release_id_present)
-      copyId(inbound_.body.otaOffer.releaseId,
+      copyId(workspace_->inbound_.body.otaOffer.releaseId,
              value.ota_desired_ota_release_id.ota_desired_ota_release_id);
-    if (!copyHex(inbound_.body.otaOffer.sha256, sizeof(inbound_.body.otaOffer.sha256),
+    if (!copyHex(workspace_->inbound_.body.otaOffer.sha256, sizeof(workspace_->inbound_.body.otaOffer.sha256),
                  value.ota_desired_ota_checksum)) return disconnect();
-    inbound_.body.otaOffer.sizeBytes = static_cast<uint32_t>(value.ota_desired_ota_size);
+    workspace_->inbound_.body.otaOffer.sizeBytes = static_cast<uint32_t>(value.ota_desired_ota_size);
     pendingCallback_ = true;
   }
 
   void handleTime(const flova::link::FrameView& frame) {
     struct time_response value = {};
     if (!decode(frame, value, cbor_decode_time_response, cbor_encode_time_response)) return disconnect();
-    inbound_ = FlovaLinkInboundMessage();
-    inbound_.type = FlovaLinkMessageType::TimeResponse;
-    inbound_.messageId = frame.messageId;
-    inbound_.body.timeResponse.requestId = value.time_response_request_id;
-    inbound_.body.timeResponse.serverUtcMs = value.time_response_server_utc_ms;
+    workspace_->inbound_ = FlovaLinkInboundMessage();
+    workspace_->inbound_.type = FlovaLinkMessageType::TimeResponse;
+    workspace_->inbound_.messageId = frame.messageId;
+    workspace_->inbound_.body.timeResponse.requestId = value.time_response_request_id;
+    workspace_->inbound_.body.timeResponse.serverUtcMs = value.time_response_server_utc_ms;
     pendingCallback_ = true;
   }
 
   void handleConfiguration(const flova::link::FrameView& frame) {
-    inbound_ = FlovaLinkInboundMessage();
-    inbound_.type = frame.messageType == 0x28
+    workspace_->inbound_ = FlovaLinkInboundMessage();
+    workspace_->inbound_.type = frame.messageType == 0x28
                         ? FlovaLinkMessageType::ConfigurationBegin
                         : frame.messageType == 0x29
                               ? FlovaLinkMessageType::ConfigurationRecord
                               : FlovaLinkMessageType::ConfigurationEnd;
-    inbound_.messageId = frame.messageId;
-    inbound_.body.configuration.messageId = frame.messageId;
-    inbound_.body.configuration.phase = frame.messageType == 0x28 ? FlovaLinkConfigurationPhase::Begin :
+    workspace_->inbound_.messageId = frame.messageId;
+    workspace_->inbound_.body.configuration.messageId = frame.messageId;
+    workspace_->inbound_.body.configuration.phase = frame.messageType == 0x28 ? FlovaLinkConfigurationPhase::Begin :
                                        frame.messageType == 0x29 ? FlovaLinkConfigurationPhase::Record :
                                                                   FlovaLinkConfigurationPhase::End;
     size_t encodedLength = 0;
     if (frame.messageType == 0x28) {
       struct config_begin value = {};
       if (!decode(frame, value, cbor_decode_config_begin, cbor_encode_config_begin)) return disconnect();
-      inbound_.body.configuration.generation = static_cast<uint32_t>(value.config_begin_config_generation);
-      inbound_.body.configuration.recordCount = static_cast<uint32_t>(value.config_begin_config_record_count);
-      inbound_.body.configuration.schemaVersion = 1;
-      inbound_.body.configuration.maximumRecordBytes = flova::config::kMaximumRecordBytes;
-      copyBytes(inbound_.body.configuration.checksum, value.config_begin_config_checksum);
-      inbound_.body.configuration.recordLength = 0;
+      workspace_->inbound_.body.configuration.generation = static_cast<uint32_t>(value.config_begin_config_generation);
+      workspace_->inbound_.body.configuration.recordCount = static_cast<uint32_t>(value.config_begin_config_record_count);
+      workspace_->inbound_.body.configuration.schemaVersion = 1;
+      workspace_->inbound_.body.configuration.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+      copyBytes(workspace_->inbound_.body.configuration.checksum, value.config_begin_config_checksum);
+      workspace_->inbound_.body.configuration.recordLength = 0;
     } else if (frame.messageType == 0x29) {
-      memset(&configurationDecodeWorkspace_, 0, sizeof(configurationDecodeWorkspace_));
-      struct config_record& value = configurationDecodeWorkspace_;
+      memset(&workspace_->configurationDecodeWorkspace_, 0, sizeof(workspace_->configurationDecodeWorkspace_));
+      struct config_record& value = workspace_->configurationDecodeWorkspace_;
       if (!decode(frame, value, cbor_decode_config_record, cbor_encode_config_record) ||
-          cbor_encode_config_record(inbound_.body.configuration.record, FLOVA_LINK_RECORD_BYTES, &value, &encodedLength) != 0 ||
+          cbor_encode_config_record(workspace_->inbound_.body.configuration.record, FLOVA_LINK_RECORD_BYTES, &value, &encodedLength) != 0 ||
           encodedLength > FLOVA_LINK_RECORD_BYTES) return disconnect();
-      inbound_.body.configuration.generation = static_cast<uint32_t>(value.config_record_record_generation);
-      inbound_.body.configuration.sequence = static_cast<uint32_t>(value.config_record_record_sequence);
-      inbound_.body.configuration.recordType = static_cast<uint8_t>(value.config_record_record_body.config_record_body_choice);
-      if (value.config_record_record_body.config_record_body_choice ==
-          config_record_body_r::config_record_body_datastream_record_m_c) {
-        const struct datastream_record& datastream =
-            value.config_record_record_body.config_record_body_datastream_record_m;
-        inbound_.body.configuration.datastreamId =
-            static_cast<DatastreamId>(datastream.datastream_record_datastream_compact_id);
-        copyText(inbound_.body.configuration.datastreamKey,
-                 datastream.datastream_record_datastream_key);
-      }
-      inbound_.body.configuration.recordLength = static_cast<uint16_t>(encodedLength);
-      inbound_.body.configuration.hasTypedUnit = readConfigurationUnit(
-          inbound_.body.configuration.typedUnit, value.config_record_record_body);
-      if (!inbound_.body.configuration.hasTypedUnit) return disconnect();
+      workspace_->inbound_.body.configuration.generation = static_cast<uint32_t>(value.config_record_record_generation);
+      workspace_->inbound_.body.configuration.sequence = static_cast<uint32_t>(value.config_record_record_sequence);
+      workspace_->inbound_.body.configuration.recordType = static_cast<uint8_t>(value.config_record_record_body.config_record_body_choice);
+      workspace_->inbound_.body.configuration.recordLength = static_cast<uint16_t>(encodedLength);
+      // Typed semantic validation belongs to the installer loop, before ACK.
     } else {
       struct config_end value = {};
       if (!decode(frame, value, cbor_decode_config_end, cbor_encode_config_end)) return disconnect();
-      inbound_.body.configuration.generation = static_cast<uint32_t>(value.config_end_end_generation);
-      inbound_.body.configuration.recordCount = static_cast<uint32_t>(value.config_end_end_record_count);
-      inbound_.body.configuration.schemaVersion = 1;
-      inbound_.body.configuration.maximumRecordBytes = flova::config::kMaximumRecordBytes;
-      copyBytes(inbound_.body.configuration.checksum, value.config_end_end_checksum);
+      workspace_->inbound_.body.configuration.generation = static_cast<uint32_t>(value.config_end_end_generation);
+      workspace_->inbound_.body.configuration.recordCount = static_cast<uint32_t>(value.config_end_end_record_count);
+      workspace_->inbound_.body.configuration.schemaVersion = 1;
+      workspace_->inbound_.body.configuration.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+      copyBytes(workspace_->inbound_.body.configuration.checksum, value.config_end_end_checksum);
     }
     pendingCallback_ = true;
   }
@@ -1295,18 +1349,13 @@ class ArduinoDeviceLink final {
     } else {
       port_ = 443;
     }
-    if (slash) {
-      if (strlen(slash) >= sizeof(path_)) return false;
-      strcpy(path_, slash);
-    } else {
-      strcpy(path_, "/");
-    }
+    path_ = slash ? slash : "/";
     return true;
   }
 
   char url_[kUrlBytes] = {};
   char host_[kUrlBytes] = {};
-  char path_[kUrlBytes] = {};
+  const char* path_ = "/";
   uint16_t port_ = 443;
   bool active_ = false;
   bool connecting_ = false;
@@ -1315,6 +1364,7 @@ class ArduinoDeviceLink final {
   bool bootstrap_ = false;
   FlovaArduinoPlatform& platform_;
   FlovaWs websocket_;
+  bool identityValid_ = false;
   uint8_t deviceId_[16] = {};
   uint8_t secret_[32] = {};
   uint8_t bootstrapToken_[64] = {};
@@ -1323,10 +1373,14 @@ class ArduinoDeviceLink final {
   char bootstrapError_[FLOVA_TEXT_CAPACITY] = {};
   char bootstrapHardwareId_[97] = {};
   char bootstrapFirmwareTarget_[65] = {};
-  uint8_t tx_[kTransmitWorkspaceBytes] = {};
   const char* bindingKeys_[kMaximumDatastreamBindings] = {};
   uint8_t bindingCount_ = 0;
   bool bindingPending_ = false;
+  uint8_t bindingOffset_ = 0;
+  uint8_t bindingBatchCount_ = 0;
+  uint32_t bindingSentAt_ = 0;
+  uint64_t bindingRequestId_ = 0;
+  DatastreamId bindingIds_[kMaximumDatastreamBindings] = {};
   uint32_t configurationGeneration_ = 0;
   flova::HardwareCapabilities hardwareCapabilities_;
   FlovaMessageCallback callback_ = nullptr;
@@ -1336,7 +1390,6 @@ class ArduinoDeviceLink final {
   bool connectionAttemptFailed_ = false;
   bool resourceUnavailable_ = false;
   bool bootstrapErrorPending_ = false;
-  uint8_t pendingFrames_[kPendingFrameSlots][kFrameBytes] = {};
   size_t pendingFrameLengths_[kPendingFrameSlots] = {};
 #if FLOVA_LINK_PERFORMANCE_LOGGING
   uint32_t pendingFrameQueuedAtMs_[kPendingFrameSlots] = {};
@@ -1346,6 +1399,7 @@ class ArduinoDeviceLink final {
   uint8_t pendingFrameCount_ = 0;
   size_t pendingFrameLength_ = 0;
   bool pendingCallback_ = false;
-  FlovaLinkInboundMessage inbound_ = {};
-  struct config_record configurationDecodeWorkspace_ = {};
+  flova::DatastreamKeyReader bindingKeyReader_ = nullptr;
+  void* bindingKeyContext_ = nullptr;
+
 };

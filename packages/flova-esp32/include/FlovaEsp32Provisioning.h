@@ -1,5 +1,7 @@
 #pragma once
 
+#include <new>
+
 #include <WebServer.h>
 #include <WiFi.h>
 #include <FlovaConfiguration.h>
@@ -14,25 +16,28 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
                                   const char* setupPassword = nullptr)
       : storage_(storage), setupPassword_(setupPassword) {}
 
+  ~FlovaEsp32Provisioning() override { delete setup_; }
+  FlovaEsp32Provisioning(const FlovaEsp32Provisioning&) = delete;
+  FlovaEsp32Provisioning& operator=(const FlovaEsp32Provisioning&) = delete;
+
   bool begin(FlovaProvisioningHandler handler, void* context) override {
     handler_ = handler;
     context_ = context;
-    if (!routesRegistered_) {
-      server_.on("/setup", HTTP_GET, [this]() { handleSetup(); });
-      server_.on("/status", HTTP_GET, [this]() { handleStatus(); });
-      server_.on("/provision", HTTP_POST, [this]() { handleProvision(); });
-      routesRegistered_ = true;
-    }
     return true;
   }
 
   void loop() override {
-    if (provisioning_) server_.handleClient();
+    if (provisioning_) setup_->server.handleClient();
   }
 
   bool startProvisioning() override {
-    provisioning_ = false;
+    stopProvisioning();
     if (!storage_.remove("wifi")) return false;
+    setup_ = new (std::nothrow) Setup;
+    if (!setup_) return false;
+    setup_->server.on("/setup", HTTP_GET, [this]() { handleSetup(); });
+    setup_->server.on("/status", HTTP_GET, [this]() { handleStatus(); });
+    setup_->server.on("/provision", HTTP_POST, [this]() { handleProvision(); });
     WiFi.disconnect(true, true);
     WiFi.mode(WIFI_AP);
     char ssid[32] = {};
@@ -40,17 +45,17 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
              static_cast<unsigned long>(ESP.getEfuseMac()));
     if (setupPassword_) {
       const size_t length = strlen(setupPassword_);
-      if (length < 8 || length > 63) return false;
+      if (length < 8 || length > 63) { stopProvisioning(); return false; }
     }
-    if (!WiFi.softAP(ssid, setupPassword_)) return false;
-    server_.begin();
+    if (!WiFi.softAP(ssid, setupPassword_)) { stopProvisioning(); return false; }
+    setup_->server.begin();
     provisioning_ = true;
     return true;
   }
 
   bool stopProvisioning() override {
     provisioning_ = false;
-    server_.stop();
+    if (setup_) { setup_->server.stop(); delete setup_; setup_ = nullptr; }
     WiFi.softAPdisconnect(true);
     return true;
   }
@@ -59,15 +64,15 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
 
  private:
   void handleSetup() {
-    server_.sendHeader("Cache-Control", "no-store");
-    server_.sendHeader("X-Frame-Options", "DENY");
-    server_.send_P(200, "text/html; charset=utf-8", flova::kSoftApSetupPage);
+    setup_->server.sendHeader("Cache-Control", "no-store");
+    setup_->server.sendHeader("X-Frame-Options", "DENY");
+    setup_->server.send_P(200, "text/html; charset=utf-8", flova::kSoftApSetupPage);
   }
 
   void handleStatus() {
     char error[flova::kProvisioningErrorBytes] = {};
-    char* body = reinterpret_cast<char*>(&input_);
-    const size_t bodyCapacity = sizeof(input_);
+    char* body = reinterpret_cast<char*>(&setup_->input);
+    const size_t bodyCapacity = sizeof(setup_->input);
     const bool hasError =
         storage_.read("prov_error", error, sizeof(error)) && error[0];
     snprintf(body, bodyCapacity,
@@ -75,39 +80,41 @@ class FlovaEsp32Provisioning : public FlovaProvisioningAdapter {
                  ? "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"browser_handoff\":\"fragment-v1\",\"can_retry\":true,\"last_error_code\":\"%s\"}"
                  : "{\"status\":\"setup_mode\",\"protocol\":\"flova-link-v1\",\"browser_handoff\":\"fragment-v1\",\"can_retry\":true}",
              error);
-    server_.send(200, "application/json", body);
+    setup_->server.send(200, "application/json", body);
   }
 
   void handleProvision() {
-    const String& body = server_.arg("plain");
+    const String& body = setup_->server.arg("plain");
     if (!handler_ || body.length() >= 768 ||
-        !flova::parseWifiProvisioningHandoff(body.c_str(), body.length(), input_,
-                                             &wifi_)) {
-      server_.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
+        !flova::parseWifiProvisioningHandoff(body.c_str(), body.length(), setup_->input,
+                                             &setup_->wifi)) {
+      setup_->server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
       return;
     }
-    if (!storage_.write("wifi", &wifi_, sizeof(wifi_))) {
-      server_.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
+    if (!storage_.write("wifi", &setup_->wifi, sizeof(setup_->wifi))) {
+      setup_->server.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
       return;
     }
-    const FlovaProvisioningResponse result = handler_(context_, input_);
+    const FlovaProvisioningResponse result = handler_(context_, setup_->input);
     if (result == FlovaProvisioningResponse::Accepted) {
-      server_.send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
+      setup_->server.send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
     } else if (result == FlovaProvisioningResponse::StorageFailed) {
-      server_.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
+      setup_->server.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
     } else {
       storage_.remove("wifi");
-      server_.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
+      setup_->server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_handoff\"}");
     }
   }
 
   FlovaEsp32Storage& storage_;
   const char* setupPassword_;
-  WebServer server_{80};
+  struct Setup {
+    WebServer server{80};
+    flova::ProvisioningHandoff input;
+    flova::WifiRuntimeData wifi = {};
+  };
+  Setup* setup_ = nullptr;
   FlovaProvisioningHandler handler_ = nullptr;
   void* context_ = nullptr;
-  flova::ProvisioningHandoff input_;
-  flova::WifiRuntimeData wifi_ = {};
-  bool routesRegistered_ = false;
   bool provisioning_ = false;
 };

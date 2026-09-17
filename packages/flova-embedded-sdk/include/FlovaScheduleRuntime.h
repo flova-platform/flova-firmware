@@ -40,14 +40,14 @@ struct ScheduleManifest {
   CompiledSchedule schedules[kMaxSchedules];
   uint32_t checksum;
   ScheduleManifest()
-      : magic(0x46534D31UL), revision(0), generatedAt(0), validUntil(0), renewBefore(0),
+      : magic(0x46534D32UL), revision(0), generatedAt(0), validUntil(0), renewBefore(0),
         scheduleCount(0), checksum(0) {}
 
   // Reset the live workspace in place. Assigning ScheduleManifest() here would
   // materialize a 15 KiB temporary on the Arduino loop stack at the ESP32
   // profile, which is smaller than the 8 KiB loop-task stack.
   void reset() {
-    magic = 0x46534D31UL;
+    magic = 0x46534D32UL;
     revision = 0;
     generatedAt = 0;
     validUntil = 0;
@@ -143,6 +143,8 @@ class ScheduleRuntime {
                                            : schedule.action;
         const uint64_t occurrence = schedule.occurrences[occurrenceIndex];
         if (occurrence + action.offsetMs > now) break;
+        const uint8_t previousAction = progress_.action[i];
+        const uint8_t previousOccurrence = progress_.occurrence[i];
         ++progress_.action[i];
         if (progress_.action[i] >= actionCount) {
           progress_.action[i] = 0;
@@ -150,10 +152,37 @@ class ScheduleRuntime {
         }
         // Progress is persisted before hardware execution: after a brownout it
         // is safer to miss one action than to execute an imperative action twice.
-        persistProgress();
+        if (!persistProgress()) {
+          progress_.action[i] = previousAction;
+          progress_.occurrence[i] = previousOccurrence;
+          return;
+        }
         if (apply_) apply_(context_, schedule.id, action, occurrence);
       }
     }
+  }
+
+  bool checkpoint() {
+    if (!manifest_.revision) return true;
+    Progress verified;
+    if (storage_.read("schedule.progress", &verified, sizeof(verified)) &&
+        memcmp(&verified, &progress_, sizeof(progress_)) == 0) return true;
+    return storage_.write("schedule.progress", &progress_, sizeof(progress_)) &&
+           storage_.read("schedule.progress", &verified, sizeof(verified)) &&
+           memcmp(&verified, &progress_, sizeof(progress_)) == 0;
+  }
+
+  bool restoreCheckpoint(uint32_t expectedRevision) {
+    if (!expectedRevision) return true;
+    if (!storage_.read("schedule.active", &manifest_, sizeof(manifest_)) ||
+        !valid(manifest_) || manifest_.revision != expectedRevision ||
+        !storage_.read("schedule.progress", &progress_, sizeof(progress_))) return false;
+    for (size_t i = 0; i < manifest_.scheduleCount; ++i) {
+      const uint8_t actions = manifest_.schedules[i].actionCount ? manifest_.schedules[i].actionCount : 1;
+      if (progress_.occurrence[i] > manifest_.schedules[i].occurrenceCount ||
+          progress_.action[i] >= actions) return false;
+    }
+    return true;
   }
 
   uint32_t revision() const { return manifest_.revision; }
@@ -188,7 +217,7 @@ class ScheduleRuntime {
 
  private:
   bool valid(const ScheduleManifest& value) const {
-    if (value.magic != 0x46534D31UL || !value.revision || !value.validUntil || !value.renewBefore ||
+    if (value.magic != 0x46534D32UL || !value.revision || !value.validUntil || !value.renewBefore ||
         value.scheduleCount > kMaxSchedules || value.checksum != checksum(value)) return false;
     for (size_t i = 0; i < value.scheduleCount; ++i)
       if (value.schedules[i].occurrenceCount > kMaxOccurrencesPerSchedule ||
@@ -214,7 +243,7 @@ class ScheduleRuntime {
         progress_.action[i] = 0;
       }
   }
-  void persistProgress() { storage_.write("schedule.progress", &progress_, sizeof(progress_)); }
+  bool persistProgress() { return storage_.write("schedule.progress", &progress_, sizeof(progress_)); }
   static void mix(uint32_t& hash, uint32_t value) { for (uint8_t i = 0; i < 4; ++i) { hash ^= value & 0xff; hash *= 16777619UL; value >>= 8; } }
   static void mix64(uint32_t& hash, uint64_t value) { mix(hash, static_cast<uint32_t>(value)); mix(hash, static_cast<uint32_t>(value >> 32)); }
   static void mixText(uint32_t& hash, const char* value) { while (value && *value) { hash ^= static_cast<uint8_t>(*value++); hash *= 16777619UL; } }

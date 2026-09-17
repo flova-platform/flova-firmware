@@ -128,12 +128,8 @@ struct FlovaLinkConfigurationRecord {
   uint8_t checksum[32];
   FlovaLinkConfigurationPhase phase;
   uint8_t recordType;
-  DatastreamId datastreamId;
-  char datastreamKey[FLOVA_LINK_TEXT_BYTES];
   uint16_t recordLength;
   uint8_t record[FLOVA_LINK_RECORD_BYTES];
-  bool hasTypedUnit;
-  flova::config::Unit typedUnit;
 };
 
 struct FlovaLinkConfigurationReport {

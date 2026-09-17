@@ -24,6 +24,7 @@ Build production-grade embedded code with deterministic memory use, bounded reso
 - Avoid unnecessary copies and intermediate representations.
 - Keep portable protocol logic independent from ESP8266 APIs.
 - Measure memory instead of assuming it is safe.
+- Verify both the board default profile and explicitly requested capacity/MMU profiles; a 64-entry ceiling is not proof that 64 entries fit with TLS.
 - Reject unexplained RAM and flash regressions.
 - Stress reconnect and failure paths.
 - Host-test and fuzz protocol parsing.

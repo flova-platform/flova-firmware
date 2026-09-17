@@ -56,8 +56,11 @@ Namespace:
 0
 reserved as invalid or unresolved
 
-1–65535
+1–65534
 valid datastream IDs
+
+65535
+reserved factory-reset command ID
 ```
 
 The server assigns the ID when the datastream is created.
@@ -306,3 +309,15 @@ Strings belong to developer interaction and configuration.
 Numeric IDs belong to runtime communication.
 
 The ESP8266 hot path never uses string names as datastream identities.
+
+## Capacity versus frame size
+
+The portable ceiling is 64 active entries. The ESP8266 released profile is
+smaller until the default-memory acceptance target passes; inspect the current
+board profile rather than assuming the ceiling is the shipped capacity.
+
+Keys support 48 UTF-8 bytes plus a NUL terminator independently of value-text
+capacity. Do not use a value-sized copy routine for keys. Bind long key sets in
+sequential requests that each fit the 512-byte frame. Correlate each response,
+validate its generation and ID uniqueness across all batches, and expose ready
+only when the full binding completes. Disconnect resets partial binding state.

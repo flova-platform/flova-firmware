@@ -1,0 +1,40 @@
+{
+  "description": "Reviewed build ceilings, not proof of runtime headroom. ESP8266 static DRAM includes .noinit (unlike PlatformIO summary).",
+  "esp8266_core_3_1_2": {
+    "ssl_context": 3408,
+    "x509_context": 3064,
+    "thunk_stack": 6200,
+    "minimum_link_heap": 37146,
+    "minimum_ota_heap": 41242
+  },
+  "esp8266_bounded_tls": {
+    "ssl_context": 3408,
+    "x509_context": 3064,
+    "thunk_stack": 6200,
+    "receive_bytes": 2048,
+    "transmit_bytes": 512,
+    "minimum_link_heap": 22810,
+    "minimum_ota_heap": 26906
+  },
+  "profiles": {
+    "universal-esp8266": {
+      "board": "esp8266",
+      "tls_profile": "bounded",
+      "static_dram": 47104,
+      "iram": 29184,
+      "image": 565760
+    },
+    "universal-esp32": {
+      "board": "esp32",
+      "static_dram": 73216,
+      "iram": 84736,
+      "image": 1048576
+    }
+  },
+  "esp8266_phase_workspaces": {
+    "configuration": 2248,
+    "schedules": 1648,
+    "transport": 2528,
+    "pending_records": 984
+  }
+}

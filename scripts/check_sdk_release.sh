@@ -33,5 +33,15 @@ for target in esp32 esp8266; do
   pio run --project-dir "$project_dir"
 done
 
+# Compile stock MMU against the exported package too. This is compile coverage,
+# not promotion of the unaccepted default-DRAM runtime profile.
+cat >> "$work_dir/esp8266/platformio.ini" <<'INI'
+
+[env:nodemcuv2-stock]
+extends = env:nodemcuv2
+build_unflags = -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
+INI
+pio run --project-dir "$work_dir/esp8266" -e nodemcuv2-stock
+
 test -s "$work_dir/FlovaSDK.tar.gz"
 printf 'SDK package validated: %s\n' "$work_dir/FlovaSDK.tar.gz"

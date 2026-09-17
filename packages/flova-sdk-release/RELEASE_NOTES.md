@@ -1,4 +1,4 @@
-FlovaSDK 0.3.5 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO.
+FlovaSDK 0.3.6 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO.
 
 - Added bounded status snapshots and edge-triggered status listeners for
   lifecycle, local network/TLS, Flova Link, runtime readiness, configuration

@@ -47,6 +47,8 @@ The wire contract does not permit a second JSON, TLV, or generic CBOR tree
 codec alongside the generated implementation.
 
 The current profile uses complete frames no larger than 512 bytes, with a
-fixed 12-byte frame header and bounded CBOR nesting. ESP8266 Link transport
-uses 16,384-byte receive and 512-byte transmit TLS buffers, including OTA.
-Application frames remain bounded to 512 bytes; TLS records may be larger.
+fixed 12-byte frame header and bounded CBOR nesting. ESP8266 uses 16,384-byte
+receive and 512-byte transmit TLS buffers for arbitrary endpoints. A separately
+verified endpoint may select the guarded 2,048-byte receive profile for Link
+and OTA. Application frames remain bounded to 512 bytes; they do not establish
+a TLS-record bound.

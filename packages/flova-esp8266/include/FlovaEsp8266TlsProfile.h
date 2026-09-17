@@ -1,20 +1,32 @@
 #pragma once
 
+#include <FlovaFlashLog.h>
+
 #include <time.h>
 
 #include <WiFiClientSecureBearSSL.h>
 #include <umm_malloc/umm_heap_select.h>
+#include <StackThunk.h>
 
 #include <FlovaTlsRoots.h>
+#include <FlovaEsp8266Memory.h>
 
 #ifndef FLOVA_HTTPS_TIMEOUT_MS
 #define FLOVA_HTTPS_TIMEOUT_MS 15000
 #endif
 #ifndef FLOVA_ESP8266_OTA_TLS_RX_BYTES
+#if defined(FLOVA_ESP8266_BOUNDED_TLS_RECORDS)
+#define FLOVA_ESP8266_OTA_TLS_RX_BYTES 2048
+#else
 #define FLOVA_ESP8266_OTA_TLS_RX_BYTES 16384
 #endif
+#endif
 #ifndef FLOVA_ESP8266_LINK_TLS_RX_BYTES
+#if defined(FLOVA_ESP8266_BOUNDED_TLS_RECORDS)
+#define FLOVA_ESP8266_LINK_TLS_RX_BYTES 2048
+#else
 #define FLOVA_ESP8266_LINK_TLS_RX_BYTES 16384
+#endif
 #endif
 #ifndef FLOVA_ESP8266_TLS_TX_BYTES
 #define FLOVA_ESP8266_TLS_TX_BYTES 512
@@ -22,26 +34,14 @@
 
 namespace flova {
 
+#if !defined(FLOVA_ESP8266_BOUNDED_TLS_RECORDS)
+static_assert(FLOVA_ESP8266_LINK_TLS_RX_BYTES == 16384,
+              "Small Link TLS buffers require a record-bounded endpoint");
+static_assert(FLOVA_ESP8266_OTA_TLS_RX_BYTES == 16384,
+              "Small OTA TLS buffers require a record-bounded endpoint");
+#endif
+
 static const unsigned long kHttpsTimeoutMs = FLOVA_HTTPS_TIMEOUT_MS;
-enum class TlsUse : uint8_t { Link, Ota };
-enum class TlsResourceStatus : uint8_t { Ready, InsufficientMemory };
-
-struct TlsHeapStats {
-  uint32_t dramFree = 0;
-  uint32_t dramMaxBlock = 0;
-  uint8_t dramFragmentation = 0;
-  uint32_t iramFree = 0;
-  uint32_t iramMaxBlock = 0;
-  uint8_t iramFragmentation = 0;
-  bool iramEnabled = false;
-};
-
-static const uint32_t kBearSslInputOverheadBytes = 325;
-static const uint32_t kBearSslOutputOverheadBytes = 85;
-static const uint32_t kTlsIramReserveBytes = 512;
-static const uint32_t kTlsDramReserveBytes = 3072;
-static const uint32_t kTlsDramBlockReserveBytes = 256;
-
 inline TlsHeapStats tlsHeapStats() {
   TlsHeapStats stats;
   {
@@ -57,6 +57,8 @@ inline TlsHeapStats tlsHeapStats() {
   }
   stats.iramEnabled = true;
 #endif
+  stats.stackFree = ESP.getFreeContStack();
+  stats.tlsStackUsed = stack_thunk_get_refcnt() ? stack_thunk_get_max_usage() : 0;
   return stats;
 }
 
@@ -69,33 +71,16 @@ inline TlsResourceStatus tlsResourceStatus(TlsUse use,
                                            TlsHeapStats* observed = nullptr) {
   const TlsHeapStats stats = tlsHeapStats();
   if (observed) *observed = stats;
-  const uint32_t receiveAllocation = tlsReceiveBytes(use) + kBearSslInputOverheadBytes;
-  const uint32_t transmitAllocation = FLOVA_ESP8266_TLS_TX_BYTES + kBearSslOutputOverheadBytes;
-  const uint32_t iramRequired = receiveAllocation + transmitAllocation + kTlsIramReserveBytes;
-  const uint32_t sslContextBytes = sizeof(br_ssl_client_context);
-  const uint32_t x509ContextBytes = sizeof(br_x509_minimal_context);
-  const uint32_t dramLargestAllocation =
-      (sslContextBytes > x509ContextBytes ? sslContextBytes : x509ContextBytes) +
-      kTlsDramBlockReserveBytes;
-  const uint32_t dramRequired = sslContextBytes + x509ContextBytes + kTlsDramReserveBytes;
-  if (!stats.iramEnabled) {
-    const uint32_t largest = receiveAllocation > dramLargestAllocation
-                                 ? receiveAllocation : dramLargestAllocation;
-    return stats.dramFree >= dramRequired + receiveAllocation + transmitAllocation &&
-                   stats.dramMaxBlock >= largest
-               ? TlsResourceStatus::Ready : TlsResourceStatus::InsufficientMemory;
-  }
-  return stats.iramFree >= iramRequired && stats.iramMaxBlock >= receiveAllocation &&
-                 stats.dramFree >= dramRequired && stats.dramMaxBlock >= dramLargestAllocation
-             ? TlsResourceStatus::Ready
-             : TlsResourceStatus::InsufficientMemory;
+  return tlsResourceStatusFor(stats, use, tlsReceiveBytes(use),
+      FLOVA_ESP8266_TLS_TX_BYTES, sizeof(br_ssl_client_context),
+      sizeof(br_x509_minimal_context), stack_thunk_get_refcnt() != 0);
 }
 
 inline void logTlsHeap(const char* stage, const TlsHeapStats& stats) {
-  Serial.printf_P(PSTR("[flova] TLS heap %s dram_free=%u dram_max=%u dram_frag=%u%% iram_enabled=%u iram_free=%u iram_max=%u iram_frag=%u%%\n"),
+  Serial.printf_P(PSTR("[flova] TLS heap %s dram_free=%u dram_max=%u dram_frag=%u%% iram_enabled=%u iram_free=%u iram_max=%u iram_frag=%u%% stack_free=%u tls_stack_used=%u\n"),
                   stage, stats.dramFree, stats.dramMaxBlock, stats.dramFragmentation,
                   stats.iramEnabled ? 1 : 0, stats.iramFree, stats.iramMaxBlock,
-                  stats.iramFragmentation);
+                  stats.iramFragmentation, stats.stackFree, stats.tlsStackUsed);
 }
 
 inline const char* tlsResourceError(TlsResourceStatus) {
@@ -117,7 +102,7 @@ inline void configureLinkTls(BearSSL::WiFiClientSecure& client,
 inline void logLinkTlsFailure(BearSSL::WiFiClientSecure& client) {
   char detail[96] = {};
   const int code = client.getLastSSLError(detail, sizeof(detail));
-  Serial.printf("[flova] Link TLS connect failed code=%d detail=%.*s\n", code, 80, detail);
+  FLOVA_SERIAL_PRINTF("[flova] Link TLS connect failed code=%d detail=%.*s\n", code, 80, detail);
 }
 
 }  // namespace flova

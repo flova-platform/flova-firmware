@@ -31,17 +31,25 @@ cryptographic work that cannot be interrupted by a Flova polling deadline.
 Applications requiring uninterrupted low-latency hardware handling should use
 ESP32 or hardware peripherals that operate independently of the application loop.
 
-Link and OTA use 16,384-byte TLS RX and 512-byte TX profiles. The 512-byte Flova
-frame bound does not constrain TLS records. Memory preflight checks free heap
-and largest block; actual TLS allocation can still fail. Shared IRAM is optional.
-The stock DRAM profile must be physically validated with the intended sketch's
-memory use before deployment. A compile result alone proves neither available
-TLS heap nor successful provisioning.
+Arbitrary endpoints use 16,384-byte TLS RX and 512-byte TX profiles. The
+default-MMU production candidate uses 2,048-byte RX only when
+`FLOVA_ESP8266_BOUNDED_TLS_RECORDS` asserts that both Link and OTA endpoints
+bound every server record to that profile. The 512-byte Flova frame bound does
+not constrain TLS records. Memory preflight checks free heap
+and largest block before constructing the secure client; actual allocation can
+still fail. The shipped four-stream profile retains shared IRAM. Default-MMU
+four- and 64-stream bounded-endpoint candidates pass the theoretical static
+gate but remain diagnostic builds until endpoint and hardware acceptance. See [memory
+acceptance](MEMORY.md). A compile result alone proves neither available TLS
+heap nor successful provisioning.
 
 Connection and OTA HTTP setup explicitly select DRAM for TLS contexts and TCP
-allocations. Stock BearSSL independently prefers IRAM for record buffers and
+allocations. The secure client is created only after resource preflight and
+released on Link closure or OTA completion, including failure paths. This also
+releases stock BearSSL's shared 6,200-byte secondary stack when no other client
+owns it. Trust anchors are parsed once from flash-resident PEM data. Stock BearSSL independently prefers IRAM for record buffers and
 falls back to DRAM. Never wrap the entire handshake in an IRAM heap selector:
-the contexts then compete with the 16 KB receive buffer and invalidate the
+the contexts then compete with the receive buffer and invalidate the
 separate DRAM/IRAM preflight budgets.
 
 ## Build and diagnostics

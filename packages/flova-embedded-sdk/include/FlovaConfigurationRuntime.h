@@ -54,7 +54,7 @@ struct Datastream {
   DatastreamId id;
   uint8_t valueType;
   char uuid[37];
-  char key[kConfigurationTextBytes];
+  char key[FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1];
   bool hasMinimum;
   bool hasMaximum;
   bool hasDefault;

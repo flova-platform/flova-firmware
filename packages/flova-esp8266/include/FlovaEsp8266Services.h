@@ -1,5 +1,7 @@
 #pragma once
 
+#include <FlovaFlashLog.h>
+
 #include <ESP8266WiFi.h>
 #include <LittleFS.h>
 #include <WiFiUdp.h>
@@ -36,7 +38,7 @@ class FlovaEsp8266Storage : public flova::Storage {
     }
     mounted_ = true;
     refreshCapacity();
-    Serial.printf("[flova] storage ready total=%lu available=%lu\n",
+    FLOVA_SERIAL_PRINTF("[flova] storage ready total=%lu available=%lu\n",
                   static_cast<unsigned long>(totalBytes_),
                   static_cast<unsigned long>(availableBytes_));
     return true;
@@ -65,8 +67,8 @@ class FlovaEsp8266Storage : public flova::Storage {
       return false;
     }
     if (!makePath(key, path, sizeof(path)) ||
-        snprintf(next, sizeof(next), "%s.next", path) >= static_cast<int>(sizeof(next)) ||
-        snprintf(backup, sizeof(backup), "%s.backup", path) >= static_cast<int>(sizeof(backup)) ||
+        FLOVA_FORMAT(next, sizeof(next), "%s.next", path) >= static_cast<int>(sizeof(next)) ||
+        FLOVA_FORMAT(backup, sizeof(backup), "%s.backup", path) >= static_cast<int>(sizeof(backup)) ||
         !value || !size || size > kMaximumRecordBytes) {
       setError("arguments");
       return false;
@@ -143,9 +145,9 @@ class FlovaEsp8266Storage : public flova::Storage {
       return false;
     }
     if (!makePath(key, path, sizeof(path)) ||
-        snprintf(next, sizeof(next), "%s.next", path) >=
+        FLOVA_FORMAT(next, sizeof(next), "%s.next", path) >=
             static_cast<int>(sizeof(next)) ||
-        snprintf(backup, sizeof(backup), "%s.backup", path) >=
+        FLOVA_FORMAT(backup, sizeof(backup), "%s.backup", path) >=
             static_cast<int>(sizeof(backup))) {
       setError("arguments");
       return false;
@@ -202,7 +204,7 @@ class FlovaEsp8266Storage : public flova::Storage {
   static bool makePaths(const char* key, char* path, size_t pathCapacity,
                         char* backup, size_t backupCapacity) {
     if (!makePath(key, path, pathCapacity)) return false;
-    const int written = snprintf(backup, backupCapacity, "%s.backup", path);
+    const int written = FLOVA_FORMAT(backup, backupCapacity, "%s.backup", path);
     return written > 0 && static_cast<size_t>(written) < backupCapacity;
   }
 
@@ -256,7 +258,7 @@ class FlovaEsp8266Storage : public flova::Storage {
         return false;
     }
     if ((strcmp(key, ".") == 0) || (strcmp(key, "..") == 0)) return false;
-    const int written = snprintf(output, capacity, "/flova/%s.bin", key);
+    const int written = FLOVA_FORMAT(output, capacity, "/flova/%s.bin", key);
     return written > 0 && static_cast<size_t>(written) < capacity;
   }
 
@@ -315,7 +317,7 @@ class FlovaEsp8266Identity final : public FlovaBoardIdentity {
 
   bool hardwareId(char* output, size_t capacity) const override {
     return output && capacity >= 24 &&
-           snprintf(output, capacity, "esp8266-%06lx",
+           FLOVA_FORMAT(output, capacity, "esp8266-%06lx",
                     static_cast<unsigned long>(ESP.getChipId())) > 0;
   }
 

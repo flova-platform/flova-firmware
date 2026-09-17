@@ -124,3 +124,24 @@ A change affecting protocol, networking, queues, persistence, ownership, TLS lif
 - reconnects do not progressively degrade memory
 - host tests remain green
 - parser fuzzing reveals no crash, overflow, use-after-free, or undefined behavior
+
+## Memory redesign regression checks
+
+Run the TLS-budget host boundary tests, 64-key multi-frame binding tests, and
+all-text capacity/int64 safety tests alongside the usual suite. Build the
+the universal ESP8266 default-MMU profile. Run the image budget checker both
+normally and with `--stock-dram`; distinguish a reviewed image-size ceiling from
+physical product acceptance. Maintain failure evidence in `packages/MEMORY.md`
+rather than weakening limits to make the gate green.
+
+Do not flash or manipulate connected devices when the requested validation is
+code/build only. Record provisioning, reconnect, OTA and fragmentation as
+unverified when hardware acceptance was not performed.
+
+## Phase ownership regression rules
+
+Run `flova-compact-runtime-test` for storage-backed descriptors, 64 maximum
+keys/text values, bounded delivery fairness, stale ACKs and failed policy writes.
+Retest pause/checkpoint/restore failures, callback borrows during disconnect,
+and the exported SDK whenever phase ownership changes. Report all four
+`--stock-dram` phases; never treat linked-size savings as runtime acceptance.

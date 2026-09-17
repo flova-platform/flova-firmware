@@ -31,3 +31,9 @@
 #ifndef FLOVA_LINK_PERFORMANCE_LOGGING
 #define FLOVA_LINK_PERFORMANCE_LOGGING 0
 #endif
+
+// Small targets keep immutable stream descriptors in board storage. Other
+// integrations may use resident descriptors with the same runtime semantics.
+#ifndef FLOVA_STREAM_DESCRIPTORS_IN_STORAGE
+#define FLOVA_STREAM_DESCRIPTORS_IN_STORAGE 0
+#endif

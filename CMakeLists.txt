@@ -71,3 +71,12 @@ add_test(NAME flova-ws-test COMMAND flova-ws-test)
 add_test(NAME flova-configuration-test COMMAND flova-configuration-test)
 add_test(NAME flova-runtime-services-test COMMAND flova-runtime-services-test)
 add_test(NAME flova-lifecycle-test COMMAND flova-lifecycle-test)
+
+add_executable(flova-tls-memory-test test/host/test_flova_tls_memory.cpp)
+target_include_directories(flova-tls-memory-test PRIVATE packages/flova-esp8266/include)
+add_test(NAME flova-tls-memory-test COMMAND flova-tls-memory-test)
+
+add_executable(flova-compact-runtime-test test/host/test_flova_compact_runtime.cpp)
+target_link_libraries(flova-compact-runtime-test PRIVATE flova-core)
+target_compile_definitions(flova-compact-runtime-test PRIVATE FLOVA_STREAM_DESCRIPTORS_IN_STORAGE=1)
+add_test(NAME flova-compact-runtime-test COMMAND flova-compact-runtime-test)

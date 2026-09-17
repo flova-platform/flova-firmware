@@ -6,6 +6,9 @@
 
 #include <assert.h>
 #include <string.h>
+#include <map>
+#include <string>
+#include <vector>
 
 HardwareSerial Serial;
 uint32_t millis() { return 1; }
@@ -21,10 +24,20 @@ namespace {
 
 class TestStorage final : public flova::Storage {
  public:
-  bool read(const char*, void*, size_t) override { return false; }
-  bool write(const char*, const void*, size_t) override { return true; }
-  bool remove(const char*) override { return true; }
-  bool clear() override { return true; }
+  bool read(const char* key, void* output, size_t length) override {
+    auto found = records.find(key);
+    if (found == records.end() || found->second.size() != length) return false;
+    memcpy(output, found->second.data(), length);
+    return true;
+  }
+  bool write(const char* key, const void* input, size_t length) override {
+    const auto* bytes = static_cast<const uint8_t*>(input);
+    records[key] = std::vector<uint8_t>(bytes, bytes + length);
+    return true;
+  }
+  bool remove(const char* key) override { records.erase(key); return true; }
+  bool clear() override { records.clear(); return true; }
+  std::map<std::string, std::vector<uint8_t>> records;
 };
 
 class TestClock final : public flova::Clock {
@@ -98,11 +111,16 @@ class TestLink final : public FlovaClientLink {
     return false;
   }
   bool takeBootstrapError(char*, size_t) override { return false; }
-  bool takeConfigurationRecord(FlovaLinkConfigurationRecord&) override {
-    return false;
+  bool takeConfigurationRecord(FlovaLinkConfigurationRecord& output) override {
+    if (!configurationPending) return false;
+    output = configuration;
+    configurationPending = false;
+    return true;
   }
   bool publishConfigurationReport(
-      const FlovaLinkConfigurationReport&) override { return true; }
+      const FlovaLinkConfigurationReport& report) override {
+    lastReport = report; ++reports; return true;
+  }
   bool publishConfigurationState(
       const FlovaLinkConfigurationState&) override { return true; }
   bool publishHeartbeat(const FlovaLinkHeartbeat&) override { return true; }
@@ -117,9 +135,17 @@ class TestLink final : public FlovaClientLink {
   flova::OtaInstallResult installOta(const FlovaLinkOtaOffer&) override {
     return flova::OtaInstallResult::DownloadFailed;
   }
-  bool decodeStoredConfigurationRecord(
-      const uint8_t*, size_t, FlovaLinkConfigurationRecord&) override {
-    return false;
+  bool decodeStoredConfigurationUnit(
+      const uint8_t* payload, size_t length, flova::config::Unit& output) override {
+    assert(length == 16);
+    // Writing the typed alternative must not destroy the installer's copy.
+    output = flova::config::Unit();
+    for (size_t i = 0; i < length; ++i) assert(payload[i] == 0x5a);
+    output.kind = flova::config::UnitKind::Datastream;
+    output.data.datastream.id = decoderAllowed ? 1 : 0;
+    output.data.datastream.valueType = 0;
+    memcpy(output.data.datastream.key, "relay", 6);
+    return true;
   }
   void setConfigurationGeneration(uint32_t generation) override {
     generation_ = generation;
@@ -130,6 +156,11 @@ class TestLink final : public FlovaClientLink {
   void disconnect() override { online = false; }
 
   bool online = false;
+  bool configurationPending = false;
+  bool decoderAllowed = true;
+  unsigned reports = 0;
+  FlovaLinkConfigurationRecord configuration = {};
+  FlovaLinkConfigurationReport lastReport = {};
 
  private:
   flova::MessageReceiver receiver_ = nullptr;
@@ -211,5 +242,40 @@ int main() {
   client.status(snapshot);
   assert(snapshot.lifecycle == FlovaLifecycle::AwaitingProvisioning);
   assert(strcmp(snapshot.errorCode, "invalid_firmware_target") == 0);
+  // Exercise transfer -> typed workspace reuse through the real lifecycle.
+  client.setStatusListener(nullptr);
+  assert(client.provision(flova::ProvisioningHandoff(
+      "wss://engine.example/api/device-link",
+      "ttttttttttttttttttttttttttttttttttttttttttt")) == FlovaProvisioningResponse::Accepted);
+  network.online = tlsClock.clockReady = link.online = true;
+  for (unsigned i = 0; i < 4; ++i) client.run();
+  assert(client.lifecycle() == FlovaLifecycle::Bootstrapping);
+  link.configuration.phase = FlovaLinkConfigurationPhase::Begin;
+  link.configuration.messageId = 41;
+  link.configuration.generation = 7;
+  link.configuration.recordCount = 1;
+  link.configuration.schemaVersion = 1;
+  link.configuration.maximumRecordBytes = 448;
+  link.configurationPending = true;
+  client.run();
+  assert(link.reports == 1 && link.lastReport.status == FlovaLinkResultStatus::Ok);
+  link.configuration.phase = FlovaLinkConfigurationPhase::Record;
+  link.configuration.messageId = 42;
+  link.configuration.sequence = 0;
+  link.configuration.recordType = 0;
+  link.configuration.recordLength = 16;
+  memset(link.configuration.record, 0x5a, 16);
+  link.configurationPending = true;
+  client.run();
+  assert(link.reports == 2 && link.lastReport.status == FlovaLinkResultStatus::Ok);
+  assert(link.lastReport.messageId == 42 && link.lastReport.generation == 7);
+  const auto saved = storage.records;
+  link.decoderAllowed = false;
+  link.configuration.messageId = 43;
+  link.configurationPending = true;
+  client.run();
+  assert(link.reports == 3 && link.lastReport.status == FlovaLinkResultStatus::Error);
+  assert(link.lastReport.messageId == 43 && link.lastReport.generation == 7);
+  assert(storage.records == saved);
   return 0;
 }
