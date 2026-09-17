@@ -33,13 +33,7 @@ lib_deps = flova-platform/FlovaSDK@^0.3.6
 ```
 
 For ESP8266, use the packaged `extras/platformio/esp8266/platformio.ini`.
-It includes the required shared IRAM heap profile:
-
-```ini
-lib_deps = flova-platform/FlovaSDK@^0.3.6
-build_flags =
-  -DPIO_FRAMEWORK_ARDUINO_MMU_CACHE16_IRAM48_SECHEAP_SHARED
-```
+It provides the tested ESP8266 board and TLS profile for the SDK.
 
 ### Arduino IDE
 
@@ -55,8 +49,8 @@ Then include the ESP32 entry point:
 #include <FlovaEsp32.h>
 ```
 
-For ESP8266, include `<FlovaEsp8266.h>` and select
-**Tools → MMU → 16KB cache + 48KB IRAM and 2nd Heap (shared)** before compiling.
+For ESP8266, select the ESP8266 board, then include `<ESP8266WiFi.h>` and
+`<FlovaEsp8266.h>`.
 
 ## Quick start
 
