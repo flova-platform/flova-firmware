@@ -248,7 +248,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
     if (transport_.connected()) reconnectBackoff_.reset();
     if (heartbeatAckSupported_ && pendingHeartbeatId_ &&
         millis() - pendingHeartbeatAt_ >= kHeartbeatAckTimeoutMs) {
-      FLOVA_SERIAL_PRINTLN("[flova] Link heartbeat acknowledgement timed out");
+      FLOVA_SERIAL_PRINTLN_WARN("[flova] Link heartbeat acknowledgement timed out");
       disconnect();
       bound_ = false;
       nextReconnectAt_ = millis();

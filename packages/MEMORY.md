@@ -66,8 +66,8 @@ Current linked images (bytes):
 
 | Environment | Static DRAM including `.noinit` | IRAM | Firmware image |
 | --- | ---: | ---: | ---: |
-| `universal-esp8266` | 46,776 | 29,015 | 565,376 |
-| `universal-esp32` | 73,016 | 84,714 | 1,044,672 |
+| `universal-esp8266` | 46,684 | 29,015 | 563,680 |
+| `universal-esp32` | 73,016 | 84,714 | 1,043,680 |
 
 Compared with the first reduction pass, the 64-stream universal image sheds
 18,860 static DRAM bytes and the SDK probe sheds 18,732. Some storage moved to

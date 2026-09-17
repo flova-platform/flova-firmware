@@ -132,7 +132,7 @@ class FlovaClient {
     pending_.lastError[0] = 0;
     if (!storage_.begin()) {
       setLastError("storage_begin_failed");
-      FLOVA_LOG(logger_, "[flova] lifecycle failed reason=storage_begin_failed");
+      FLOVA_LOG_ERROR(logger_, "[flova] lifecycle failed reason=storage_begin_failed");
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
@@ -147,7 +147,7 @@ class FlovaClient {
     scheduleMemory_->runtime.begin();
     if (!provisioning_.begin(handleProvisioning, this)) {
       writeError("board_begin_failed");
-      FLOVA_LOG(logger_, "[flova] lifecycle failed reason=board_begin_failed");
+      FLOVA_LOG_ERROR(logger_, "[flova] lifecycle failed reason=board_begin_failed");
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
@@ -177,8 +177,8 @@ class FlovaClient {
       copy(otaRollbackReason_, "ota_activation_failed");
     }
 
-    if (hasConfiguration) FLOVA_LOG(logger_, "[flova] stored configuration accepted");
-    else FLOVA_LOG(logger_, "[flova] stored configuration absent_or_invalid");
+    if (hasConfiguration) FLOVA_LOG_INFO(logger_, "[flova] stored configuration accepted");
+    else FLOVA_LOG_INFO(logger_, "[flova] stored configuration absent_or_invalid");
 
     if (hasPending && !hasConfiguration) {
       // A reset can interrupt an otherwise valid bootstrap. The Engine binds
@@ -341,7 +341,7 @@ class FlovaClient {
       if (configurationActivation_.active()) {
         if (configurationActivation_.run(link_, configurationReportWorkspace_, millis())) {
           if (configurationActivation_.failed())
-            FLOVA_LOG(logger_, "[flova] configuration ACK drain failed; report active generation after restart");
+            FLOVA_LOG_WARN(logger_, "[flova] configuration ACK drain failed; report active generation after restart");
           requestRestart(FlovaRestartReason::ConfigurationActivation);
         }
         return;
@@ -600,19 +600,19 @@ class FlovaClient {
     }
     flova::makeProvisioningImage(pending_.handoff, pending_);
     if (!storage_.write("prov_pending", &pending_, sizeof(pending_))) {
-      FLOVA_LOG(logger_, "[flova] provisioning storage_failed stage=handoff_pending");
+      FLOVA_LOG_ERROR(logger_, "[flova] provisioning storage_failed stage=handoff_pending");
       writeError("storage_failed");
       return FlovaProvisioningResponse::StorageFailed;
     }
     memset(&pending_, 0, sizeof(pending_));
     if (!storage_.read("prov_pending", &pending_, sizeof(pending_)) ||
         !flova::verifyProvisioningImage(pending_)) {
-      FLOVA_LOG(logger_, "[flova] provisioning storage_failed stage=handoff_verify");
+      FLOVA_LOG_ERROR(logger_, "[flova] provisioning storage_failed stage=handoff_verify");
       writeError("storage_verify_failed");
       return FlovaProvisioningResponse::StorageFailed;
     }
     if (!storage_.remove("prov_error")) {
-      FLOVA_LOG(logger_, "[flova] provisioning storage_failed stage=clear_error");
+      FLOVA_LOG_ERROR(logger_, "[flova] provisioning storage_failed stage=clear_error");
       writeError("storage_failed");
       return FlovaProvisioningResponse::StorageFailed;
     }
@@ -633,14 +633,14 @@ class FlovaClient {
       return false;
     }
     lifecycle_ = FlovaLifecycle::Setup;
-    FLOVA_LOG(logger_, "[flova] lifecycle setup_ap");
+    FLOVA_LOG_INFO(logger_, "[flova] lifecycle setup_ap");
     return true;
   }
 
   bool awaitProvisioning() {
     releaseConfigurationMemory();
     lifecycle_ = FlovaLifecycle::AwaitingProvisioning;
-    FLOVA_LOG(logger_, "[flova] lifecycle awaiting_provisioning");
+    FLOVA_LOG_INFO(logger_, "[flova] lifecycle awaiting_provisioning");
     return true;
   }
 
@@ -658,13 +658,13 @@ class FlovaClient {
                          configurationMemory_->runtime.deviceId,
                          configurationMemory_->runtime.linkSecret)) {
       writeError("runtime_link_configuration_failed");
-      FLOVA_LOG(logger_, "[flova] lifecycle failed reason=runtime_link_configuration_failed");
+      FLOVA_LOG_ERROR(logger_, "[flova] lifecycle failed reason=runtime_link_configuration_failed");
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
     if (!network_.begin()) {
       writeError("runtime_network_start_failed");
-      FLOVA_LOG(logger_, "[flova] lifecycle failed reason=runtime_network_start_failed");
+      FLOVA_LOG_ERROR(logger_, "[flova] lifecycle failed reason=runtime_network_start_failed");
       lifecycle_ = FlovaLifecycle::Failed;
       return false;
     }
@@ -684,11 +684,11 @@ class FlovaClient {
         return;
       }
       writeError("runtime_device_begin_failed");
-      FLOVA_LOG(logger_, "[flova] lifecycle failed reason=runtime_device_begin_failed");
+      FLOVA_LOG_ERROR(logger_, "[flova] lifecycle failed reason=runtime_device_begin_failed");
       lifecycle_ = FlovaLifecycle::Failed;
       return;
     }
-    FLOVA_LOG(logger_, "[flova] lifecycle runtime");
+    FLOVA_LOG_INFO(logger_, "[flova] lifecycle runtime");
     lifecycle_ = FlovaLifecycle::Runtime;
   }
 
@@ -879,7 +879,7 @@ class FlovaClient {
     configurationWork_.bootstrapping = bootstrapping;
     configurationWork_.sequence = 0;
     configurationMemory_->digest.reset();
-    FLOVA_LOG(logger_, "[flova] configuration verification started");
+    FLOVA_LOG_INFO(logger_, "[flova] configuration verification started");
   }
 
   void stepConfigurationWork() {
@@ -939,7 +939,7 @@ class FlovaClient {
       configurationWork_.sequence = 0;
       configurationMemory_->digest.reset();
       configurationWork_.phase = ConfigurationWorkPhase::Digest;
-      FLOVA_LOG(logger_, "[flova] configuration restore candidate");
+      FLOVA_LOG_INFO(logger_, "[flova] configuration restore candidate");
       return;
     }
     completeConfigurationRestore();
@@ -1141,7 +1141,7 @@ class FlovaClient {
         finishConfigurationVerification();
         return;
       }
-      FLOVA_LOG(logger_, "[flova] configuration generation validated");
+      FLOVA_LOG_INFO(logger_, "[flova] configuration generation validated");
       configurationWork_.sequence = 0;
       configurationWork_.phase = ConfigurationWorkPhase::PrepareSchedules;
       configurationWork_.scheduleCount = 0;
@@ -1252,7 +1252,7 @@ class FlovaClient {
       return;
     }
     if (!compilingSchedules_) scheduleMemory_->runtime.clear();
-    FLOVA_LOG(logger_, "[flova] configuration generation applied");
+    FLOVA_LOG_INFO(logger_, "[flova] configuration generation applied");
     const ConfigurationWorkMode mode = configurationWork_.mode;
     activeConfigurationGeneration_ = configurationWork_.generation;
     memcpy(activeConfigurationChecksum_, configurationWork_.manifest.checksum.bytes,
@@ -1316,7 +1316,7 @@ class FlovaClient {
     configurationVerifiedGeneration_ = generation;
     configurationCommitted_ = true;
     link_.setConfigurationGeneration(generation);
-    FLOVA_LOG(logger_, "[flova] configuration generation committed");
+    FLOVA_LOG_INFO(logger_, "[flova] configuration generation committed");
     publishConfigurationReport(flova::config::Status::Accepted,
                                FlovaLinkConfigurationPhase::End,
                                bootstrapping);
@@ -1339,13 +1339,11 @@ class FlovaClient {
               sizeof(configurationReportWorkspace_.errorCode) - 1);
       configurationReportWorkspace_
           .errorCode[sizeof(configurationReportWorkspace_.errorCode) - 1] = 0;
-      char message[128] = {};
-      FLOVA_FORMAT(message, sizeof(message), "[flova] configuration rejected phase=%u generation=%lu sequence=%lu status=%u",
-               static_cast<unsigned>(phase),
-               static_cast<unsigned long>(configurationReportWorkspace_.generation),
-               static_cast<unsigned long>(configurationReportWorkspace_.sequence),
-               static_cast<unsigned>(status));
-      logger_.log(message);
+      FLOVA_LOGF_WARN(logger_, "[flova] configuration rejected phase=%u generation=%lu sequence=%lu status=%u",
+                      static_cast<unsigned>(phase),
+                      static_cast<unsigned long>(configurationReportWorkspace_.generation),
+                      static_cast<unsigned long>(configurationReportWorkspace_.sequence),
+                      static_cast<unsigned>(status));
     }
     if (!bootstrapping && phase == FlovaLinkConfigurationPhase::End &&
         configurationReportWorkspace_.status == FlovaLinkResultStatus::Ok) {
@@ -1694,7 +1692,7 @@ class FlovaClient {
     if ((error && strstr(error, "cbor")) ||
         (error && strncmp(error, "configuration_", 14) == 0)) {
       lifecycle_ = FlovaLifecycle::Failed;
-      FLOVA_LOG(logger_, "[flova] bootstrap stopped: local configuration or codec failure");
+      FLOVA_LOG_ERROR(logger_, "[flova] bootstrap stopped: local configuration or codec failure");
       return;
     }
     // Only server-confirmed terminal credentials require a fresh setup session.
@@ -1708,10 +1706,8 @@ class FlovaClient {
     const uint32_t delayMs = bootstrapBackoff_.next(entropy_.byte());
     bootstrapRetryAt_ = millis() + delayMs;
     lifecycle_ = FlovaLifecycle::Backoff;
-    char message[128] = {};
-    FLOVA_FORMAT(message, sizeof(message), "[flova] bootstrap retry delay_ms=%lu reason=%s",
-             static_cast<unsigned long>(delayMs), pending_.lastError);
-    logger_.log(message);
+    FLOVA_LOGF_WARN(logger_, "[flova] bootstrap retry delay_ms=%lu reason=%s",
+                    static_cast<unsigned long>(delayMs), pending_.lastError);
   }
 
   void resetPendingConfiguration() {
@@ -1833,10 +1829,8 @@ class FlovaClient {
 
   void writeError(const char* error) {
     setLastError(error);
-    char message[96] = {};
-    FLOVA_FORMAT(message, sizeof(message), "[flova] error=%s",
-             pending_.lastError[0] ? pending_.lastError : "unknown");
-    logger_.log(message);
+    FLOVA_LOGF_ERROR(logger_, "[flova] error=%s",
+                     pending_.lastError[0] ? pending_.lastError : "unknown");
     storage_.write("prov_error", pending_.lastError,
                    sizeof(pending_.lastError));
   }

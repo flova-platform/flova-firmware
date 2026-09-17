@@ -88,6 +88,22 @@ For ESP8266, use `<ESP8266WiFi.h>` and `<FlovaEsp8266.h>`. See the
 [examples](examples) or follow the [documentation](https://docs.flova.ir) for
 provisioning and production setup.
 
+## Firmware logging
+
+Flova diagnostics are compile-time filtered. Production builds default to
+warnings and errors:
+
+```ini
+build_flags =
+  -DFLOVA_LOGGING_ENABLED=1
+  -DFLOVA_LOG_LEVEL=FLOVA_LOG_LEVEL_DEBUG
+```
+
+Available levels are `FLOVA_LOG_LEVEL_ERROR`, `WARN`, `INFO`, `DEBUG`, and
+`TRACE`. Set `FLOVA_LOGGING_ENABLED=0` to remove Flova logging calls entirely.
+Do not log credentials, provisioning tokens, device secrets, or complete
+sensitive payloads.
+
 ## Universal firmware from the SDK
 
 Build and upload the universal composition from your own project. The selected

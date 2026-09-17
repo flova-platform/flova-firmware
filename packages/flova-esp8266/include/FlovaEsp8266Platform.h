@@ -75,8 +75,9 @@ class FlovaEsp8266Platform final : public FlovaArduinoPlatform {
       if (!connected) {
         linkError_ = "link_tls_failed";
         flova::logLinkTlsFailure(*client_);
-        FLOVA_SERIAL_PRINTF("[flova] Link open elapsed_ms=%lu\n",
+        FLOVA_SERIAL_PRINTF_DEBUG("[flova] Link open elapsed_ms=%lu\n",
                       static_cast<unsigned long>(millis() - started));
+        (void)started;
         closeLink();
         return FlovaLinkOpenStatus::Failed;
       }

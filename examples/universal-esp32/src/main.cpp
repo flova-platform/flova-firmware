@@ -11,8 +11,8 @@ FlovaUniversalEsp32 device;
 void setup() {
   Serial.begin(115200);
   delay(50);
-  Serial.println();
-  Serial.println("[flova] esp32 boot");
+  FLOVA_SERIAL_PRINTLN_INFO("");
+  FLOVA_SERIAL_PRINTLN_INFO("[flova] esp32 boot");
 
   // A configured device restores private state. A fresh device enters the
   // universal provisioning lifecycle used by the mobile QR flow.

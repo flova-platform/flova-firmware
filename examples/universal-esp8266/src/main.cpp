@@ -11,17 +11,18 @@ FlovaUniversalEsp8266 device;
 void setup() {
   Serial.begin(115200);
   delay(50);
-  Serial.println();
-  Serial.println("[flova] esp8266 boot");
+  FLOVA_SERIAL_PRINTLN_INFO("");
+  FLOVA_SERIAL_PRINTLN_INFO("[flova] esp8266 boot");
   flova::logTlsHeap("boot", flova::tlsHeapStats());
 
   // Fresh devices enter setup AP mode. Configured devices restore validated
   // identity and reconnect without requiring a reboot after provisioning.
   const bool started = device.begin();
-  Serial.printf("[flova] begin=%u lifecycle=%u provisioning=%u\n",
-                started ? 1U : 0U,
-                static_cast<unsigned>(device.lifecycle()),
-                device.provisioning() ? 1U : 0U);
+  FLOVA_SERIAL_PRINTF_INFO("[flova] begin=%u lifecycle=%u provisioning=%u\n",
+                          started ? 1U : 0U,
+                          static_cast<unsigned>(device.lifecycle()),
+                          device.provisioning() ? 1U : 0U);
+  (void)started;
 }
 
 void loop() {
@@ -39,7 +40,8 @@ void loop() {
   if (millis() - lastReport >= 5000) {
     lastReport = millis();
     flova::logTlsHeap("sample", heap);
-    Serial.printf_P(PSTR("[flova] memory minimum_heap=%u minimum_block=%u minimum_stack=%u lifecycle=%u\n"),
-        minimumHeap, minimumBlock, minimumStack, static_cast<unsigned>(device.lifecycle()));
+    FLOVA_SERIAL_PRINTF_DEBUG("[flova] memory minimum_heap=%u minimum_block=%u minimum_stack=%u lifecycle=%u\n",
+                             minimumHeap, minimumBlock, minimumStack,
+                             static_cast<unsigned>(device.lifecycle()));
   }
 }

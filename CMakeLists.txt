@@ -80,3 +80,16 @@ add_executable(flova-compact-runtime-test test/host/test_flova_compact_runtime.c
 target_link_libraries(flova-compact-runtime-test PRIVATE flova-core)
 target_compile_definitions(flova-compact-runtime-test PRIVATE FLOVA_STREAM_DESCRIPTORS_IN_STORAGE=1)
 add_test(NAME flova-compact-runtime-test COMMAND flova-compact-runtime-test)
+
+function(add_flova_logging_test target)
+  add_executable(${target} test/host/test_flova_logging.cpp)
+  target_include_directories(${target} PRIVATE
+    packages/flova-embedded-sdk/include packages/flova-arduino/include)
+  add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+add_flova_logging_test(flova-logging-default-test)
+add_flova_logging_test(flova-logging-all-test)
+target_compile_definitions(flova-logging-all-test PRIVATE FLOVA_LOG_LEVEL=FLOVA_LOG_LEVEL_TRACE)
+add_flova_logging_test(flova-logging-disabled-test)
+target_compile_definitions(flova-logging-disabled-test PRIVATE FLOVA_LOGGING_ENABLED=0)

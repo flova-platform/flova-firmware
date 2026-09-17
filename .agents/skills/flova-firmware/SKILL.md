@@ -29,6 +29,16 @@ Build production-grade embedded code with deterministic memory use, bounded reso
 - Stress reconnect and failure paths.
 - Host-test and fuzz protocol parsing.
 
+## Logging
+
+Use the compile-time logging controls `FLOVA_LOGGING_ENABLED` and
+`FLOVA_LOG_LEVEL`. Production defaults to warnings and errors; use
+`FLOVA_LOG_LEVEL_DEBUG` for memory/resource diagnostics and
+`FLOVA_LOG_LEVEL_TRACE` only for targeted transport timing or frame tracing.
+Disabled levels must compile out formatting buffers and serial/logger calls.
+Never log credentials, provisioning tokens, device secrets, or complete
+sensitive payloads.
+
 ## CBOR and protocol
 
 Use bounded typed decoding.

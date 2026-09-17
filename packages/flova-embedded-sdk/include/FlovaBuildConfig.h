@@ -1,5 +1,7 @@
 #pragma once
 
+#include "FlovaLogging.h"
+
 // Resource capacities belong to the board/build profile. The SDK deliberately
 // has no product defaults because available RAM and storage vary by target.
 #if !defined(FLOVA_DATASTREAM_CAPACITY) || !defined(FLOVA_TEXT_CAPACITY) || \

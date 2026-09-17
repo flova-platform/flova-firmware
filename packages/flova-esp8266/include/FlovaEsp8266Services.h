@@ -38,7 +38,7 @@ class FlovaEsp8266Storage : public flova::Storage {
     }
     mounted_ = true;
     refreshCapacity();
-    FLOVA_SERIAL_PRINTF("[flova] storage ready total=%lu available=%lu\n",
+    FLOVA_SERIAL_PRINTF_INFO("[flova] storage ready total=%lu available=%lu\n",
                   static_cast<unsigned long>(totalBytes_),
                   static_cast<unsigned long>(availableBytes_));
     return true;

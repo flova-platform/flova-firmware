@@ -77,10 +77,15 @@ inline TlsResourceStatus tlsResourceStatus(TlsUse use,
 }
 
 inline void logTlsHeap(const char* stage, const TlsHeapStats& stats) {
-  Serial.printf_P(PSTR("[flova] TLS heap %s dram_free=%u dram_max=%u dram_frag=%u%% iram_enabled=%u iram_free=%u iram_max=%u iram_frag=%u%% stack_free=%u tls_stack_used=%u\n"),
+#if FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_DEBUG
+  FLOVA_SERIAL_PRINTF_DEBUG("[flova] TLS heap %s dram_free=%u dram_max=%u dram_frag=%u%% iram_enabled=%u iram_free=%u iram_max=%u iram_frag=%u%% stack_free=%u tls_stack_used=%u\n",
                   stage, stats.dramFree, stats.dramMaxBlock, stats.dramFragmentation,
                   stats.iramEnabled ? 1 : 0, stats.iramFree, stats.iramMaxBlock,
                   stats.iramFragmentation, stats.stackFree, stats.tlsStackUsed);
+#else
+  (void)stage;
+  (void)stats;
+#endif
 }
 
 inline const char* tlsResourceError(TlsResourceStatus) {
@@ -100,9 +105,13 @@ inline void configureLinkTls(BearSSL::WiFiClientSecure& client,
 }
 
 inline void logLinkTlsFailure(BearSSL::WiFiClientSecure& client) {
+#if FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_ERROR
   char detail[96] = {};
   const int code = client.getLastSSLError(detail, sizeof(detail));
-  FLOVA_SERIAL_PRINTF("[flova] Link TLS connect failed code=%d detail=%.*s\n", code, 80, detail);
+  FLOVA_SERIAL_PRINTF_ERROR("[flova] Link TLS connect failed code=%d detail=%.*s\n", code, 80, detail);
+#else
+  (void)client;
+#endif
 }
 
 }  // namespace flova

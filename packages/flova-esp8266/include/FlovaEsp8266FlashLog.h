@@ -1,6 +1,7 @@
 #pragma once
 
 #if defined(ESP8266)
+#include <FlovaLogging.h>
 #include <pgmspace.h>
 
 namespace flova {
@@ -13,8 +14,10 @@ __attribute__((noinline)) void logFlashLiteral(Logger& logger, PGM_P text) {
   logger.log(line);
 }
 }
-#define FLOVA_LOG(logger, literal) ::flova::logFlashLiteral(logger, PSTR(literal))
+#ifndef FLOVA_LOG_RAW
+#define FLOVA_LOG_RAW(logger, literal) ::flova::logFlashLiteral(logger, PSTR(literal))
+#endif
 #define FLOVA_FORMAT(out, size, literal, ...) snprintf_P(out, size, PSTR(literal), __VA_ARGS__)
-#define FLOVA_SERIAL_PRINTF(literal, ...) Serial.printf_P(PSTR(literal), __VA_ARGS__)
-#define FLOVA_SERIAL_PRINTLN(literal) Serial.println(F(literal))
+#define FLOVA_SERIAL_PRINTF_RAW(literal, ...) Serial.printf_P(PSTR(literal), __VA_ARGS__)
+#define FLOVA_SERIAL_PRINTLN_RAW(literal) Serial.println(F(literal))
 #endif

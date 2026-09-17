@@ -364,7 +364,7 @@ class ArduinoDeviceLink final {
       const FlovaWs::HandshakeProgress progress = websocket_.pollHandshake();
       if (progress == FlovaWs::HandshakeProgress::InProgress) return;
       if (progress == FlovaWs::HandshakeProgress::Failed) {
-        FLOVA_SERIAL_PRINTF("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
+        FLOVA_SERIAL_PRINTF_WARN("[flova] Link websocket handshake failed code=%u reason=%s status=%u\n",
                       static_cast<unsigned>(websocket_.error()),
                       FlovaWs::handshakeFailureName(websocket_.handshakeFailure()),
                       static_cast<unsigned>(websocket_.handshakeStatus()));
@@ -415,12 +415,12 @@ class ArduinoDeviceLink final {
     flova::link::FrameView frame = {};
     if (flova::link::decodeWebSocketBinaryMessage(workspace_->pendingFrames_[slot], frameLength, frame) !=
         flova::link::FrameResult::Complete) {
-      FLOVA_SERIAL_PRINTLN("[flova] Link frame rejected=invalid_header");
+      FLOVA_SERIAL_PRINTLN_WARN("[flova] Link frame rejected=invalid_header");
       disconnect();
       return;
     }
-#if FLOVA_LINK_PERFORMANCE_LOGGING
-    FLOVA_SERIAL_PRINTF("[flova] Link frame received type=0x%02x id=%llu bytes=%u queue_ms=%lu\n",
+#if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
+    FLOVA_SERIAL_PRINTF_TRACE("[flova] Link frame received type=0x%02x id=%llu bytes=%u queue_ms=%lu\n",
                   static_cast<unsigned>(frame.messageType),
                   static_cast<unsigned long long>(frame.messageId),
                   static_cast<unsigned>(frameLength),
@@ -543,7 +543,7 @@ class ArduinoDeviceLink final {
     const int length = websocket_.read(workspace_->pendingFrames_[slot] + pendingFrameLength_, capacity);
     if (length < 0) {
       connectionAttemptFailed_ = true;
-      FLOVA_SERIAL_PRINTF("[flova] Link websocket error code=%u\n",
+      FLOVA_SERIAL_PRINTF_WARN("[flova] Link websocket error code=%u\n",
                     static_cast<unsigned>(websocket_.error()));
       disconnect(false);
       return;
@@ -556,7 +556,7 @@ class ArduinoDeviceLink final {
         return;
       }
       pendingFrameLengths_[slot] = pendingFrameLength_;
-#if FLOVA_LINK_PERFORMANCE_LOGGING
+#if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
       pendingFrameQueuedAtMs_[slot] = millis();
 #endif
       pendingFrameTail_ = static_cast<uint8_t>((pendingFrameTail_ + 1) % kPendingFrameSlots);
@@ -570,7 +570,7 @@ class ArduinoDeviceLink final {
                    int (*encoder)(uint8_t*, size_t, const T*, size_t*),
                    SendFailure* failure = nullptr) {
     if (failure) *failure = SendFailure::None;
-#if FLOVA_LINK_PERFORMANCE_LOGGING
+#if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
     const uint32_t startedAt = millis();
 #endif
     size_t payloadLength = 0;
@@ -587,7 +587,7 @@ class ArduinoDeviceLink final {
     if (!flova::link::encodeFrameHeader(frame, kFrameBytes, type, 0, messageId,
                                         payloadLength))
       return setSendFailure(failure, SendFailure::FrameHeader);
-#if FLOVA_LINK_PERFORMANCE_LOGGING
+#if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
     const uint32_t encodedAt = millis();
 #endif
     size_t wireLength = 0;
@@ -598,8 +598,8 @@ class ArduinoDeviceLink final {
       return setSendFailure(failure, SendFailure::TransportSubmit);
     const bool sent = platform_.serviceLinkWrite();
     if (!sent) return setSendFailure(failure, SendFailure::TransportWrite);
-#if FLOVA_LINK_PERFORMANCE_LOGGING
-    FLOVA_SERIAL_PRINTF("[flova] Link send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu writes=%u wire_bytes=%u accepted=%u\n",
+#if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
+    FLOVA_SERIAL_PRINTF_TRACE("[flova] Link send type=0x%02x id=%llu bytes=%u encode_ms=%lu send_ms=%lu writes=%u wire_bytes=%u accepted=%u\n",
                   static_cast<unsigned>(type),
                   static_cast<unsigned long long>(messageId),
                   static_cast<unsigned>(flova::link::kHeaderBytes + payloadLength),
@@ -740,7 +740,7 @@ class ArduinoDeviceLink final {
         bindingPending_ = bindingCount_ != 0;
         bindingOffset_ = bindingBatchCount_ = 0;
       } else {
-        FLOVA_SERIAL_PRINTLN("[flova] Link auth response rejected=auth_ok_decode_failed");
+        FLOVA_SERIAL_PRINTLN_ERROR("[flova] Link auth response rejected=auth_ok_decode_failed");
         disconnect();
       }
       return;
@@ -749,11 +749,11 @@ class ArduinoDeviceLink final {
     if (frame.messageType == 0x03) {
       zcbor_string reason = {};
       if (decode(frame, reason, cbor_decode_auth_error, cbor_encode_auth_error)) {
-        FLOVA_SERIAL_PRINTF("[flova] Link auth rejected reason=%.*s\n",
+        FLOVA_SERIAL_PRINTF_ERROR("[flova] Link auth rejected reason=%.*s\n",
                       static_cast<int>(reason.len),
                       reinterpret_cast<const char*>(reason.value));
       } else {
-        FLOVA_SERIAL_PRINTLN("[flova] Link auth rejected reason=auth_error_decode_failed");
+        FLOVA_SERIAL_PRINTLN_ERROR("[flova] Link auth rejected reason=auth_error_decode_failed");
       }
       disconnect();
       return;
@@ -777,7 +777,7 @@ class ArduinoDeviceLink final {
                  cbor_encode_bootstrap_error)) {
         copyText(bootstrapError_, reason);
         bootstrapErrorPending_ = true;
-        FLOVA_SERIAL_PRINTF("[flova] bootstrap error=%.*s\n",
+        FLOVA_SERIAL_PRINTF_WARN("[flova] bootstrap error=%.*s\n",
                       static_cast<int>(reason.len),
                       reinterpret_cast<const char*>(reason.value));
       }
@@ -1391,7 +1391,7 @@ class ArduinoDeviceLink final {
   bool resourceUnavailable_ = false;
   bool bootstrapErrorPending_ = false;
   size_t pendingFrameLengths_[kPendingFrameSlots] = {};
-#if FLOVA_LINK_PERFORMANCE_LOGGING
+#if FLOVA_LINK_PERFORMANCE_LOGGING && FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_TRACE
   uint32_t pendingFrameQueuedAtMs_[kPendingFrameSlots] = {};
 #endif
   uint8_t pendingFrameHead_ = 0;

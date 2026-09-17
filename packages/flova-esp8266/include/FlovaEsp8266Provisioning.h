@@ -82,7 +82,7 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
     uint32_t largestBlock = 0;
     uint8_t fragmentation = 0;
     ESP.getHeapStats(&freeBytes, &largestBlock, &fragmentation);
-    FLOVA_SERIAL_PRINTF(
+    FLOVA_SERIAL_PRINTF_DEBUG(
         "[flova] provisioning heap stage=%u dram_free=%u dram_max=%u dram_frag=%u%% mode=%u\n",
         stage, freeBytes, largestBlock, fragmentation,
         static_cast<unsigned>(WiFi.getMode()));
@@ -117,7 +117,7 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
       return;
     }
     if (!storage_.write("wifi", &setup_->wifi, sizeof(setup_->wifi))) {
-      FLOVA_SERIAL_PRINTF("[flova] provisioning storage_failed stage=wifi reason=%s\n",
+      FLOVA_SERIAL_PRINTF_ERROR("[flova] provisioning storage_failed stage=wifi reason=%s\n",
                     storage_.lastError());
       setup_->server.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
       return;
@@ -126,7 +126,7 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
     if (result == FlovaProvisioningResponse::Accepted) {
       setup_->server.send(202, "application/json", "{\"ok\":true,\"status\":\"accepted\"}");
     } else if (result == FlovaProvisioningResponse::StorageFailed) {
-      FLOVA_SERIAL_PRINTLN("[flova] provisioning storage_failed stage=handoff");
+      FLOVA_SERIAL_PRINTLN_ERROR("[flova] provisioning storage_failed stage=handoff");
       setup_->server.send(500, "application/json", "{\"ok\":false,\"error\":\"storage_failed\"}");
     } else {
       storage_.remove("wifi");
