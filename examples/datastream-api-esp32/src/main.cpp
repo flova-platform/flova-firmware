@@ -10,6 +10,7 @@
 const char* WIFI_SSID = "your-wifi";
 const char* WIFI_PASSWORD = "your-password";
 const uint8_t RELAY_PIN = 2;
+const uint8_t RGB_PINS[3] = {25, 26, 27}; // Match these to your LED wiring.
 
 FlovaEsp32 client;
 // These human-readable keys are used for declarations and API/configuration.
@@ -17,6 +18,7 @@ FlovaEsp32 client;
 flova::Datastream<float> temperature = client.datastream<float>("temperature");
 flova::Datastream<bool> relay = client.datastream<bool>("relay");
 flova::Datastream<flova::Text> cookMode = client.datastream<flova::Text>("cook_mode");
+flova::Datastream<flova::Text> lampColor = client.datastream<flova::Text>("lamp_color");
 uint32_t lastSampleMs = 0;
 
 void writeRelay(bool enabled) { digitalWrite(RELAY_PIN, enabled ? HIGH : LOW); }
@@ -31,6 +33,15 @@ flova::WriteResult writeCookMode(void*, flova::Text mode) {
              : flova::reject("mode_not_supported");
 }
 
+flova::WriteResult applyColor(flova::Text value) {
+  flova::RgbColor color;
+  if (!flova::parseRgbHex(value, color)) return flova::reject("invalid_color");
+  analogWrite(RGB_PINS[0], color.r);
+  analogWrite(RGB_PINS[1], color.g);
+  analogWrite(RGB_PINS[2], color.b);
+  return flova::accept();
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -38,10 +49,12 @@ void setup() {
   // of the application's services untouched.
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   pinMode(RELAY_PIN, OUTPUT);
+  for (uint8_t pin : RGB_PINS) pinMode(pin, OUTPUT);
   // Register handlers before starting the SDK runtime. Remote commands are
   // applied from client.run(), never directly from a transport callback.
   relay.onWrite(writeRelay);
   cookMode.onWrite(writeCookMode, nullptr);
+  lampColor.onWrite(applyColor);
   if (!client.begin()) Serial.println("[flova] client startup failed");
 }
 

@@ -7,6 +7,7 @@
 const char* WIFI_SSID = "your-wifi";
 const char* WIFI_PASSWORD = "your-password";
 const uint8_t RELAY_PIN = LED_BUILTIN;
+const uint8_t RGB_PINS[3] = {5, 4, 14}; // GPIO5/4/14 on a common ESP8266 board.
 
 FlovaEsp8266 client;
 // Keys are developer-facing names. The server resolves them to stable compact
@@ -14,6 +15,7 @@ FlovaEsp8266 client;
 flova::Datastream<float> temperature = client.datastream<float>("temperature");
 flova::Datastream<bool> relay = client.datastream<bool>("relay");
 flova::Datastream<flova::Text> cookMode = client.datastream<flova::Text>("cook_mode");
+flova::Datastream<flova::Text> lampColor = client.datastream<flova::Text>("lamp_color");
 uint32_t lastSampleMs = 0;
 
 void writeRelay(bool enabled) { digitalWrite(RELAY_PIN, enabled ? LOW : HIGH); }
@@ -27,6 +29,15 @@ flova::WriteResult writeCookMode(void*, flova::Text mode) {
              : flova::reject("mode_not_supported");
 }
 
+flova::WriteResult applyColor(flova::Text value) {
+  flova::RgbColor color;
+  if (!flova::parseRgbHex(value, color)) return flova::reject("invalid_color");
+  analogWrite(RGB_PINS[0], color.r);
+  analogWrite(RGB_PINS[1], color.g);
+  analogWrite(RGB_PINS[2], color.b);
+  return flova::accept();
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -34,10 +45,12 @@ void setup() {
   // its bounded private TLS/UTC work without taking over Wi-Fi mode.
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   pinMode(RELAY_PIN, OUTPUT);
+  for (uint8_t pin : RGB_PINS) pinMode(pin, OUTPUT);
   relay.onWrite(writeRelay);
   // Custom handlers remain available for application-specific validation such
   // as the bounded cook-mode values.
   cookMode.onWrite(writeCookMode, nullptr);
+  lampColor.onWrite(applyColor);
   if (!client.begin()) Serial.println("[flova] client startup failed");
 }
 

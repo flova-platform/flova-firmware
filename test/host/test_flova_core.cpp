@@ -148,6 +148,14 @@ static void verifyFullCapacityAndIntegerSafety() {
 }
 
 int main() {
+  flova::RgbColor rgb = {0, 0, 0};
+  assert(flova::parseRgbHex(flova::Text("#fF8000"), rgb));
+  assert(rgb.r == 255 && rgb.g == 128 && rgb.b == 0);
+  assert(strcmp(flova::formatRgbHex(rgb).c_str(), "#FF8000") == 0);
+  assert(!flova::parseRgbHex(flova::Text("#GG8000"), rgb));
+  assert(!flova::parseRgbHex(flova::Text("#12345"), rgb));
+  assert(!flova::parseRgbHex(flova::Text("#1234567"), rgb));
+  assert(!flova::parseRgbHex(flova::Text("1234567"), rgb));
   verifyFullCapacityAndIntegerSafety();
   FlovaFactoryResetGesture resetGesture;
   resetGesture.configure();

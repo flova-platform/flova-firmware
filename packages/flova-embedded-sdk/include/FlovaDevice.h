@@ -79,6 +79,36 @@ class Text {
   bool valid_;
 };
 
+struct RgbColor { uint8_t r, g, b; };
+
+inline int rgbHexDigit(char value) {
+  if (value >= '0' && value <= '9') return value - '0';
+  if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+  if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+  return -1;
+}
+
+inline bool parseRgbHex(const Text& text, RgbColor& color) {
+  if (!text.valid()) return false;
+  const char* hex = text.c_str();
+  if (strnlen(hex, 8) != 7 || hex[0] != '#') return false;
+  uint8_t channels[3];
+  for (size_t index = 0; index < 3; ++index) {
+    const int high = rgbHexDigit(hex[index * 2 + 1]);
+    const int low = rgbHexDigit(hex[index * 2 + 2]);
+    if (high < 0 || low < 0) return false;
+    channels[index] = static_cast<uint8_t>((high << 4) | low);
+  }
+  color = {channels[0], channels[1], channels[2]};
+  return true;
+}
+
+inline Text formatRgbHex(const RgbColor& color) {
+  char hex[8];
+  snprintf(hex, sizeof(hex), "#%02X%02X%02X", color.r, color.g, color.b);
+  return Text(hex);
+}
+
 struct Value {
   ValueType type;
   union {
