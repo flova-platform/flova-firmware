@@ -1,5 +1,7 @@
 #pragma once
 
+#include "FlovaLogging.h"
+
 // Resource capacities belong to the board/build profile. The SDK deliberately
 // has no product defaults because available RAM and storage vary by target.
 #if !defined(FLOVA_DATASTREAM_CAPACITY) || !defined(FLOVA_TEXT_CAPACITY) || \
@@ -30,4 +32,10 @@
 // is synchronous and changes the latency being measured.
 #ifndef FLOVA_LINK_PERFORMANCE_LOGGING
 #define FLOVA_LINK_PERFORMANCE_LOGGING 0
+#endif
+
+// Small targets keep immutable stream descriptors in board storage. Other
+// integrations may use resident descriptors with the same runtime semantics.
+#ifndef FLOVA_STREAM_DESCRIPTORS_IN_STORAGE
+#define FLOVA_STREAM_DESCRIPTORS_IN_STORAGE 0
 #endif

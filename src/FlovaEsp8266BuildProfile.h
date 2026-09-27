@@ -1,4 +1,10 @@
 #pragma once
+
+#include <FlovaEsp8266FlashLog.h>
+
+#ifndef FLOVA_STREAM_DESCRIPTORS_IN_STORAGE
+#define FLOVA_STREAM_DESCRIPTORS_IN_STORAGE 1
+#endif
 #define FLOVA_BOARD_NAME "ESP8266"
 
 // Board defaults keep the portable runtime explicitly bounded for ESP8266

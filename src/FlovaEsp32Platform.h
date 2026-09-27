@@ -245,11 +245,13 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
         // repeat the socket option operation after the handshake.
         if (!ok && !self->linkCancel_.load() &&
             generation == self->generation_.load()) {
+#if FLOVA_LOGGING_ENABLED && FLOVA_LOG_LEVEL >= FLOVA_LOG_LEVEL_WARN
           char detail[96] = {};
           const int native = client.lastError(detail, sizeof(detail));
-          Serial.printf("[flova] Link open failed generation=%lu native=%d elapsed_ms=%lu\n",
-                        static_cast<unsigned long>(generation), native,
-                        static_cast<unsigned long>(millis() - started));
+          FLOVA_SERIAL_PRINTF_WARN("[flova] Link open failed generation=%lu native=%d elapsed_ms=%lu\n",
+                                   static_cast<unsigned long>(generation), native,
+                                   static_cast<unsigned long>(millis() - started));
+#endif
         }
         if (ok && generation == self->generation_.load() && !self->linkCancel_.load())
           self->linkOpenStatus_.store(LinkOpenStatus::Connected);

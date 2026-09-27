@@ -21,6 +21,7 @@ enum class OtaInstallResult : uint8_t {
 // which TLS, Wi-Fi, or socket type is underneath.
 class FlovaClientLink : public flova::Link {
  public:
+  virtual void setHandshakeHandlers(bool (*)(void*), bool (*)(void*), void*) {}
   virtual bool configure(const char* url, const char* deviceId,
                          const char* secret) = 0;
   virtual bool beginBootstrap(const char* url, const char* token,
@@ -30,6 +31,7 @@ class FlovaClientLink : public flova::Link {
   virtual void pollBootstrap() = 0;
   virtual bool takeBootstrapCommitted(FlovaLinkBootstrapCommitted&) = 0;
   virtual bool takeBootstrapError(char* output, size_t capacity) = 0;
+  virtual bool configurationRecordPending() const { return true; }
   virtual bool takeConfigurationRecord(FlovaLinkConfigurationRecord& output) = 0;
   virtual bool publishConfigurationReport(
       const FlovaLinkConfigurationReport& report) = 0;
@@ -56,9 +58,9 @@ class FlovaClientLink : public flova::Link {
   // Board compositions may publish their actual boot layout and recovery
   // contract. The defaults describe the portable, non-transactional updater.
   virtual void setOtaProfile(FlovaOtaStrategy, const char*, bool) {}
-  virtual bool decodeStoredConfigurationRecord(
+  virtual bool decodeStoredConfigurationUnit(
       const uint8_t* payload, size_t length,
-      FlovaLinkConfigurationRecord& output) = 0;
+      flova::config::Unit& output) = 0;
   virtual void setConfigurationGeneration(uint32_t generation) = 0;
   virtual uint32_t configurationGeneration() const = 0;
   virtual void setHardwareCapabilities(

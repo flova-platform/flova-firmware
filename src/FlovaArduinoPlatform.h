@@ -28,6 +28,7 @@ class FlovaArduinoPlatform : public FlovaLinkStream {
   virtual bool startLink(const char* host, uint16_t port) = 0;
   virtual FlovaLinkOpenStatus pollLink() = 0;
   virtual void closeLink() = 0;
+  virtual const char* linkError() const { return "link_open_failed"; }
   virtual bool resourceRecoveryRequired() const { return false; }
   virtual bool linkWriteBusy() const { return false; }
   virtual bool submitLinkWrite(const uint8_t* data, size_t length) = 0;
