@@ -1,3 +1,10 @@
+FlovaSDK 0.3.7 adds beginner-friendly custom datastream helpers while preserving the existing typed API.
+
+- Added `FLOVA_DATASTREAM`, `FLOVA_WRITE`, `FLOVA_READ`, `FLOVA_REPORT`, `FLOVA_ON_WRITE`, and `FLOVA_HAS_VALUE`.
+- Custom ESP32 and ESP8266 board headers load the helpers automatically.
+- Converted custom Arduino, provisioning, datastream, touch, BLE, OTA, and portable board examples to the helper syntax.
+- Added host coverage for boolean and text helper usage.
+
 FlovaSDK 0.3.6 supports ESP32 and ESP8266 projects in Arduino IDE and PlatformIO.
 
 - Added bounded status snapshots and edge-triggered status listeners for
