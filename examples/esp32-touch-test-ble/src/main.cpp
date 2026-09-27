@@ -6,8 +6,8 @@ const uint8_t LED_PIN = 2;
 const uint32_t DEBOUNCE_MS = 60;
 
 FlovaEsp32Ble device;
-flova::Datastream<bool> led = device.datastream<bool>("LED");
-flova::Datastream<bool> touch = device.datastream<bool>("TOUCH_SENSOR");
+auto led = FLOVA_DATASTREAM(device, bool, "LED");
+auto touch = FLOVA_DATASTREAM(device, bool, "TOUCH_SENSOR");
 
 bool touchState = false;
 bool lastRawTouch = false;
@@ -34,8 +34,8 @@ void pollTouch() {
     return;
 
   touchState = rawTouch;
-  touch.report(touchState, flova::Origin::PhysicalInput);
-  if (touchState) led.write(!led.hasValue() || !led.value());
+  FLOVA_REPORT(touch, touchState, flova::Origin::PhysicalInput);
+  if (touchState) FLOVA_WRITE(led, !FLOVA_HAS_VALUE(led) || !FLOVA_READ(led));
 }
 
 void setup() {
@@ -46,7 +46,7 @@ void setup() {
   device.enableOta(true);
   device.setOtaProfile(FlovaOtaStrategy::Ab, "esp32-ab-4m-v1", true);
   device.setRestartHandler(scheduleRestart);
-  led.onWrite(writeLed);
+  FLOVA_ON_WRITE(led, writeLed);
   led.persist(flova::PersistencePolicy::Persistent);
   led.offline(flova::OfflinePolicy::KeepLatest);
   touch.offline(flova::OfflinePolicy::KeepLatest);

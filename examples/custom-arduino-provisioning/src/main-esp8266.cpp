@@ -14,7 +14,7 @@ FlovaEsp8266 client;
 ESP8266WebServer server(80);
 // The key is used for SDK declarations and Engine configuration. Device Link
 // later uses the server-assigned numeric ID, not this string on every frame.
-flova::Datastream<bool> relay = client.datastream<bool>("LED");
+auto relay = FLOVA_DATASTREAM(client, bool, "LED");
 }
 
 void setup() {
@@ -27,7 +27,7 @@ void setup() {
   digitalWrite(RELAY_PIN, HIGH);  // LED_BUILTIN is active-low.
 
   // Dashboard, user, schedule, and automation writes all reach this callback.
-  relay.onWrite([](bool enabled) {
+  FLOVA_ON_WRITE(relay, [](bool enabled) {
     digitalWrite(RELAY_PIN, enabled ? LOW : HIGH);
   });
   // These routes are attached to the application's existing server. The SDK

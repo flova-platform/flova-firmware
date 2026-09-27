@@ -1,4 +1,4 @@
-#include <FlovaDevice.h>
+#include <FlovaCustomCode.h>
 
 // Portable custom-board contract. Replace the four services below with your
 // MCU HAL, RTOS, PLC SDK, Ethernet/cellular modem, or gateway transport.
@@ -56,7 +56,7 @@ BoardStorage storage;
 BoardClock clockSource;
 BoardLogger logger;
 flova::Device flovaDevice(link, storage, clockSource, logger);
-flova::Datastream<bool> relay = flovaDevice.datastream<bool>("relay");
+auto relay = FLOVA_DATASTREAM(flovaDevice, bool, "relay");
 
 static flova::WriteResult setRelay(void* context, bool enabled) {
   // This is the command path for local writes, user commands, schedules, and
@@ -76,9 +76,10 @@ int main() {
   budgets[static_cast<size_t>(flova::ResourceKind::History)].maximumBytes = 8192;
   budgets[static_cast<size_t>(flova::ResourceKind::History)].elastic = true;
   flovaDevice.resourcePlan(budgets, static_cast<size_t>(flova::ResourceKind::Count));
-  // onWrite() receives commands. report() would be used for sensor readings
-  // or hardware changes that happened outside this callback.
-  relay.onWrite(setRelay, nullptr).offline(flova::OfflinePolicy::KeepLatest);
+  // FLOVA_ON_WRITE() receives commands. FLOVA_REPORT() would be used for sensor
+  // readings or hardware changes that happened outside this callback.
+  FLOVA_ON_WRITE(relay, setRelay, nullptr)
+      .offline(flova::OfflinePolicy::KeepLatest);
 
   // begin() binds the human-readable key to the transport's numeric ID,
   // restores bounded persistent state, and starts the supplied Link.
@@ -86,7 +87,7 @@ int main() {
 
   // This is a local application write. Engine automation can issue an
   // equivalent remote write and will use setRelay() above.
-  relay.write(true);
+  FLOVA_WRITE(relay, true);
 
   // Device::run() is the ownership boundary where queued transport work is
   // applied. Never perform GPIO writes from a socket callback.

@@ -21,6 +21,18 @@ The public API is one board-specific header:
 #include <FlovaEsp32.h>   // use FlovaEsp8266.h on ESP8266
 ```
 
+The board header also provides short readable helpers for custom sketches:
+
+```cpp
+auto relay = FLOVA_DATASTREAM(client, bool, "relay");
+FLOVA_ON_WRITE(relay, setRelay);
+FLOVA_WRITE(relay, true);
+bool enabled = FLOVA_READ(relay);
+```
+
+The string remains the Console datastream key. `FLOVA_READ` reads the local
+cached value; it does not make a blocking network request.
+
 Declare a datastream before `begin()`, attach a typed handler with a context
 pointer, and call `client.run()` from the normal Arduino loop. Remote commands
 are applied from that loop, so the handler can safely update the application's

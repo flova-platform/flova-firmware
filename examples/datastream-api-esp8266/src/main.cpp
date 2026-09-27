@@ -2,7 +2,7 @@
 #include <ESP8266WiFi.h>
 #include <FlovaEsp8266.h>
 
-// ESP8266 version of the datastream API example. The SDK surface is the same;
+// ESP8266 version of the helper-based datastream example. The SDK surface is the same;
 // only board-owned Arduino includes and active-low LED behavior differ.
 const char* WIFI_SSID = "your-wifi";
 const char* WIFI_PASSWORD = "your-password";
@@ -12,10 +12,10 @@ const uint8_t RGB_PINS[3] = {5, 4, 14}; // GPIO5/4/14 on a common ESP8266 board.
 FlovaEsp8266 client;
 // Keys are developer-facing names. The server resolves them to stable compact
 // IDs during binding, so normal ESP8266 runtime frames stay bounded.
-flova::Datastream<float> temperature = client.datastream<float>("temperature");
-flova::Datastream<bool> relay = client.datastream<bool>("relay");
-flova::Datastream<flova::Text> cookMode = client.datastream<flova::Text>("cook_mode");
-flova::Datastream<flova::Text> lampColor = client.datastream<flova::Text>("lamp_color");
+auto temperature = FLOVA_DATASTREAM(client, float, "temperature");
+auto relay = FLOVA_DATASTREAM(client, bool, "relay");
+auto cookMode = FLOVA_DATASTREAM(client, flova::Text, "cook_mode");
+auto lampColor = FLOVA_DATASTREAM(client, flova::Text, "lamp_color");
 uint32_t lastSampleMs = 0;
 
 void writeRelay(bool enabled) { digitalWrite(RELAY_PIN, enabled ? LOW : HIGH); }
@@ -46,11 +46,11 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   pinMode(RELAY_PIN, OUTPUT);
   for (uint8_t pin : RGB_PINS) pinMode(pin, OUTPUT);
-  relay.onWrite(writeRelay);
+  FLOVA_ON_WRITE(relay, writeRelay);
   // Custom handlers remain available for application-specific validation such
   // as the bounded cook-mode values.
-  cookMode.onWrite(writeCookMode, nullptr);
-  lampColor.onWrite(applyColor);
+  FLOVA_ON_WRITE(cookMode, writeCookMode, nullptr);
+  FLOVA_ON_WRITE(lampColor, applyColor);
   if (!client.begin()) Serial.println("[flova] client startup failed");
 }
 
@@ -61,12 +61,13 @@ void loop() {
   if (millis() - lastSampleMs >= 1000) {
     lastSampleMs = millis();
 
-    // report() publishes an observation and does not invoke onWrite(). It is
+    // FLOVA_REPORT() publishes an observation and does not invoke
+    // FLOVA_ON_WRITE(). It is
     // also safe to use while the network is temporarily offline.
-    temperature.report(25.0f);
+    FLOVA_REPORT(temperature, 25.0f);
 
     // Local logic uses the same validation path as a remote automation write.
-    if (temperature.value() > 30.0f) relay.write(false);
+    if (FLOVA_READ(temperature) > 30.0f) FLOVA_WRITE(relay, false);
   }
   yield();
 }

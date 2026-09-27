@@ -15,7 +15,7 @@ FlovaEsp32 client;
 WebServer server(80);
 // Datastream keys are stable developer/API names. Engine supplies the compact
 // runtime ID after the device connects and binds its declared keys.
-flova::Datastream<bool> relay = client.datastream<bool>("LED");
+auto relay = FLOVA_DATASTREAM(client, bool, "LED");
 }
 
 void setup() {
@@ -30,7 +30,7 @@ void setup() {
 
   // Dashboard, user, automation, and schedule writes all use this one safe
   // actuator path. The handler runs from client.run().
-  relay.onWrite([](bool enabled) {
+  FLOVA_ON_WRITE(relay, [](bool enabled) {
     digitalWrite(RELAY_PIN, enabled ? HIGH : LOW);
   });
   // attachProvisioning() only registers /status and /provision on the server

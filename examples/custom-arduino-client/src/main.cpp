@@ -34,7 +34,7 @@ void onFlovaStatus(void*, const FlovaStatusEvent& event) {
 }
 // "LED" is the developer/API key. Engine resolves it to a compact numeric
 // runtime ID during binding; the string is not sent with every update.
-flova::Datastream<bool> relay = client.datastream<bool>("LED");
+auto relay = FLOVA_DATASTREAM(client, bool, "LED");
 bool lastReady = false;
 }
 
@@ -49,9 +49,9 @@ void setup() {
   pinMode(relayContext.pin, OUTPUT);
   digitalWrite(relayContext.pin, LOW);
 
-  // onWrite() handles remote writes. Local logic can use relay.write(value),
-  // while sensors or externally changed hardware should use relay.report(value).
-  relay.onWrite(writeRelay, &relayContext)
+  // FLOVA_ON_WRITE() handles remote writes. Local logic can use FLOVA_WRITE(),
+  // while sensors or externally changed hardware should use FLOVA_REPORT().
+  FLOVA_ON_WRITE(relay, writeRelay, &relayContext)
       .persist(flova::PersistencePolicy::Persistent);
 
   client.setStatusListener(onFlovaStatus);

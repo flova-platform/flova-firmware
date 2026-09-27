@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <string.h>
+#include <FlovaCustomCode.h>
 #include <FlovaDevice.h>
 #include <FlovaFactoryResetGesture.h>
 #include <FlovaProvisioning.h>
@@ -147,6 +148,25 @@ static void verifyFullCapacityAndIntegerSafety() {
   assert(!integer.write(INT64_MAX - 2).accepted());
 }
 
+static void verifyCustomCodeHelpers() {
+  TestLink link;
+  TestStorage storage;
+  TestClock clock;
+  TestLogger logger;
+  flova::Device device(link, storage, clock, logger);
+  auto relay = FLOVA_DATASTREAM(device, bool, "relay");
+  auto status = FLOVA_DATASTREAM(device, flova::Text, "status");
+
+  FLOVA_ON_WRITE(relay, writeRelay);
+  assert(device.begin());
+  assert(!FLOVA_HAS_VALUE(relay));
+  assert(FLOVA_WRITE(relay, true).accepted());
+  assert(FLOVA_HAS_VALUE(relay));
+  assert(FLOVA_READ(relay));
+  assert(FLOVA_REPORT(status, flova::Text("ready")).accepted());
+  assert(strcmp(FLOVA_READ(status).c_str(), "ready") == 0);
+}
+
 int main() {
   flova::RgbColor rgb = {0, 0, 0};
   assert(flova::parseRgbHex(flova::Text("#fF8000"), rgb));
@@ -157,6 +177,7 @@ int main() {
   assert(!flova::parseRgbHex(flova::Text("#1234567"), rgb));
   assert(!flova::parseRgbHex(flova::Text("1234567"), rgb));
   verifyFullCapacityAndIntegerSafety();
+  verifyCustomCodeHelpers();
   FlovaFactoryResetGesture resetGesture;
   resetGesture.configure();
   uint32_t gestureNow = 100;

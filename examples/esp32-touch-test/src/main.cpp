@@ -12,8 +12,8 @@ const char* WIFI_PASSWORD = "your-password";
 
 FlovaEsp32 device;
 WebServer server(80);
-flova::Datastream<bool> led = device.datastream<bool>("LED");
-flova::Datastream<bool> touch = device.datastream<bool>("TOUCH_SENSOR");
+auto led = FLOVA_DATASTREAM(device, bool, "LED");
+auto touch = FLOVA_DATASTREAM(device, bool, "TOUCH_SENSOR");
 
 bool touchState = false;
 bool lastRawTouch = false;
@@ -34,8 +34,8 @@ void pollTouch() {
     return;
 
   touchState = rawTouch;
-  touch.report(touchState, flova::Origin::PhysicalInput);
-  if (touchState) led.write(!led.hasValue() || !led.value());
+  FLOVA_REPORT(touch, touchState, flova::Origin::PhysicalInput);
+  if (touchState) FLOVA_WRITE(led, !FLOVA_HAS_VALUE(led) || !FLOVA_READ(led));
 }
 
 void setup() {
@@ -43,7 +43,7 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   pinMode(TOUCH_PIN, INPUT);
   pinMode(LED_PIN, OUTPUT);
-  led.onWrite(writeLed);
+  FLOVA_ON_WRITE(led, writeLed);
   led.persist(flova::PersistencePolicy::Persistent);
   led.offline(flova::OfflinePolicy::KeepLatest);
   touch.offline(flova::OfflinePolicy::KeepLatest);

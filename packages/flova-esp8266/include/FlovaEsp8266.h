@@ -5,6 +5,7 @@
 
 #include <FlovaEsp8266BuildProfile.h>
 #include <FlovaArduino.h>
+#include <FlovaCustomCode.h>
 #include <FlovaEsp8266Platform.h>
 #include <FlovaEsp8266Services.h>
 #include <FlovaWifiProvisioning.h>

@@ -5,6 +5,7 @@
 
 #include <FlovaEsp32BuildProfile.h>
 #include <FlovaArduino.h>
+#include <FlovaCustomCode.h>
 #include <FlovaEsp32Platform.h>
 #include <FlovaEsp32Services.h>
 #include <FlovaWifiProvisioning.h>

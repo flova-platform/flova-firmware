@@ -22,7 +22,7 @@ flova::WriteResult writeRelay(void* context, bool value) {
 FlovaEsp8266 client;
 // This human-readable key is bound once to the server-assigned numeric ID.
 // Runtime ESP8266 frames use the numeric ID to save memory and bandwidth.
-flova::Datastream<bool> relay = client.datastream<bool>("LED");
+auto relay = FLOVA_DATASTREAM(client, bool, "LED");
 bool lastReady = false;
 }
 
@@ -36,7 +36,7 @@ void setup() {
   digitalWrite(relayContext.pin, HIGH);  // LED_BUILTIN is active-low.
 
   // Register the actuator handler before starting the runtime.
-  relay.onWrite(writeRelay, &relayContext)
+  FLOVA_ON_WRITE(relay, writeRelay, &relayContext)
       .persist(flova::PersistencePolicy::Persistent);
 
   // Persistent hardware restores before Link authentication, which continues
