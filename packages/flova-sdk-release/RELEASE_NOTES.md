@@ -1,3 +1,12 @@
+FlovaSDK 0.3.8 adds safe Link preparation for board-owned power management.
+
+- Added `prepareForPowerDown()` with bounded drain, runtime safety checks, and
+  explicit `Busy`, `Draining`, `Ready`, and `Failed` states.
+- Exposed the helper through the Arduino, ESP32, ESP32 BLE, ESP8266, and
+  universal board facades.
+- Deep sleep, Wi-Fi shutdown, and wake-source configuration remain owned by
+  each board application.
+
 FlovaSDK 0.3.7 adds beginner-friendly custom datastream helpers while preserving the existing typed API.
 
 - Added `FLOVA_DATASTREAM`, `FLOVA_WRITE`, `FLOVA_READ`, `FLOVA_REPORT`, `FLOVA_ON_WRITE`, and `FLOVA_HAS_VALUE`.

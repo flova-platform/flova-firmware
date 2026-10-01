@@ -6,6 +6,7 @@ These directories are reusable libraries, not application entry points.
 | --- | --- | --- |
 | `flova-embedded-sdk` | Portable `flova::Device`, datastream semantics, bounded configuration and scheduling | Arduino, ESP, GPIO, Wi-Fi, WebSocket, TLS, or filesystem APIs |
 | `flova-arduino` | Generic Arduino clocks, storage, logging, bounded Device Link framing, and the board-platform seam | ESP/TLS/updater APIs, product-specific GPIO mappings, or a second domain runtime |
+| `flova-linux` | POSIX clock, file storage, logging, and supervisor-owned OTA staging for Linux devices | Arduino, ESP board policy, or a Linux service manager's process lifecycle |
 | `flova-esp32` | ESP32 socket/TLS/OTA, setup provisioning, runtime network, boot/storage policy, identity, pin policy, and board composition | Portable SDK semantics or provisioning-owned runtime connectivity |
 | `flova-esp8266` | ESP8266 BearSSL/socket/OTA, resource policy, setup provisioning, runtime network, boot/storage, identity, pin policy, and board composition | Portable SDK semantics or provisioning-owned runtime connectivity |
 
@@ -25,3 +26,8 @@ remain an internal implementation detail of that package.
 `FlovaDevice.h` is the portable runtime. New board ports implement the four
 `flova::` service interfaces and compose an explicit board class as shown in
 `examples/custom-board-basic`.
+
+Linux applications install `Flova::Linux` with CMake, inject the POSIX services
+from `FlovaLinux.h`, and provide their own `flova::Link`. Raspberry Pi service
+startup, restart, and executable activation remain application/supervisor
+responsibilities.

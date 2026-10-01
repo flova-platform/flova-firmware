@@ -1,6 +1,6 @@
 <div align="center">
   <h1>FlovaSDK</h1>
-  <p><strong>Build connected ESP32 and ESP8266 devices with Flova.</strong></p>
+  <p><strong>Build connected Linux, ESP32, and ESP8266 devices with Flova.</strong></p>
   <p>
     <a href="README_FA.md">فارسی</a> ·
     <a href="https://docs.flova.ir">Documentation</a> ·
@@ -16,8 +16,8 @@
 </div>
 
 FlovaSDK is the official embedded C++ SDK for connecting devices to the Flova
-platform. It provides ready-to-use integrations for ESP32 and ESP8266, with a
-portable C++11 core for custom hardware.
+platform. It provides ready-to-use integrations for Linux, ESP32, and ESP8266,
+with a portable C++11 core for custom hardware.
 
 > For provisioning, datastreams, device configuration, OTA, and complete API
 > guides, visit **[docs.flova.ir](https://docs.flova.ir)**.
@@ -29,7 +29,7 @@ portable C++11 core for custom hardware.
 For an existing ESP32 PlatformIO project, add:
 
 ```ini
-lib_deps = flova-platform/FlovaSDK@^0.3.7
+  lib_deps = flova-platform/FlovaSDK@^0.3.8
 ```
 
 For ESP8266, use the packaged `extras/platformio/esp8266/platformio.ini`.
@@ -37,7 +37,7 @@ It provides the tested ESP8266 board and TLS profile for the SDK.
 
 ### Arduino IDE
 
-FlovaSDK 0.3.7 supports ESP32 and ESP8266 in Arduino IDE:
+FlovaSDK 0.3.8 supports ESP32 and ESP8266 in Arduino IDE:
 
 1. Open **Tools → Manage Libraries**.
 2. Search for **FlovaSDK**.
@@ -51,6 +51,23 @@ Then include the ESP32 entry point:
 
 For ESP8266, select the ESP8266 board, then include `<ESP8266WiFi.h>` and
 `<FlovaEsp8266.h>`.
+
+### Linux and Raspberry Pi
+
+Build and install the native Linux package with CMake. OpenSSL development
+headers are required for OTA digest verification:
+
+```sh
+sudo apt install cmake libssl-dev
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build
+sudo cmake --install build
+```
+
+Linux applications use `find_package(FlovaLinux CONFIG REQUIRED)` and link
+`Flova::Linux`. The package provides POSIX clock, durable file storage,
+logging, and supervisor-owned OTA staging. The application supplies its
+`flova::Link` transport and owns the systemd service.
 
 ## Quick start
 

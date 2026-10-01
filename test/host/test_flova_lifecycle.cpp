@@ -96,7 +96,8 @@ class TestLink final : public FlovaClientLink {
  public:
   bool begin() override { return true; }
   bool connected() const override { return online; }
-  bool send(const flova::Message&) override { return online; }
+  bool applicationPaused() const override { return maintenance; }
+  bool send(const flova::Message&) override { return online && !maintenance; }
   void poll() override {}
   void setReceiver(flova::MessageReceiver receiver, void* context) override {
     receiver_ = receiver;
@@ -154,8 +155,27 @@ class TestLink final : public FlovaClientLink {
   void setHardwareCapabilities(
       const flova::HardwareCapabilities&) override {}
   void disconnect() override { online = false; }
+  void beginMaintenance() override {
+    ++maintenanceBegins;
+    maintenance = true;
+  }
+  bool maintenanceReady() override {
+    ++maintenancePolls;
+    return maintenanceReadyNow;
+  }
+  bool maintenanceFailed() const override { return maintenanceFailedNow; }
+  void endMaintenance() override {
+    ++maintenanceEnds;
+    maintenance = false;
+  }
 
   bool online = false;
+  bool maintenance = false;
+  bool maintenanceReadyNow = false;
+  bool maintenanceFailedNow = false;
+  unsigned maintenanceBegins = 0;
+  unsigned maintenancePolls = 0;
+  unsigned maintenanceEnds = 0;
   bool configurationPending = false;
   bool decoderAllowed = true;
   unsigned reports = 0;
@@ -179,6 +199,91 @@ void observe(void* context, const FlovaStatusEvent& event) {
   assert(observer.count < sizeof(observer.kinds) / sizeof(observer.kinds[0]));
   observer.kinds[observer.count++] = event.kind;
   observer.last = event.current;
+}
+
+void seedRuntimeConfiguration(TestStorage& storage) {
+  flova::DeviceConfiguration configuration = {};
+  assert(flova::copyBounded("device-1", configuration.deviceId, true));
+  assert(flova::copyBounded("wss://engine.example/api/device-link",
+                            configuration.linkUrl, true));
+  assert(flova::copyBounded("secret", configuration.linkSecret, true));
+  configuration.generation = 1;
+
+  flova::ConfigurationImage image = {};
+  flova::makeConfigurationImage(configuration, image);
+  storage.records["config"] = std::vector<uint8_t>(
+      reinterpret_cast<const uint8_t*>(&image),
+      reinterpret_cast<const uint8_t*>(&image) + sizeof(image));
+
+  FlovaLinkConfigurationStorage configurationStorage(storage, 64);
+  flova::config::Installer installer(configurationStorage, 64);
+  flova::config::Begin begin;
+  begin.generation = 1;
+  begin.schemaVersion = 1;
+  begin.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+  flova::config::Digest digest;
+  digest.finish(begin.checksum);
+  assert(installer.begin(begin).accepted());
+  flova::config::End end;
+  end.generation = begin.generation;
+  end.recordCount = 0;
+  end.checksum = begin.checksum;
+  assert(installer.end(end).accepted());
+  assert(installer.promote(begin.generation));
+}
+
+void verifyPowerDownPreparation() {
+  TestStorage storage;
+  seedRuntimeConfiguration(storage);
+  TestLink link;
+  TestClock clock;
+  TestLogger logger;
+  TestEntropy entropy;
+  TestIdentity identity;
+  TestNetwork network;
+  TestTlsClock tlsClock;
+  TestProvisioning provisioning;
+  TestHardware hardware;
+  network.online = true;
+  tlsClock.clockReady = true;
+  link.online = true;
+  FlovaClient client(link, provisioning, network, tlsClock, identity, storage,
+                     clock, logger, entropy, hardware);
+  assert(client.begin(false));
+  for (unsigned i = 0; i < 128 && !client.runtimeReady(); ++i) client.run();
+  assert(client.ready());
+
+  assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Draining);
+  assert(link.maintenanceBegins == 1 && link.maintenancePolls == 1);
+  assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Draining);
+  assert(link.maintenanceBegins == 1);
+  link.maintenanceReadyNow = true;
+  assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Ready);
+  assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Ready);
+  assert(link.maintenanceBegins == 1 && link.maintenanceEnds == 0);
+
+  TestStorage failedStorage;
+  seedRuntimeConfiguration(failedStorage);
+  TestLink failedLink;
+  TestNetwork failedNetwork;
+  TestTlsClock failedTlsClock;
+  TestProvisioning failedProvisioning;
+  TestHardware failedHardware;
+  failedNetwork.online = true;
+  failedTlsClock.clockReady = true;
+  failedLink.online = true;
+  FlovaClient failedClient(failedLink, failedProvisioning, failedNetwork,
+                           failedTlsClock, identity, failedStorage, clock,
+                           logger, entropy, failedHardware);
+  assert(failedClient.begin(false));
+  for (unsigned i = 0; i < 128 && !failedClient.runtimeReady(); ++i)
+    failedClient.run();
+  assert(failedClient.ready());
+  assert(failedClient.prepareForPowerDown() == FlovaPowerDownStatus::Draining);
+  failedLink.maintenanceReadyNow = true;
+  failedLink.maintenanceFailedNow = true;
+  assert(failedClient.prepareForPowerDown() == FlovaPowerDownStatus::Failed);
+  assert(failedLink.maintenanceEnds == 1 && !failedLink.maintenance);
 }
 
 }  // namespace
@@ -277,5 +382,7 @@ int main() {
   assert(link.reports == 3 && link.lastReport.status == FlovaLinkResultStatus::Error);
   assert(link.lastReport.messageId == 43 && link.lastReport.generation == 7);
   assert(storage.records == saved);
+  assert(client.prepareForPowerDown() == FlovaPowerDownStatus::Busy);
+  verifyPowerDownPreparation();
   return 0;
 }

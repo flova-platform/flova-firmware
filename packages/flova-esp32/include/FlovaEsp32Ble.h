@@ -36,6 +36,9 @@ class FlovaEsp32Ble final {
   bool tlsReady() const { return client_.tlsReady(); }
   bool runtimeReady() const { return client_.runtimeReady(); }
   bool ready() const { return client_.ready(); }
+  FlovaPowerDownStatus prepareForPowerDown() {
+    return client_.prepareForPowerDown();
+  }
   const char* lastError() const { return client_.lastError(); }
   const flova::Diagnostics& diagnostics() const { return client_.diagnostics(); }
   flova::Device& device() { return client_.device(); }

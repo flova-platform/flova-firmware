@@ -24,6 +24,30 @@ handoff. A failed send or drain still permits activation of the verified durable
 generation; after restart, CONFIG_REPORTED confirms the active checksum to Engine.
 The transfer ACK alone does not prove that the new configuration is running.
 
+## Board-owned power down
+
+Deep sleep and other low-power states are board responsibilities. Flova exposes
+`prepareForPowerDown()` on the Arduino client and ESP32/ESP8266 facades so an
+application can quiesce the Link before it stops the board networking stack.
+The method returns `Busy` while runtime work such as configuration, OTA, or
+factory-reset handling is active, `Draining` while the existing bounded Link
+maintenance drain runs, `Ready` after the socket is closed, and `Failed` when
+the drain cannot complete. The application must keep calling `run()` while the
+status is `Draining` and enter its board-specific power state only at `Ready`.
+
+```cpp
+const FlovaPowerDownStatus status = device.prepareForPowerDown();
+if (status == FlovaPowerDownStatus::Ready) {
+  // Stop Wi-Fi, configure the wake source, and call the board sleep API here.
+} else {
+  device.run();
+}
+```
+
+The helper does not stop Wi-Fi, configure wake sources, or add a Link sleep
+message. After a deep-sleep reset, the normal `begin()` and `run()` lifecycle
+restores the persisted configuration and establishes a new Link session.
+
 ## ESP8266
 
 Stock BearSSL can block inside connection and write operations, including
