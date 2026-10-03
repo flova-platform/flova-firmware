@@ -1,3 +1,12 @@
+FlovaSDK 0.3.9 adds direct Ethernet device support for custom ESP32 firmware.
+
+- Added the `FlovaEsp32Ethernet` facade for LAN8720 devices.
+- Added compile-time template, device name, factory token, and Link URL
+  metadata for direct-provisioned custom firmware.
+- Added a short Ethernet example using the `FLOVA_*` datastream helpers.
+- Added bounded Ethernet and Linux socket seams for application-owned network
+  implementations.
+
 FlovaSDK 0.3.8 adds safe Link preparation for board-owned power management.
 
 - Added `prepareForPowerDown()` with bounded drain, runtime safety checks, and

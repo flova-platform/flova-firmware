@@ -15,6 +15,22 @@ static const size_t kTemplateIdBytes = 37;
 static const size_t kChecksumTextBytes = 65;
 static const size_t kProvisionTokenBytes = 65;
 static const size_t kProvisioningErrorBytes = 48;
+
+#ifndef FLOVA_DEVICE_TEMPLATE_ID
+#define FLOVA_DEVICE_TEMPLATE_ID ""
+#endif
+
+#ifndef FLOVA_DEVICE_NAME
+#define FLOVA_DEVICE_NAME ""
+#endif
+
+#ifndef FLOVA_DEVICE_PROVISION_TOKEN
+#define FLOVA_DEVICE_PROVISION_TOKEN ""
+#endif
+
+#ifndef FLOVA_DEVICE_LINK_URL
+#define FLOVA_DEVICE_LINK_URL ""
+#endif
 // Fits the built-in 32-byte SSID plus 64-byte password representation while
 // keeping every persisted/runtime copy bounded on constrained boards.
 static const uint16_t kConfigurationImageVersion = 3;

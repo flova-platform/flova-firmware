@@ -16,7 +16,10 @@ target_compile_options(flova-linux PRIVATE -Wall -Wextra -fno-exceptions -fno-rt
 include(GNUInstallDirs)
 install(TARGETS flova-linux EXPORT FlovaLinuxTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(FILES include/FlovaLinux.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/flova-linux)
+install(FILES
+  include/FlovaLinux.h
+  include/FlovaLinuxEthernet.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/flova-linux)
 install(EXPORT FlovaLinuxTargets
   FILE FlovaLinuxTargets.cmake
   NAMESPACE Flova::

@@ -20,6 +20,14 @@ bounded `ProvisioningHandoff`; it does not start a setup AP.
 compositions. Advanced Arduino ports may include `<FlovaArduino.h>` and compose
 `FlovaClient` with their own Link, temporary provisioning, runtime network, TLS
 clock bootstrap, identity, and storage services.
+Custom Ethernet applications may include `<FlovaEthernetAdapter.h>` and inject
+an Ethernet/TLS socket implementation. The adapter owns only the bounded Link
+platform seam; the application owns the Ethernet chip library, pins, DHCP, and
+certificate setup.
+ESP32 LAN8720 applications can use `<FlovaEsp32Ethernet.h>` for the complete
+direct-device composition and automatic factory-token bootstrap.
+For an ESP32 LAN8720 composition reusing the native TCP/IP and TLS stack, see
+[`examples/custom-ethernet-esp32`](../examples/custom-ethernet-esp32).
 The public protocol package is named `flova-link`; generated zcbor headers
 remain an internal implementation detail of that package.
 
