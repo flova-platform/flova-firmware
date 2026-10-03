@@ -50,6 +50,15 @@ enum class FlovaLifecycle : uint8_t {
   Failed,
 };
 
+// Board code owns the actual power state. This status only reports whether
+// Flova has safely quiesced its Link work before that board shuts down.
+enum class FlovaPowerDownStatus : uint8_t {
+  Busy,
+  Draining,
+  Ready,
+  Failed,
+};
+
 enum class FlovaRestartReason : uint8_t {
   None,
   ConfigurationActivation,
@@ -413,6 +422,30 @@ class FlovaClient {
   bool tlsReady() const { return tlsClock_.ready(); }
   bool runtimeReady() const { return lifecycle_ == FlovaLifecycle::Runtime; }
   bool ready() const { return lifecycle_ == FlovaLifecycle::Runtime && device_.ready(); }
+  FlovaPowerDownStatus prepareForPowerDown() {
+    if (powerDownReady_) return FlovaPowerDownStatus::Ready;
+    if (!powerDownDraining_) {
+      if (!ready() || configurationMemory_ || configurationTransferActive_ ||
+          configurationWork_.mode != ConfigurationWorkMode::None ||
+          configurationActivation_.active() || otaDraining_ ||
+          otaResultPending_ || factoryResetRequestedAt_)
+        return FlovaPowerDownStatus::Busy;
+      // Maintenance pauses application work and uses the existing bounded
+      // transport drain. The board may enter its own power state only after
+      // this method reports Ready.
+      link_.beginMaintenance();
+      powerDownDraining_ = true;
+    }
+    if (!link_.maintenanceReady()) return FlovaPowerDownStatus::Draining;
+    if (link_.maintenanceFailed()) {
+      link_.endMaintenance();
+      powerDownDraining_ = false;
+      return FlovaPowerDownStatus::Failed;
+    }
+    powerDownDraining_ = false;
+    powerDownReady_ = true;
+    return FlovaPowerDownStatus::Ready;
+  }
   const flova::Diagnostics& diagnostics() const { return device_.diagnostics(); }
   flova::Device& device() { return device_; }
   void status(FlovaStatusSnapshot& output) const { captureStatus(output); }
@@ -510,6 +543,8 @@ class FlovaClient {
 
   flova::ConfigurationActivation configurationActivation_;
   bool otaDraining_ = false;
+  bool powerDownDraining_ = false;
+  bool powerDownReady_ = false;
   flova::RetryBackoff bootstrapBackoff_;
   uint32_t bootstrapRetryAt_ = 0;
   static const uint32_t kBootstrapTimeoutMs = 30000UL;
