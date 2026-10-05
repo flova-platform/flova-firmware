@@ -60,6 +60,7 @@ class FlovaEsp8266Provisioning : public FlovaProvisioningAdapter {
   bool stopProvisioning() override {
     const bool hadSetup = setup_ != nullptr;
     const bool hadAp = (WiFi.getMode() & WIFI_AP) != 0;
+    if (!hadSetup && !hadAp) return true;
     if (hadSetup || hadAp) logHeap(0);
     provisioning_ = false;
     if (setup_) { setup_->server.stop(); delete setup_; setup_ = nullptr; }

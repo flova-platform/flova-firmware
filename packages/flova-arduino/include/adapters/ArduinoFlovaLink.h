@@ -45,7 +45,9 @@ class ArduinoFlovaLink : public FlovaClientLink {
     transport_.loop();
     if (!transport_.drainComplete()) return false;
     pendingRecords_.reset();
-    bootstrapCommittedPending_ = configurationPending_ = otaPending_ = false;
+    bootstrapCommittedPending_ = otaPending_ = false;
+    configurationPendingHead_ = configurationPendingTail_ =
+        configurationPendingCount_ = 0;
     return true;
   }
   void endMaintenance() override { maintenance_ = false; }
@@ -62,12 +64,17 @@ class ArduinoFlovaLink : public FlovaClientLink {
     return transport_.takeBootstrapError(output, capacity);
   }
 
-  bool configurationRecordPending() const override { return configurationPending_; }
+  bool configurationRecordPending() const override {
+    return configurationPendingCount_ != 0;
+  }
 
   bool takeConfigurationRecord(FlovaLinkConfigurationRecord& output) override {
-    if (!configurationPending_) return false;
-    output = pendingRecords_->configuration_;
-    configurationPending_ = false;
+    if (!configurationPendingCount_) return false;
+    output = pendingRecords_->configuration_[configurationPendingHead_];
+    configurationPendingHead_ =
+        static_cast<uint8_t>((configurationPendingHead_ + 1) %
+                             kConfigurationPendingSlots);
+    --configurationPendingCount_;
     return true;
   }
 
@@ -304,7 +311,7 @@ class ArduinoFlovaLink : public FlovaClientLink {
  private:
   struct PendingRecords {
     FlovaLinkBootstrapCommitted bootstrapCommitted_ = {};
-    FlovaLinkConfigurationRecord configuration_ = {};
+    FlovaLinkConfigurationRecord configuration_[2] = {};
     FlovaLinkOtaOffer otaOffer_ = {};
   };
   FlovaPhaseStorage<PendingRecords> pendingRecords_;
@@ -312,7 +319,9 @@ class ArduinoFlovaLink : public FlovaClientLink {
     if (handshakePaused_) return true;
     if (enterHandshake_ && !enterHandshake_(handshakeContext_)) return false;
     pendingRecords_.reset();
-    bootstrapCommittedPending_ = configurationPending_ = otaPending_ = false;
+    bootstrapCommittedPending_ = otaPending_ = false;
+    configurationPendingHead_ = configurationPendingTail_ =
+        configurationPendingCount_ = 0;
     handshakePaused_ = true;
     return true;
   }
@@ -456,9 +465,12 @@ class ArduinoFlovaLink : public FlovaClientLink {
     if (inbound.type == FlovaLinkMessageType::ConfigurationBegin ||
         inbound.type == FlovaLinkMessageType::ConfigurationRecord ||
         inbound.type == FlovaLinkMessageType::ConfigurationEnd) {
-      if (configurationPending_) return;
-      pendingRecords_->configuration_ = inbound.body.configuration;
-      configurationPending_ = true;
+      if (configurationPendingCount_ >= kConfigurationPendingSlots) return;
+      pendingRecords_->configuration_[configurationPendingTail_] =
+          inbound.body.configuration;
+      configurationPendingTail_ = static_cast<uint8_t>(
+          (configurationPendingTail_ + 1) % kConfigurationPendingSlots);
+      ++configurationPendingCount_;
       return;
     }
     if (inbound.type == FlovaLinkMessageType::DatastreamBound) {
@@ -515,12 +527,15 @@ class ArduinoFlovaLink : public FlovaClientLink {
 
   FlovaArduinoPlatform& platform_;
   ArduinoDeviceLink transport_;
+  static const uint8_t kConfigurationPendingSlots = 2;
   DatastreamId boundIds_[ArduinoDeviceLink::kMaximumDatastreamBindings] = {};
   uint8_t bindingCount_ = 0;
   bool bound_ = false;
   bool configured_ = false;
   bool bootstrapCommittedPending_ = false;
-  bool configurationPending_ = false;
+  uint8_t configurationPendingHead_ = 0;
+  uint8_t configurationPendingTail_ = 0;
+  uint8_t configurationPendingCount_ = 0;
   bool otaPending_ = false;
   bool resourceUnavailable_ = false;
   bool connectionAllowed_ = false;
