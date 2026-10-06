@@ -146,7 +146,7 @@ config-record = {
   record-body: 2 => config-record-body
 }
 
-config-record-body = datastream-record / system-record / schedule-record / schedule-occurrence-record / safety-record
+config-record-body = datastream-record / system-record / schedule-record / schedule-occurrence-record / safety-record / parameter-record
 
 datastream-record = {
   datastream-kind: 0 => 0,
@@ -218,6 +218,17 @@ safety-record = {
   ? safety-minimum: 3 => typed-value,
   ? safety-maximum: 4 => typed-value,
   ? safety-timeout-ms: 5 => uint32
+}
+
+; A parameter is a bounded, typed configuration value declared by firmware.
+; The template supplies the active value; the device keeps its default until a
+; valid parameter record is committed.
+parameter-record = {
+  parameter-kind: 0 => 5,
+  parameter-key: 1 => tstr .size (1..48),
+  parameter-value-type: 2 => 0..4,
+  ? parameter-value: 3 => typed-value,
+  ? parameter-default: 4 => typed-value
 }
 
 config-end = [end-generation: generation, end-record-count: uint32, end-checksum: sha256]

@@ -552,6 +552,23 @@ struct safety_record {
 	bool safety_record_safety_timeout_ms_present;
 };
 
+struct parameter_record_parameter_value {
+	struct typed_value_fields_r parameter_record_parameter_value;
+};
+
+struct parameter_record_parameter_default {
+	struct typed_value_fields_r parameter_record_parameter_default;
+};
+
+struct parameter_record {
+	struct zcbor_string parameter_record_parameter_key;
+	uint64_t parameter_record_parameter_value_type;
+	struct parameter_record_parameter_value parameter_record_parameter_value;
+	bool parameter_record_parameter_value_present;
+	struct parameter_record_parameter_default parameter_record_parameter_default;
+	bool parameter_record_parameter_default_present;
+};
+
 struct config_record_body_r {
 	union {
 		struct datastream_record config_record_body_datastream_record_m;
@@ -559,6 +576,7 @@ struct config_record_body_r {
 		struct schedule_record config_record_body_schedule_record_m;
 		struct schedule_occurrence_record config_record_body_schedule_occurrence_record_m;
 		struct safety_record config_record_body_safety_record_m;
+		struct parameter_record config_record_body_parameter_record_m;
 	};
 	enum {
 		config_record_body_datastream_record_m_c,
@@ -566,6 +584,7 @@ struct config_record_body_r {
 		config_record_body_schedule_record_m_c,
 		config_record_body_schedule_occurrence_record_m_c,
 		config_record_body_safety_record_m_c,
+		config_record_body_parameter_record_m_c,
 	} config_record_body_choice;
 };
 

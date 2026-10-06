@@ -5,6 +5,7 @@
 // Resource capacities belong to the board/build profile. The SDK deliberately
 // has no product defaults because available RAM and storage vary by target.
 #if !defined(FLOVA_DATASTREAM_CAPACITY) || !defined(FLOVA_TEXT_CAPACITY) || \
+    !defined(FLOVA_PARAMETER_CAPACITY) || \
     !defined(FLOVA_HISTORY_CAPACITY) || !defined(FLOVA_COMMAND_DEDUP_CAPACITY) || \
     !defined(FLOVA_HARDWARE_INPUT_CAPACITY) || !defined(FLOVA_HARDWARE_OUTPUT_CAPACITY) || \
     !defined(FLOVA_SCHEDULE_CAPACITY) || !defined(FLOVA_SCHEDULE_OCCURRENCE_CAPACITY)

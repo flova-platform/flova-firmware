@@ -17,7 +17,7 @@ static const size_t kConfigurationScheduleActions = 8;
 static const size_t kConfigurationOccurrenceChunk = 16;
 
 enum class ValueKind : uint8_t { Boolean = 0, Int64 = 1, Float32 = 2, Float64 = 3, Text = 4 };
-enum class UnitKind : uint8_t { Datastream = 0, System = 1, Schedule = 2, Safety = 3, ScheduleOccurrences = 4 };
+enum class UnitKind : uint8_t { Datastream = 0, System = 1, Schedule = 2, Safety = 3, ScheduleOccurrences = 4, Parameter = 5 };
 enum class MappingKind : uint8_t { DigitalInput = 0, DigitalOutput = 1, AnalogInput = 2, PwmOutput = 3 };
 enum class SafetyPolicy : uint8_t { None = 0, Minimum = 1, Maximum = 2, Range = 3, CommandExpiry = 4 };
 
@@ -128,6 +128,15 @@ struct Safety {
   uint32_t timeoutMs;
 };
 
+struct Parameter {
+  char key[FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1];
+  uint8_t valueType;
+  bool hasValue;
+  bool hasDefault;
+  Value value;
+  Value defaultValue;
+};
+
 struct Unit {
   UnitKind kind;
   union {
@@ -136,6 +145,7 @@ struct Unit {
     Schedule schedule;
     ScheduleOccurrences occurrences;
     Safety safety;
+    Parameter parameter;
   } data;
 };
 

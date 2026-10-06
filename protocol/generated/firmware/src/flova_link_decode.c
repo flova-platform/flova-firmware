@@ -78,6 +78,9 @@ static bool decode_repeated_safety_record_safety_minimum(zcbor_state_t *state, s
 static bool decode_repeated_safety_record_safety_maximum(zcbor_state_t *state, struct safety_record_safety_maximum *result);
 static bool decode_repeated_safety_record_safety_timeout_ms(zcbor_state_t *state, struct safety_record_safety_timeout_ms *result);
 static bool decode_safety_record(zcbor_state_t *state, struct safety_record *result);
+static bool decode_repeated_parameter_record_parameter_value(zcbor_state_t *state, struct parameter_record_parameter_value *result);
+static bool decode_repeated_parameter_record_parameter_default(zcbor_state_t *state, struct parameter_record_parameter_default *result);
+static bool decode_parameter_record(zcbor_state_t *state, struct parameter_record *result);
 static bool decode_config_record_body(zcbor_state_t *state, struct config_record_body_r *result);
 static bool decode_error(zcbor_state_t *state, struct zcbor_string *result);
 static bool decode_schedule_end(zcbor_state_t *state, struct schedule_end *result);
@@ -1019,6 +1022,59 @@ static bool decode_safety_record(
 	return res;
 }
 
+static bool decode_repeated_parameter_record_parameter_value(
+		zcbor_state_t *state, struct parameter_record_parameter_value *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (3))))
+	&& (decode_typed_value(state, (&(*result).parameter_record_parameter_value)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_repeated_parameter_record_parameter_default(
+		zcbor_state_t *state, struct parameter_record_parameter_default *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_expect(state, (4))))
+	&& (decode_typed_value(state, (&(*result).parameter_record_parameter_default)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool decode_parameter_record(
+		zcbor_state_t *state, struct parameter_record *result)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_map_start_decode(state) && (((((zcbor_uint64_expect(state, (0))))
+	&& (zcbor_uint64_expect(state, (5))))
+	&& (((zcbor_uint64_expect(state, (1))))
+	&& (zcbor_tstr_decode(state, (&(*result).parameter_record_parameter_key)))
+	&& ((((*result).parameter_record_parameter_key.len >= 1)
+	&& ((*result).parameter_record_parameter_key.len <= 48)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& (((zcbor_uint64_expect(state, (2))))
+	&& (zcbor_uint64_decode(state, (&(*result).parameter_record_parameter_value_type)))
+	&& ((((*result).parameter_record_parameter_value_type <= 4)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false)))
+	&& zcbor_present_decode(&((*result).parameter_record_parameter_value_present), (zcbor_decoder_t *)decode_repeated_parameter_record_parameter_value, state, (&(*result).parameter_record_parameter_value))
+	&& zcbor_present_decode(&((*result).parameter_record_parameter_default_present), (zcbor_decoder_t *)decode_repeated_parameter_record_parameter_default, state, (&(*result).parameter_record_parameter_default))) || (zcbor_list_map_end_force_decode(state), false)) && zcbor_map_end_decode(state))));
+
+	if (false) {
+		/* For testing that the types of the arguments are correct.
+		 * A compiler error here means a bug in zcbor.
+		 */
+		decode_repeated_parameter_record_parameter_value(state, (&(*result).parameter_record_parameter_value));
+		decode_repeated_parameter_record_parameter_default(state, (&(*result).parameter_record_parameter_default));
+	}
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool decode_config_record_body(
 		zcbor_state_t *state, struct config_record_body_r *result)
 {
@@ -1029,7 +1085,8 @@ static bool decode_config_record_body(
 	|| (zcbor_union_elem_code(state) && (((decode_system_record(state, (&(*result).config_record_body_system_record_m)))) && (((*result).config_record_body_choice = config_record_body_system_record_m_c), true)))
 	|| (zcbor_union_elem_code(state) && (((decode_schedule_record(state, (&(*result).config_record_body_schedule_record_m)))) && (((*result).config_record_body_choice = config_record_body_schedule_record_m_c), true)))
 	|| (zcbor_union_elem_code(state) && (((decode_schedule_occurrence_record(state, (&(*result).config_record_body_schedule_occurrence_record_m)))) && (((*result).config_record_body_choice = config_record_body_schedule_occurrence_record_m_c), true)))
-	|| (zcbor_union_elem_code(state) && (((decode_safety_record(state, (&(*result).config_record_body_safety_record_m)))) && (((*result).config_record_body_choice = config_record_body_safety_record_m_c), true)))), zcbor_union_end_code(state), int_res))));
+	|| (zcbor_union_elem_code(state) && (((decode_safety_record(state, (&(*result).config_record_body_safety_record_m)))) && (((*result).config_record_body_choice = config_record_body_safety_record_m_c), true)))
+	|| (zcbor_union_elem_code(state) && (((decode_parameter_record(state, (&(*result).config_record_body_parameter_record_m)))) && (((*result).config_record_body_choice = config_record_body_parameter_record_m_c), true)))), zcbor_union_end_code(state), int_res))));
 
 	log_result(state, res, __func__);
 	return res;

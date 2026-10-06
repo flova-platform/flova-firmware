@@ -103,6 +103,10 @@ class FlovaEsp8266 final {
   flova::Datastream<T> datastream(const char* key) {
     return client_.datastream<T>(key);
   }
+  template <typename T>
+  flova::Setting<T> setting(const char* key, const T& defaultValue) {
+    return client_.setting<T>(key, defaultValue);
+  }
 
  private:
   FlovaEsp8266Entropy entropy_;

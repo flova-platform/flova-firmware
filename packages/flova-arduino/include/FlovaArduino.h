@@ -490,6 +490,11 @@ class FlovaClient {
   template <typename T>
   flova::Datastream<T> datastream(const char* key) { return device_.datastream<T>(key); }
 
+  template <typename T>
+  flova::Setting<T> setting(const char* key, const T& defaultValue) {
+    return device_.setting<T>(key, defaultValue);
+  }
+
  private:
   void captureStatus(FlovaStatusSnapshot& output) const {
     output.lifecycle = lifecycle_;
@@ -552,7 +557,7 @@ class FlovaClient {
   static const uint32_t kOtaHealthDeadlineMs = 120000UL;
   static const uint32_t kFactoryResetAckGraceMs = 5000UL;
   static const uint32_t kMaximumConfigurationRecords =
-      FLOVA_DATASTREAM_CAPACITY + FLOVA_SCHEDULE_CAPACITY + 8;
+      FLOVA_DATASTREAM_CAPACITY + FLOVA_SCHEDULE_CAPACITY + FLOVA_PARAMETER_CAPACITY + 8;
   static const uint32_t kOtaPendingMagic = 0x4f544131UL;
 
   enum class ConfigurationWorkMode : uint8_t {

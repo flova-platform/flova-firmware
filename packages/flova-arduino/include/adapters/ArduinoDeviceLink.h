@@ -948,7 +948,17 @@ class ArduinoDeviceLink final {
           encodedLength > FLOVA_LINK_RECORD_BYTES) return disconnect();
       workspace_->inbound_.body.configuration.generation = static_cast<uint32_t>(value.config_record_record_generation);
       workspace_->inbound_.body.configuration.sequence = static_cast<uint32_t>(value.config_record_record_sequence);
-      workspace_->inbound_.body.configuration.recordType = static_cast<uint8_t>(value.config_record_record_body.config_record_body_choice);
+      // The CBOR union order is an implementation detail. Keep the persisted
+      // record kind aligned with the public configuration enum.
+      switch (value.config_record_record_body.config_record_body_choice) {
+        case config_record_body_r::config_record_body_datastream_record_m_c: workspace_->inbound_.body.configuration.recordType = 0; break;
+        case config_record_body_r::config_record_body_system_record_m_c: workspace_->inbound_.body.configuration.recordType = 1; break;
+        case config_record_body_r::config_record_body_schedule_record_m_c: workspace_->inbound_.body.configuration.recordType = 2; break;
+        case config_record_body_r::config_record_body_safety_record_m_c: workspace_->inbound_.body.configuration.recordType = 3; break;
+        case config_record_body_r::config_record_body_schedule_occurrence_record_m_c: workspace_->inbound_.body.configuration.recordType = 4; break;
+        case config_record_body_r::config_record_body_parameter_record_m_c: workspace_->inbound_.body.configuration.recordType = 5; break;
+        default: return disconnect();
+      }
       workspace_->inbound_.body.configuration.recordLength = static_cast<uint16_t>(encodedLength);
       // Typed semantic validation belongs to the installer loop, before ACK.
     } else {
@@ -1174,6 +1184,27 @@ class ArduinoDeviceLink final {
         }
         out.data.safety.hasTimeoutMs = source.safety_record_safety_timeout_ms_present;
         out.data.safety.timeoutMs = static_cast<uint32_t>(source.safety_record_safety_timeout_ms.safety_record_safety_timeout_ms);
+        return true;
+      }
+      case config_record_body_r::config_record_body_parameter_record_m_c: {
+        const parameter_record& source = input.config_record_body_parameter_record_m;
+        out.kind = flova::config::UnitKind::Parameter;
+        if (source.parameter_record_parameter_key.len == 0 ||
+            source.parameter_record_parameter_key.len > FLOVA_MAX_DATASTREAM_KEY_LENGTH ||
+            source.parameter_record_parameter_value_type > 4)
+          return false;
+        copyText(out.data.parameter.key, source.parameter_record_parameter_key);
+        out.data.parameter.valueType = static_cast<uint8_t>(source.parameter_record_parameter_value_type);
+        if (source.parameter_record_parameter_value_present) {
+          if (!readConfigurationValue(out.data.parameter.value,
+                                      source.parameter_record_parameter_value.parameter_record_parameter_value)) return false;
+          out.data.parameter.hasValue = true;
+        }
+        if (source.parameter_record_parameter_default_present) {
+          if (!readConfigurationValue(out.data.parameter.defaultValue,
+                                      source.parameter_record_parameter_default.parameter_record_parameter_default)) return false;
+          out.data.parameter.hasDefault = true;
+        }
         return true;
       }
     }

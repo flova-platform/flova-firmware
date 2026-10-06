@@ -130,6 +130,8 @@ static void verifyFullCapacityAndIntegerSafety() {
 
   flova::Device numeric(link, storage, clock, logger);
   auto integer = numeric.datastream<int64_t>("integer");
+  auto humidityLimit = numeric.setting<float>("humidity_limit", 60.0f);
+  assert(humidityLimit.valid() && humidityLimit.hasValue() && humidityLimit.value() == 60.0f);
   integer.onWrite(+[](int64_t) { return flova::accept(); });
   assert(numeric.begin());
   flova::config::Unit safety = {};
@@ -146,6 +148,17 @@ static void verifyFullCapacityAndIntegerSafety() {
   assert(!integer.write(INT64_MAX).accepted());
   assert(integer.value() == INT64_MAX - 1 && integer.snapshot().revision == before.revision);
   assert(!integer.write(INT64_MAX - 2).accepted());
+
+  flova::config::Unit parameter = {};
+  parameter.kind = flova::config::UnitKind::Parameter;
+  flova::Value::copy(parameter.data.parameter.key, "humidity_limit");
+  parameter.data.parameter.valueType = static_cast<uint8_t>(flova::config::ValueKind::Float32);
+  parameter.data.parameter.hasValue = true;
+  parameter.data.parameter.value.kind = flova::config::ValueKind::Float32;
+  parameter.data.parameter.value.data.float32 = 72.5f;
+  assert(numeric.validateConfigurationUnit(parameter));
+  assert(numeric.applyConfigurationUnit(parameter));
+  assert(humidityLimit.value() == 72.5f);
 }
 
 static void verifyCustomCodeHelpers() {

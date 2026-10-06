@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include "FlovaBuildConfig.h"
 #include "FlovaConfigurationRuntime.h"
@@ -239,6 +240,8 @@ template <typename T> struct Snapshot {
 
 class Device;
 template <typename T> class Datastream;
+template <typename T> class Setting;
+template <typename T> struct Codec;
 
 class Device {
  public:
@@ -344,6 +347,7 @@ class Device {
   }
 
   template <typename T> Datastream<T> datastream(const char* key);
+  template <typename T> Setting<T> setting(const char* key, const T& defaultValue);
 
   bool setWriteHandler(DatastreamId id, ValueWriteHandler handler,
                        void* context) {
@@ -420,6 +424,18 @@ class Device {
       current->safetyPolicy = policy;
       return true;
     }
+    if (unit.kind == config::UnitKind::Parameter) {
+      ParameterState* parameter = parameterFor(unit.data.parameter.key);
+      ValueType declaredType;
+      if (!parameter || !configurationValueType(unit.data.parameter.valueType, declaredType) ||
+          declaredType != parameter->valueType) return false;
+      if ((unit.data.parameter.hasValue && !config::valueTypeMatches(unit.data.parameter.value, unit.data.parameter.valueType)) ||
+          (unit.data.parameter.hasDefault && !config::valueTypeMatches(unit.data.parameter.defaultValue, unit.data.parameter.valueType))) return false;
+      if (unit.data.parameter.hasDefault && !storeParameterValue(parameter->defaultValue, unit.data.parameter.defaultValue)) return false;
+      if (unit.data.parameter.hasValue && !storeParameterValue(parameter->value, unit.data.parameter.value)) return false;
+      parameter->hasValue = unit.data.parameter.hasValue || parameter->hasValue;
+      return true;
+    }
     return true;
   }
 
@@ -461,12 +477,23 @@ class Device {
              (!unit.data.safety.hasMaximum ||
               ignored.assign(unit.data.safety.maximum));
     }
+    if (unit.kind == config::UnitKind::Parameter) {
+      ValueType type;
+      const size_t keyLength = strnlen(unit.data.parameter.key, sizeof(unit.data.parameter.key));
+      ParameterState* parameter = parameterFor(unit.data.parameter.key);
+      return unit.data.parameter.key[0] && keyLength <= FLOVA_MAX_DATASTREAM_KEY_LENGTH &&
+             parameter && configurationValueType(unit.data.parameter.valueType, type) &&
+             parameter->valueType == type &&
+             (!unit.data.parameter.hasValue || config::valueTypeMatches(unit.data.parameter.value, unit.data.parameter.valueType)) &&
+             (!unit.data.parameter.hasDefault || config::valueTypeMatches(unit.data.parameter.defaultValue, unit.data.parameter.valueType));
+    }
     return static_cast<uint8_t>(unit.kind) <=
            static_cast<uint8_t>(config::UnitKind::ScheduleOccurrences);
   }
 
  private:
   template <typename T> friend class Datastream;
+  template <typename T> friend class Setting;
 
   enum class WriteHandlerKind : uint8_t {
     None,
@@ -538,6 +565,48 @@ class Device {
     bool hasSafetyMinimum = false;
     bool hasSafetyMaximum = false;
   };
+
+  struct ParameterState {
+    char key[FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1] = {};
+    Value value;
+    Value defaultValue;
+    ValueType valueType = ValueType::Text;
+    bool hasValue = false;
+    bool hasDefault = false;
+  };
+
+  static bool storeParameterValue(Value& target, const config::Value& source) {
+    target.type = static_cast<ValueType>(source.kind);
+    if (target.type == ValueType::Text) {
+      Value::copy(target.text, source.data.text);
+    } else if (target.type == ValueType::Boolean) target.scalar.boolean = source.data.boolean;
+    else if (target.type == ValueType::Int64) target.scalar.integer = source.data.integer;
+    else if (target.type == ValueType::Float) target.scalar.floating = source.data.float32;
+    else if (target.type == ValueType::Double) target.scalar.number = source.data.float64;
+    else return false;
+    return true;
+  }
+
+  ParameterState* parameterFor(const char* key) {
+    if (!key || !*key || strnlen(key, FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1) > FLOVA_MAX_DATASTREAM_KEY_LENGTH) return nullptr;
+    for (size_t i = 0; i < parameterCount_; ++i)
+      if (!strcmp(parameters_[i].key, key)) return &parameters_[i];
+    return nullptr;
+  }
+
+  template <typename T> ParameterState* registerParameter(const char* key, const T& defaultValue) {
+    if (started_ || !key || !*key || strnlen(key, FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1) > FLOVA_MAX_DATASTREAM_KEY_LENGTH) return nullptr;
+    if (ParameterState* existing = parameterFor(key)) return existing->valueType == Codec<T>::encode(defaultValue).type ? existing : nullptr;
+    if (parameterCount_ >= FLOVA_PARAMETER_CAPACITY) return nullptr;
+    ParameterState& parameter = parameters_[parameterCount_++];
+    Value encoded = Codec<T>::encode(defaultValue);
+    memcpy(parameter.key, key, strlen(key) + 1);
+    parameter.valueType = encoded.type;
+    parameter.defaultValue = encoded;
+    parameter.value = encoded;
+    parameter.hasDefault = parameter.hasValue = true;
+    return &parameter;
+  }
 
   bool readDescriptor(size_t slot, Descriptor& out) {
     if (slot >= count_) return false;
@@ -1146,6 +1215,7 @@ class Device {
   }
 
   Link& link_; Storage& storage_; Clock& clock_; Logger& logger_; State states_[kMaxDatastreams]; size_t count_;
+  ParameterState parameters_[FLOVA_PARAMETER_CAPACITY]; size_t parameterCount_ = 0;
 #if FLOVA_STREAM_DESCRIPTORS_IN_STORAGE
   Descriptor descriptorCache_{};
   size_t descriptorCacheSlot_ = kMaxDatastreams;
@@ -1163,7 +1233,6 @@ class Device {
   bool started_, bindingPending_, bindingFailed_, resourcePlanConfigured_;
 };
 
-template <typename T> struct Codec;
 template <> struct Codec<bool> { static bool valid(bool) { return true; } static Value encode(bool v) { return Value::from(v); } static bool decode(const Value& v) { return v.scalar.boolean; } };
 template <> struct Codec<int64_t> { static bool valid(int64_t) { return true; } static Value encode(int64_t v) { return Value::from(v); } static int64_t decode(const Value& v) { return v.scalar.integer; } };
 template <> struct Codec<float> { static bool valid(float) { return true; } static Value encode(float v) { return Value::from(v); } static float decode(const Value& v) { return v.scalar.floating; } };
@@ -1197,10 +1266,25 @@ template <typename T> class Datastream {
 
 };
 
+template <typename T> class Setting {
+ public:
+  Setting(Device& device, Device::ParameterState* parameter) : device_(device), parameter_(parameter) {}
+  bool valid() const { return parameter_ != nullptr; }
+  bool hasValue() const { return parameter_ && parameter_->hasValue; }
+  T value() const { return hasValue() ? Codec<T>::decode(parameter_->value) : T(); }
+ private:
+  Device& device_;
+  Device::ParameterState* parameter_;
+};
+
 template <> inline Datastream<bool> Device::datastream<bool>(const char* key) { return Datastream<bool>(*this, state(key, ValueType::Boolean)); }
 template <> inline Datastream<int64_t> Device::datastream<int64_t>(const char* key) { return Datastream<int64_t>(*this, state(key, ValueType::Int64)); }
 template <> inline Datastream<float> Device::datastream<float>(const char* key) { return Datastream<float>(*this, state(key, ValueType::Float)); }
 template <> inline Datastream<double> Device::datastream<double>(const char* key) { return Datastream<double>(*this, state(key, ValueType::Double)); }
 template <> inline Datastream<Text> Device::datastream<Text>(const char* key) { return Datastream<Text>(*this, state(key, ValueType::Text)); }
+
+template <typename T> inline Setting<T> Device::setting(const char* key, const T& defaultValue) {
+  return Setting<T>(*this, registerParameter(key, defaultValue));
+}
 
 }  // namespace flova
