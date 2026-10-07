@@ -431,9 +431,9 @@ class Device {
           declaredType != parameter->valueType) return false;
       if ((unit.data.parameter.hasValue && !config::valueTypeMatches(unit.data.parameter.value, unit.data.parameter.valueType)) ||
           (unit.data.parameter.hasDefault && !config::valueTypeMatches(unit.data.parameter.defaultValue, unit.data.parameter.valueType))) return false;
-      if (unit.data.parameter.hasDefault && !storeParameterValue(parameter->defaultValue, unit.data.parameter.defaultValue)) return false;
+      if (unit.data.parameter.hasDefault && !storeParameterValue(parameter->value, unit.data.parameter.defaultValue)) return false;
       if (unit.data.parameter.hasValue && !storeParameterValue(parameter->value, unit.data.parameter.value)) return false;
-      parameter->hasValue = unit.data.parameter.hasValue || parameter->hasValue;
+      parameter->hasValue = unit.data.parameter.hasDefault || unit.data.parameter.hasValue || parameter->hasValue;
       return true;
     }
     return true;
@@ -569,10 +569,8 @@ class Device {
   struct ParameterState {
     char key[FLOVA_MAX_DATASTREAM_KEY_LENGTH + 1] = {};
     Value value;
-    Value defaultValue;
     ValueType valueType = ValueType::Text;
     bool hasValue = false;
-    bool hasDefault = false;
   };
 
   static bool storeParameterValue(Value& target, const config::Value& source) {
@@ -602,9 +600,8 @@ class Device {
     Value encoded = Codec<T>::encode(defaultValue);
     memcpy(parameter.key, key, strlen(key) + 1);
     parameter.valueType = encoded.type;
-    parameter.defaultValue = encoded;
     parameter.value = encoded;
-    parameter.hasDefault = parameter.hasValue = true;
+    parameter.hasValue = true;
     return &parameter;
   }
 
