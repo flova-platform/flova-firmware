@@ -1,25 +1,40 @@
-# Custom MQTT example
+# Custom MQTT transport
 
-This opt-in example uses `<FlovaMqtt.h>` with PubSubClient and ArduinoJson.
-It is for application-owned code that chooses MQTT instead of Flova Link.
+The board facade uses Flova Link by default:
 
-Before flashing, replace the Wi-Fi values and the device UUID/secret in
-`src/main.cpp`. The secret is the one-time value returned by the Console or
-the MQTT credential rotation API. Store it in the application’s protected
-storage in a real product.
-
-Build either target:
-
-```sh
-pio run -e custom-mqtt-esp32
-pio run -e custom-mqtt-esp8266
+```cpp
+FlovaEsp32 device;
 ```
 
-The example uses `mqtts://mqtt.flova.ir:8883`, publishes bounded JSON to
-`up/datastreams/{key}`, reports presence on `up/presence`, and subscribes to
-its own `down/config` and `down/datastreams/{key}` topics. It accepts only
-exactly registered datastream keys and payloads up to 2,048 bytes.
+To use MQTT, pass the application-owned PubSubClient directly:
 
-Use `client.report`, `client.heartbeat`, and `client.acknowledgeConfig` from
-your application loop. Apply and persist a received configuration before
-acknowledging its generation and checksum.
+```cpp
+PubSubClient mqtt(socket);
+FlovaEsp32 device(mqtt);
+
+void setup() {
+  device.begin(DEVICE_ID, DEVICE_SECRET);
+}
+```
+
+The application owns Wi-Fi, TLS certificates, and the MQTT client. The board
+facade owns bounded topic handling, reconnects, presence, the Last Will, and
+the JSON callback queue. `device.run()` is enough to maintain the connection.
+
+Use the short callback form when no callback context is needed:
+
+```cpp
+device.subscribe("relay");
+device.onMessage([](const char* path, JsonObjectConst payload) {
+  // Handle "config" or "datastreams/relay" here.
+});
+```
+
+The custom example keeps the application code small: it applies the relay
+command, acknowledges it, and reports a temperature. Presence and reconnect
+handling stay inside the adapter.
+
+MQTT uses `mqtt.flova.ir:8883`, the device UUID as username, and the device
+secret as password. It supports bounded datastream reports, presence, device
+info, config delivery, and config acknowledgments through the documented JSON
+topics.

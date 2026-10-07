@@ -9,6 +9,7 @@
 #include <FlovaEsp32Platform.h>
 #include <FlovaEsp32Services.h>
 #include <FlovaWifiProvisioning.h>
+#include <FlovaPubSubClientAdapter.h>
 #include <adapters/ArduinoFlovaLink.h>
 #include <adapters/ArduinoFlovaManualHardware.h>
 
@@ -20,13 +21,60 @@ class FlovaEsp32Entropy : public FlovaEntropySource {
 class FlovaEsp32 final {
  public:
   FlovaEsp32()
-      : linkPlatform_(), link_(linkPlatform_, entropy_),
+      : linkPlatform_(), defaultLink_(linkPlatform_, entropy_), link_(defaultLink_),
         identity_("custom_arduino_esp32"),
         client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
                 clock_, logger_, entropy_, hardware_) {}
 
-  bool begin() { return client_.begin(false); }
-  void run() { client_.run(); }
+  // Inject an application-owned Flova Link transport. The default constructor
+  // remains Flova Link; use the PubSubClient constructor for MQTT.
+  explicit FlovaEsp32(FlovaClientLink& transport)
+      : linkPlatform_(), defaultLink_(linkPlatform_, entropy_), link_(transport),
+        identity_("custom_arduino_esp32"),
+        client_(link_, provisioning_, network_, tlsClock_, identity_, storage_,
+                clock_, logger_, entropy_, hardware_) {}
+
+  explicit FlovaEsp32(PubSubClient& mqtt)
+      : FlovaEsp32() {
+    mqttSelected_ = true;
+    mqttTransport_.create(&mqtt);
+  }
+
+  bool begin() { return !mqttSelected_ && client_.begin(false); }
+  bool begin(const char* deviceId, const char* secret) {
+    return mqttTransport_ && mqttTransport_->begin(deviceId, secret);
+  }
+  void run() { run(true); }
+  void run(bool networkReady) {
+    if (mqttSelected_) {
+      if (mqttTransport_) mqttTransport_->run(networkReady);
+      return;
+    }
+    client_.run();
+  }
+  bool connected() const {
+    return mqttSelected_ ? (mqttTransport_ && mqttTransport_->connected()) : client_.connected();
+  }
+  template <typename T>
+  bool report(const char* key, const T& value) { return mqttTransport_ && mqttTransport_->report(key, value); }
+  bool heartbeat(JsonObjectConst payload) { return mqttTransport_ && mqttTransport_->heartbeat(payload); }
+  bool info(JsonObjectConst payload) { return mqttTransport_ && mqttTransport_->info(payload); }
+  template <typename T>
+  bool acknowledgeDatastream(const char* key, const T& value, const char* commandId,
+                             uint32_t desiredVersion) {
+    return mqttTransport_ && mqttTransport_->acknowledgeDatastream(key, value, commandId, desiredVersion);
+  }
+  bool rejectDatastream(const char* key, const char* commandId, const char* error) {
+    return mqttTransport_ && mqttTransport_->rejectDatastream(key, commandId, error);
+  }
+  bool acknowledgeConfig(JsonObjectConst payload) { return mqttTransport_ && mqttTransport_->acknowledgeConfig(payload); }
+  bool subscribe(const char* key) { return mqttTransport_ && mqttTransport_->subscribe(key); }
+  void onMessage(FlovaPubSubClientAdapter::MessageHandler handler, void* context = nullptr) {
+    if (mqttTransport_) mqttTransport_->onMessage(handler, context);
+  }
+  void onMessage(FlovaPubSubClientAdapter::SimpleMessageHandler handler) {
+    if (mqttTransport_) mqttTransport_->onMessage(handler);
+  }
   FlovaProvisioningResponse provision(const flova::ProvisioningHandoff& input) {
     return client_.provision(input);
   }
@@ -66,7 +114,6 @@ class FlovaEsp32 final {
   bool startProvisioning() { return client_.startProvisioning(); }
   bool provisioning() const { return client_.provisioning(); }
   FlovaLifecycle lifecycle() const { return client_.lifecycle(); }
-  bool connected() const { return client_.connected(); }
   bool networkConnected() const { return client_.networkConnected(); }
   bool tlsReady() const { return client_.tlsReady(); }
   bool runtimeReady() const { return client_.runtimeReady(); }
@@ -107,7 +154,8 @@ class FlovaEsp32 final {
  private:
   FlovaEsp32Entropy entropy_;
   FlovaEsp32Platform linkPlatform_;
-  ArduinoFlovaLink link_;
+  ArduinoFlovaLink defaultLink_;
+  FlovaClientLink& link_;
   FlovaEsp32Storage storage_;
   ArduinoFlovaClock clock_;
   ArduinoFlovaLogger logger_;
@@ -117,6 +165,8 @@ class FlovaEsp32 final {
   ArduinoFlovaUtcBootstrap<WiFiUDP> tlsClock_;
   FlovaEsp32Identity identity_;
   FlovaClient client_;
+  bool mqttSelected_ = false;
+  FlovaPhaseStorage<FlovaPubSubClientAdapter> mqttTransport_;
   WebServer* provisioningServer_ = nullptr;
   flova::ProvisioningHandoff provisioningInput_;
   char response_[192] = {};

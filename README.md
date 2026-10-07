@@ -22,10 +22,13 @@ with a portable C++11 core for custom hardware.
 > For provisioning, datastreams, device configuration, OTA, and complete API
 > guides, visit **[docs.flova.ir](https://docs.flova.ir)**.
 
-For custom code that uses MQTT instead of Flova Link, see
-[`examples/custom-mqtt`](examples/custom-mqtt). The adapter connects to
-`mqtt.flova.ir:8883` with the device UUID as username and the device secret as
-password; credentials are supplied by the application and are never logged.
+For custom MQTT firmware, see [`examples/custom-mqtt`](examples/custom-mqtt).
+`FlovaEsp32` and `FlovaEsp8266` use Flova Link by default and also accept an
+application-owned `PubSubClient` directly. MQTT uses the device UUID as the
+username and the device secret as the password; the SDK keeps the MQTT adapter
+inside the Flova facade. The adapter handles reconnects, bounded JSON, device
+presence, and the Last Will. The default broker endpoint is
+`mqtt.flova.ir:8883`.
 
 ## Install
 
