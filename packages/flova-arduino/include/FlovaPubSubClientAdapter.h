@@ -87,10 +87,15 @@ class FlovaPubSubClientAdapter {
     if (!configured_ || !client_) return;
     if (!networkReady) {
       client_->disconnect();
-      pending_ = false;
+      frameKind_ = FrameKind::None;
+      frameLength_ = 0;
       return;
     }
     if (!connected()) {
+      if (frameKind_ == FrameKind::Incoming) {
+        frameKind_ = FrameKind::None;
+        frameLength_ = 0;
+      }
       const uint32_t now = millis();
       if (attempted_ && static_cast<uint32_t>(now - lastAttempt_) < 5000) return;
       attempted_ = true;
@@ -109,20 +114,13 @@ class FlovaPubSubClientAdapter {
           return;
         }
       }
-      publishPresence(true);
+      if (flushOutbound()) publishPresence(true);
     }
+
+    flushOutbound();
     client_->loop();
-    if (!pending_) return;
-    pending_ = false;
-    document_.clear();
-    if (deserializeJson(document_, incoming_, incomingSize_,
-                        DeserializationOption::NestingLimit(8)) ||
-        !document_.is<JsonObject>()) return;
-    if (dispatchDatastream()) return;
-    if (handler_)
-      handler_(context_, incomingPath_, document_.as<JsonObjectConst>());
-    else if (simpleHandler_)
-      simpleHandler_(incomingPath_, document_.as<JsonObjectConst>());
+    processIncoming();
+    flushOutbound();
   }
 
   template <typename T>
@@ -174,7 +172,27 @@ class FlovaPubSubClientAdapter {
   }
 
  private:
+  enum class FrameKind : uint8_t { None, Incoming, Outgoing };
+
   static void ignoreMessage(char*, uint8_t*, unsigned int) {}
+
+  void processIncoming() {
+    if (frameKind_ != FrameKind::Incoming) return;
+
+    document_.clear();
+    const bool invalid = deserializeJson(document_, frame_, frameLength_,
+                                         DeserializationOption::NestingLimit(8)) ||
+        !document_.is<JsonObject>();
+
+    frameKind_ = FrameKind::None;
+    frameLength_ = 0;
+    if (invalid) return;
+    if (dispatchDatastream()) return;
+    if (handler_)
+      handler_(context_, incomingPath_, document_.as<JsonObjectConst>());
+    else if (simpleHandler_)
+      simpleHandler_(incomingPath_, document_.as<JsonObjectConst>());
+  }
 
   static bool validDeviceId(const char* id) {
     if (!id || strlen(id) != 36) return false;
@@ -229,12 +247,28 @@ class FlovaPubSubClientAdapter {
   }
 
   bool publish(JsonObjectConst payload) {
+    if (frameKind_ != FrameKind::None) return false;
     const size_t length = measureJson(payload);
     if (length > kMaxPayload ||
-        serializeJson(payload, outgoing_, sizeof(outgoing_)) != length)
+        serializeJson(payload, frame_, sizeof(frame_)) != length)
       return false;
-    return client_->publish(topic_, reinterpret_cast<const uint8_t*>(outgoing_),
-                            length, false);
+    const size_t topicLength = strlen(topic_);
+    if (topicLength >= sizeof(pendingTopic_)) return false;
+    memcpy(pendingTopic_, topic_, topicLength + 1);
+    frameLength_ = length;
+    frameKind_ = FrameKind::Outgoing;
+    return true;
+  }
+
+  bool flushOutbound() {
+    if (frameKind_ != FrameKind::Outgoing) return true;
+    if (!connected()) return false;
+    if (!client_->publish(pendingTopic_, reinterpret_cast<const uint8_t*>(frame_),
+                          frameLength_, false))
+      return false;
+    frameKind_ = FrameKind::None;
+    frameLength_ = 0;
+    return true;
   }
 
   bool dispatchDatastream() {
@@ -315,7 +349,7 @@ class FlovaPubSubClientAdapter {
   }
 
   void receive(const char* topic, const uint8_t* payload, size_t length) {
-    if (pending_ || !topic || !payload || length > kMaxPayload ||
+    if (frameKind_ != FrameKind::None || !topic || !payload || length > kMaxPayload ||
         !makeTopic("down/")) return;
     const size_t prefixLength = strlen(topic_);
     const size_t topicLength = strlen(topic);
@@ -329,10 +363,10 @@ class FlovaPubSubClientAdapter {
     }
     if (!allowed || strlen(path) >= sizeof(incomingPath_)) return;
     strcpy(incomingPath_, path);
-    memcpy(incoming_, payload, length);
-    incoming_[length] = 0;
-    incomingSize_ = length;
-    pending_ = true;
+    memcpy(frame_, payload, length);
+    frame_[length] = 0;
+    frameLength_ = length;
+    frameKind_ = FrameKind::Incoming;
   }
 
   PubSubClient* client_ = nullptr;
@@ -344,13 +378,13 @@ class FlovaPubSubClientAdapter {
   void* datastreamContexts_[kMaxKeys] = {};
   size_t keyCount_ = 0;
   char topic_[224] = {};
+  char pendingTopic_[224] = {};
   char incomingPath_[144] = {};
-  char incoming_[kMaxPayload + 1] = {};
-  char outgoing_[kMaxPayload + 1] = {};
+  char frame_[kMaxPayload + 1] = {};
   StaticJsonDocument<3072> document_;
-  size_t incomingSize_ = 0;
+  size_t frameLength_ = 0;
+  FrameKind frameKind_ = FrameKind::None;
   bool configured_ = false;
-  bool pending_ = false;
   bool attempted_ = false;
   uint32_t lastAttempt_ = 0;
   MessageHandler handler_ = nullptr;

@@ -21,8 +21,18 @@ The application owns Wi-Fi, TLS certificates, and the MQTT client. The board
 facade owns bounded topic handling, reconnects, presence, the Last Will, and
 the JSON callback queue. `device.run()` is enough to maintain the connection.
 
+Outbound MQTT messages use one bounded 2 KB queue. A successful `FLOVA_REPORT`
+result means the message was queued; call `device.run()` regularly so it is
+flushed to the broker. A rejected result means the adapter is disconnected,
+busy, or the JSON payload is too large.
+
 Datastream code is transport-neutral. The same helper calls work with the
 default Flova Link constructor and with the MQTT constructor:
+
+The keys must exactly match datastreams in the device's published template.
+For example, a template that declares `MOISTURE` must report
+`FLOVA_DATASTREAM(device, float, "MOISTURE")`; an undeclared key is rejected
+by the Engine while presence continues to work.
 
 ```cpp
 auto temperature = FLOVA_DATASTREAM(device, float, "temperature");
