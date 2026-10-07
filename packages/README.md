@@ -28,6 +28,10 @@ ESP32 LAN8720 applications can use `<FlovaEsp32Ethernet.h>` for the complete
 direct-device composition and automatic factory-token bootstrap.
 For an ESP32 LAN8720 composition reusing the native TCP/IP and TLS stack, see
 [`examples/custom-ethernet-esp32`](../examples/custom-ethernet-esp32).
+Applications that need MQTT may include `<FlovaMqtt.h>` and use the optional
+JSON adapter with PubSubClient and ArduinoJson. It reuses the device UUID and
+secret, limits payloads to 2,048 bytes, and leaves Wi-Fi, TLS, storage, and
+application callbacks to the sketch. See [`examples/custom-mqtt`](../examples/custom-mqtt).
 The public protocol package is named `flova-link`; generated zcbor headers
 remain an internal implementation detail of that package.
 

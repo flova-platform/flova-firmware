@@ -18,7 +18,9 @@
   "headers": ["FlovaArduino.h"],
   "dependencies": {
     "Flova Embedded SDK": "^0.3.9",
-    "flova-link": "^1.0.0"
+    "flova-link": "^1.0.0",
+    "PubSubClient": "^2.8.0",
+    "ArduinoJson": "^6.21.5"
   },
   "build": {
     "includeDir": "include"

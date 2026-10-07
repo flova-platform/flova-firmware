@@ -22,6 +22,11 @@ with a portable C++11 core for custom hardware.
 > For provisioning, datastreams, device configuration, OTA, and complete API
 > guides, visit **[docs.flova.ir](https://docs.flova.ir)**.
 
+For custom code that uses MQTT instead of Flova Link, see
+[`examples/custom-mqtt`](examples/custom-mqtt). The adapter connects to
+`mqtt.flova.ir:8883` with the device UUID as username and the device secret as
+password; credentials are supplied by the application and are never logged.
+
 ## Install
 
 ### PlatformIO

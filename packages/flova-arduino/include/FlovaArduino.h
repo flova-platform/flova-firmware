@@ -1794,6 +1794,13 @@ class FlovaClient {
       return;
     }
     link_.disconnect();
+    // Keep the schedule workspace out of the TLS/configuration overlap on
+    // constrained boards. The handshake pause defers its restoration during
+    // bootstrap; restore it only after the link has been closed.
+    if (!resumeSchedules()) {
+      failBootstrap("schedule_restore_failed");
+      return;
+    }
     memset(&pending_, 0, sizeof(pending_));
     if (configurationVerifiedGeneration_ == committed.generation) {
       startConfigurationRestore(ConfigurationWorkMode::BootstrapApply,
@@ -1935,7 +1942,12 @@ class FlovaClient {
     return self.suspendSchedules();
   }
   static bool resumeAfterHandshake(void* context) {
-    return static_cast<FlovaClient*>(context)->resumeSchedules();
+    FlovaClient& self = *static_cast<FlovaClient*>(context);
+    // Bootstrap still needs the freed workspace for inbound configuration
+    // frames and outbound acknowledgements. Runtime reconnects can restore it
+    // as soon as the handshake is over.
+    if (self.lifecycle_ == FlovaLifecycle::Bootstrapping) return true;
+    return self.resumeSchedules();
   }
   FlovaPhaseStorage<ScheduleMemory> scheduleMemory_;
   uint32_t suspendedScheduleRevision_ = 0;
