@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <FlovaUniversalEsp32.h>
+#include <FlovaSDK.h>
 
 // Universal firmware is the no-code/full-device composition. Unlike the
 // passive FlovaEsp32 facade, it owns setup SoftAP, Wi-Fi credential storage,

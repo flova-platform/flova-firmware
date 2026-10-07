@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <FlovaEsp32.h>
+#include <FlovaSDK.h>
 
 // This example focuses on the datastream API:
 //   FLOVA_REPORT()    = sensor or externally observed state;

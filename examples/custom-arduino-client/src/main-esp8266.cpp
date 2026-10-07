@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <FlovaEsp8266.h>
+#include <FlovaSDK.h>
 
 namespace {
 // The application keeps ownership of Wi-Fi, GPIO, timing, and the Arduino

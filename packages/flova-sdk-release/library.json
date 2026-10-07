@@ -15,7 +15,7 @@
   "license": "MIT",
   "frameworks": "*",
   "platforms": "*",
-  "headers": ["FlovaSDK.h", "FlovaDevice.h", "FlovaEsp32.h", "FlovaUniversalEsp32.h", "FlovaEsp8266.h", "FlovaUniversalEsp8266.h", "FlovaPubSubClientAdapter.h"],
+  "headers": ["FlovaSDK.h", "FlovaDevice.h", "FlovaCustomCode.h", "FlovaEsp32.h", "FlovaUniversalEsp32.h", "FlovaEsp8266.h", "FlovaUniversalEsp8266.h", "FlovaPubSubClientAdapter.h"],
   "dependencies": {
     "ArduinoJson": "^6.21.5",
     "PubSubClient": "^2.8.0"

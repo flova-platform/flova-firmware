@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <FlovaUniversalEsp8266.h>
+#include <FlovaSDK.h>
 
 // No-code universal firmware. It intentionally owns the whole board
 // lifecycle: SoftAP provisioning, Wi-Fi credentials, dynamic datastream

@@ -347,6 +347,7 @@ class Device {
   }
 
   template <typename T> Datastream<T> datastream(const char* key);
+  template <typename T> Datastream<T> stream(const char* key) { return datastream<T>(key); }
   template <typename T> Setting<T> setting(const char* key, const T& defaultValue);
 
   bool setWriteHandler(DatastreamId id, ValueWriteHandler handler,

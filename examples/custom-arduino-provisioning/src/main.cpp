@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <FlovaEsp32.h>
+#include <FlovaSDK.h>
 
 namespace {
 // This demonstrates integration into an existing application that already

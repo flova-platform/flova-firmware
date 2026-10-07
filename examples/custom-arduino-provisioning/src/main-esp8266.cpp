@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <FlovaEsp8266.h>
+#include <FlovaSDK.h>
 
 namespace {
 // Existing-project integration: this sketch owns Wi-Fi, the HTTP server, the

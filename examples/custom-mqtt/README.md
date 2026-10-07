@@ -21,18 +21,29 @@ The application owns Wi-Fi, TLS certificates, and the MQTT client. The board
 facade owns bounded topic handling, reconnects, presence, the Last Will, and
 the JSON callback queue. `device.run()` is enough to maintain the connection.
 
-Use the short callback form when no callback context is needed:
+Datastream code is transport-neutral. The same helper calls work with the
+default Flova Link constructor and with the MQTT constructor:
 
 ```cpp
-device.subscribe("relay");
-device.onMessage([](const char* path, JsonObjectConst payload) {
-  // Handle "config" or "datastreams/relay" here.
-});
+auto temperature = FLOVA_DATASTREAM(device, float, "temperature");
+auto relay = FLOVA_DATASTREAM(device, bool, "relay");
+
+void writeRelay(bool enabled) {
+  digitalWrite(RELAY_PIN, enabled ? HIGH : LOW);
+}
+
+void setup() {
+  FLOVA_ON_WRITE(relay, writeRelay);
+}
+
+void loop() {
+  FLOVA_REPORT(temperature, 23.4f);
+}
 ```
 
-The custom example keeps the application code small: it applies the relay
-command, acknowledges it, and reports a temperature. Presence and reconnect
-handling stay inside the adapter.
+`FLOVA_ON_WRITE` subscribes to the MQTT command topic and acknowledges the
+typed callback result automatically. `FLOVA_REPORT` publishes structured JSON
+with a `value` field. Presence and reconnect handling stay inside the adapter.
 
 MQTT uses `mqtt.flova.ir:8883`, the device UUID as username, and the device
 secret as password. It supports bounded datastream reports, presence, device

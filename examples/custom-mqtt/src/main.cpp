@@ -2,8 +2,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
-#include <FlovaEsp32.h>
-#include <FlovaTlsRoots.h>
+#include <FlovaSDK.h>
 #include <time.h>
 
 const char* WIFI_SSID = "your-wifi";
@@ -15,22 +14,12 @@ const uint8_t RELAY_PIN = 2;
 WiFiClientSecure socket;
 PubSubClient mqtt(socket);
 FlovaEsp32 device(mqtt);
+auto relay = FLOVA_DATASTREAM(device, bool, "relay");
+auto temperature = FLOVA_DATASTREAM(device, float, "temperature");
 uint32_t lastReport = 0;
 
-void onMessage(const char* path, JsonObjectConst payload) {
-  if (!strcmp(path, "config")) {
-    Serial.println("[flova] configuration received");
-  } else if (!strcmp(path, "datastreams/relay")) {
-    const char* commandId = payload["command_id"] | "";
-    const uint32_t desiredVersion = payload["desired_version"] | 0;
-    if (!payload["value"].is<bool>()) {
-      device.rejectDatastream("relay", commandId, "invalid_value");
-      return;
-    }
-    const bool value = payload["value"].as<bool>();
-    digitalWrite(RELAY_PIN, value ? HIGH : LOW);
-    device.acknowledgeDatastream("relay", value, commandId, desiredVersion);
-  }
+void writeRelay(bool enabled) {
+  digitalWrite(RELAY_PIN, enabled ? HIGH : LOW);
 }
 
 void setup() {
@@ -41,8 +30,7 @@ void setup() {
   configTime(0, 0, "pool.ntp.org", "time.google.com");
   socket.setCACert(FLOVA_TLS_ROOT_CERTS);
   socket.setTimeout(3000);
-  device.subscribe("relay");
-  device.onMessage(onMessage);
+  FLOVA_ON_WRITE(relay, writeRelay);
   if (!device.begin(DEVICE_ID, DEVICE_SECRET))
     Serial.println("[flova] MQTT setup failed");
 }
@@ -52,7 +40,7 @@ void loop() {
   const bool connected = device.connected();
   if (connected && static_cast<uint32_t>(millis() - lastReport) >= 30000) {
     lastReport = millis();
-    device.report("temperature", 23.4);
+    FLOVA_REPORT(temperature, 23.4f);
   }
   yield();
 }

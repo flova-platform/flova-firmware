@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <FlovaEsp8266.h>
+#include <FlovaSDK.h>
 
 const uint8_t TOUCH_PIN = D1;
 const uint8_t LED_PIN = D2;

@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <FlovaEsp8266.h>
+#include <FlovaSDK.h>
 
 // ESP8266 version of the helper-based datastream example. The SDK surface is the same;
 // only board-owned Arduino includes and active-low LED behavior differ.

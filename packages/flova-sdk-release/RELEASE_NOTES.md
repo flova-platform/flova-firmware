@@ -1,3 +1,12 @@
+FlovaSDK 0.3.10 adds transport-neutral datastream helpers for custom firmware.
+
+- `FLOVA_DATASTREAM`, `FLOVA_REPORT`, and `FLOVA_ON_WRITE` work with Flova Link
+  and injected Arduino `PubSubClient` MQTT transports.
+- MQTT command values are decoded according to the declared datastream type and
+  acknowledgements are emitted automatically.
+- Existing direct Link datastream APIs remain compatible; local cache helpers
+  remain Link-only.
+
 FlovaSDK 0.3.9 adds direct Ethernet device support for custom ESP32 firmware.
 
 - Added the `FlovaEsp32Ethernet` facade for LAN8720 devices.

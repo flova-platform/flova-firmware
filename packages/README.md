@@ -33,6 +33,10 @@ prefer MQTT may pass their `PubSubClient` directly to the board facade and call
 `begin(deviceId, deviceSecret)`. Wi-Fi, TLS, and the MQTT client remain
 application-owned; the SDK provides bounded JSON topic handling. See
 [`examples/custom-mqtt`](../examples/custom-mqtt).
+The `FLOVA_DATASTREAM`, `FLOVA_REPORT`, and `FLOVA_ON_WRITE` helpers are shared
+by both transports, so changing the constructor does not require rewriting
+datastream application logic. MQTT reports use `{ "value": ... }` JSON;
+local cache helpers remain Link-only.
 The public MQTT endpoint is `mqtt.flova.ir:8883`.
 The public protocol package is named `flova-link`; generated zcbor headers
 remain an internal implementation detail of that package.

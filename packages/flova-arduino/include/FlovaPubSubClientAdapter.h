@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <string.h>
+#include <FlovaCustomCode.h>
 
 // Internal board-facade adapter. Applications pass PubSubClient to FlovaEsp32
 // or FlovaEsp8266 directly; they do not construct this type.
@@ -68,6 +69,20 @@ class FlovaPubSubClientAdapter {
     return true;
   }
 
+  bool onDatastream(const char* key, flova::ValueType valueType,
+                    FlovaDatastreamCommandHandler handler, void* context) {
+    if (!validKey(key) || !handler || !subscribe(key)) return false;
+    for (size_t i = 0; i < keyCount_; ++i) {
+      if (!strcmp(keys_[i], key)) {
+        datastreamTypes_[i] = valueType;
+        datastreamHandlers_[i] = handler;
+        datastreamContexts_[i] = context;
+        return true;
+      }
+    }
+    return false;
+  }
+
   void run(bool networkReady = true) {
     if (!configured_ || !client_) return;
     if (!networkReady) {
@@ -103,6 +118,7 @@ class FlovaPubSubClientAdapter {
     if (deserializeJson(document_, incoming_, incomingSize_,
                         DeserializationOption::NestingLimit(8)) ||
         !document_.is<JsonObject>()) return;
+    if (dispatchDatastream()) return;
     if (handler_)
       handler_(context_, incomingPath_, document_.as<JsonObjectConst>());
     else if (simpleHandler_)
@@ -221,6 +237,83 @@ class FlovaPubSubClientAdapter {
                             length, false);
   }
 
+  bool dispatchDatastream() {
+    if (strncmp(incomingPath_, "datastreams/", 12)) return false;
+    const char* key = incomingPath_ + 12;
+    for (size_t i = 0; i < keyCount_; ++i) {
+      if (strcmp(key, keys_[i]) || !datastreamHandlers_[i]) continue;
+      FlovaDatastreamCommand command = {};
+      command.key = key;
+      command.commandId = document_["command_id"] | "";
+      command.desiredVersion = document_["desired_version"] | 0;
+      JsonVariant value = document_["value"];
+      switch (datastreamTypes_[i]) {
+        case flova::ValueType::Boolean:
+          if (!value.is<bool>()) {
+            rejectDatastream(key, command.commandId, "invalid_value");
+            return true;
+          }
+          command.value = flova::Value::from(value.as<bool>());
+          break;
+        case flova::ValueType::Int64:
+          if (!value.is<long long>()) {
+            rejectDatastream(key, command.commandId, "invalid_value");
+            return true;
+          }
+          command.value = flova::Value::from(static_cast<int64_t>(value.as<long long>()));
+          break;
+        case flova::ValueType::Float:
+          if (!value.is<float>() && !value.is<double>()) {
+            rejectDatastream(key, command.commandId, "invalid_value");
+            return true;
+          }
+          command.value = flova::Value::from(static_cast<float>(value.as<double>()));
+          break;
+        case flova::ValueType::Double:
+          if (!value.is<float>() && !value.is<double>()) {
+            rejectDatastream(key, command.commandId, "invalid_value");
+            return true;
+          }
+          command.value = flova::Value::from(value.as<double>());
+          break;
+        case flova::ValueType::Text:
+          if (!value.is<const char*>()) {
+            rejectDatastream(key, command.commandId, "invalid_value");
+            return true;
+          }
+          command.value = flova::Value::from(value.as<const char*>());
+          break;
+      }
+      const flova::WriteResult result =
+          datastreamHandlers_[i](datastreamContexts_[i], command);
+      if (result.accepted()) {
+        acknowledgeDatastreamValue(key, command.value, command.commandId,
+                                   command.desiredVersion);
+      } else {
+        rejectDatastream(key, command.commandId,
+                         result.reason && result.reason[0] ? result.reason : "rejected");
+      }
+      return true;
+    }
+    return false;
+  }
+
+  bool acknowledgeDatastreamValue(const char* key, const flova::Value& value,
+                                  const char* commandId, uint32_t desiredVersion) {
+    if (!connected() || !validKey(key) || !commandId || !*commandId ||
+        !makeAckTopic(key)) return false;
+    StaticJsonDocument<256> payload;
+    if (value.type == flova::ValueType::Boolean) payload["value"] = value.scalar.boolean;
+    else if (value.type == flova::ValueType::Int64) payload["value"] = value.scalar.integer;
+    else if (value.type == flova::ValueType::Float) payload["value"] = value.scalar.floating;
+    else if (value.type == flova::ValueType::Double) payload["value"] = value.scalar.number;
+    else payload["value"] = value.text;
+    payload["command_id"] = commandId;
+    payload["desired_version"] = desiredVersion;
+    if (payload.overflowed()) return false;
+    return publish(payload.as<JsonObjectConst>());
+  }
+
   void receive(const char* topic, const uint8_t* payload, size_t length) {
     if (pending_ || !topic || !payload || length > kMaxPayload ||
         !makeTopic("down/")) return;
@@ -246,6 +339,9 @@ class FlovaPubSubClientAdapter {
   const char* deviceId_ = nullptr;
   const char* secret_ = nullptr;
   char keys_[kMaxKeys][129] = {};
+  flova::ValueType datastreamTypes_[kMaxKeys] = {};
+  FlovaDatastreamCommandHandler datastreamHandlers_[kMaxKeys] = {};
+  void* datastreamContexts_[kMaxKeys] = {};
   size_t keyCount_ = 0;
   char topic_[224] = {};
   char incomingPath_[144] = {};

@@ -6,6 +6,7 @@
 #include <FlovaEsp8266BuildProfile.h>
 #include <FlovaArduino.h>
 #include <FlovaCustomCode.h>
+#include <FlovaTlsRoots.h>
 #include <FlovaEsp8266Platform.h>
 #include <FlovaEsp8266Services.h>
 #include <FlovaWifiProvisioning.h>
@@ -59,6 +60,83 @@ class FlovaEsp8266 final {
   }
   template <typename T>
   bool report(const char* key, const T& value) { return mqttTransport_ && mqttTransport_->report(key, value); }
+  template <typename T>
+  flova::WriteResult flovaWrite(const char* key, const T& value) {
+    if (mqttSelected_) return flova::WriteResult::failure("local_state_unavailable");
+    return client_.datastream<T>(key).write(value);
+  }
+  template <typename T>
+  bool flovaHasValue(const char* key) const {
+    if (mqttSelected_) return false;
+    return const_cast<FlovaEsp8266*>(this)->client_.datastream<T>(key).hasValue();
+  }
+  template <typename T>
+  T flovaValue(const char* key) const {
+    if (mqttSelected_) return T();
+    return const_cast<FlovaEsp8266*>(this)->client_.datastream<T>(key).value();
+  }
+  template <typename T>
+  flova::WriteResult flovaReport(const char* key, const T& value,
+                                 flova::Origin origin = flova::Origin::SensorRead) {
+    if (mqttSelected_)
+      return mqttTransport_ && mqttTransport_->report(key, value)
+                 ? flova::WriteResult::accept()
+                 : flova::WriteResult::failure("mqtt_publish_failed");
+    return client_.datastream<T>(key).report(value, origin);
+  }
+  template <typename T>
+  FlovaDatastream<T, FlovaEsp8266> stream(const char* key) {
+    return FlovaDatastream<T, FlovaEsp8266>(*this, key);
+  }
+  template <typename T>
+  bool flovaOnWrite(const char* key, flova::ValueType valueType,
+                    FlovaDatastreamBinding<T>& binding) {
+    if (mqttSelected_)
+      return mqttTransport_ && mqttTransport_->onDatastream(
+          key, valueType, &FlovaDatastreamBinding<T>::dispatch, &binding);
+    auto stream = client_.datastream<T>(key);
+    switch (binding.kind) {
+      case FlovaDatastreamHandlerKind::Result:
+        stream.onWrite(binding.handler.result);
+        break;
+      case FlovaDatastreamHandlerKind::ResultWithContext:
+        stream.onWrite(binding.handler.resultContext, binding.context);
+        break;
+      case FlovaDatastreamHandlerKind::Void:
+        stream.onWrite(binding.handler.voidHandler);
+        break;
+      case FlovaDatastreamHandlerKind::VoidWithContext:
+        stream.onWrite(binding.handler.voidContext, binding.context);
+        break;
+      default:
+        return false;
+    }
+    return true;
+  }
+  template <typename T>
+  bool flovaMode(const char* key, flova::Mode value) {
+    if (mqttSelected_) return false;
+    client_.datastream<T>(key).mode(value);
+    return true;
+  }
+  template <typename T>
+  bool flovaOffline(const char* key, flova::OfflinePolicy value) {
+    if (mqttSelected_) return false;
+    client_.datastream<T>(key).offline(value);
+    return true;
+  }
+  template <typename T>
+  bool flovaRetention(const char* key, const flova::HistoryRetentionPolicy& value) {
+    if (mqttSelected_) return false;
+    client_.datastream<T>(key).retention(value);
+    return true;
+  }
+  template <typename T>
+  bool flovaPersist(const char* key, flova::PersistencePolicy value) {
+    if (mqttSelected_) return false;
+    client_.datastream<T>(key).persist(value);
+    return true;
+  }
   bool heartbeat(JsonObjectConst payload) { return mqttTransport_ && mqttTransport_->heartbeat(payload); }
   bool info(JsonObjectConst payload) { return mqttTransport_ && mqttTransport_->info(payload); }
   template <typename T>

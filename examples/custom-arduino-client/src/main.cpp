@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <FlovaEsp32.h>
+#include <FlovaSDK.h>
 
 namespace {
 // This is an existing application example. Flova does not own these Wi-Fi

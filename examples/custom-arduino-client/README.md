@@ -18,7 +18,7 @@ datastream("relay")
 The public API is one board-specific header:
 
 ```cpp
-#include <FlovaEsp32.h>   // use FlovaEsp8266.h on ESP8266
+#include <FlovaSDK.h>
 ```
 
 The board header also provides short readable helpers for custom sketches:
@@ -32,6 +32,12 @@ bool enabled = FLOVA_READ(relay);
 
 The string remains the Console datastream key. `FLOVA_READ` reads the local
 cached value; it does not make a blocking network request.
+
+The same `FLOVA_DATASTREAM`, `FLOVA_REPORT`, and `FLOVA_ON_WRITE` calls also
+work when the board is constructed with an application-owned `PubSubClient`
+for MQTT. MQTT reports use structured JSON with a `value` field, and command
+subscriptions and acknowledgements are handled by the SDK. `FLOVA_WRITE`,
+`FLOVA_READ`, and `FLOVA_HAS_VALUE` remain local Flova Link cache operations.
 
 Declare a datastream before `begin()`, attach a typed handler with a context
 pointer, and call `client.run()` from the normal Arduino loop. Remote commands
