@@ -17,7 +17,9 @@
 
 FlovaSDK کیت توسعه رسمی C++ برای اتصال دستگاه‌ها به پلتفرم فلووا است. این SDK
 برای ESP32 و ESP8266 یکپارچه‌سازی آماده دارد و برای سخت‌افزارهای سفارشی نیز یک
-هسته قابل‌حمل C++11 ارائه می‌کند.
+هسته قابل‌حمل C++11 ارائه می‌کند. در برنامه‌های سفارشی، Flova Link به‌صورت
+پیش‌فرض فعال است و می‌توانید `PubSubClient` خودتان را به‌عنوان انتقال MQTT به
+همان facade وصل کنید.
 
 > راهنمای کامل راه‌اندازی، دیتاستریم‌ها، پیکربندی دستگاه، OTA و API در
 > **[docs.flova.ir](https://docs.flova.ir)** در دسترس است.
@@ -49,44 +51,64 @@ build_flags =
 2. عبارت **FlovaSDK** را جست‌وجو کنید.
 3. گزینه **Install** را انتخاب کنید.
 
-سپس ورودی ESP32 را به برنامه اضافه کنید:
+سپس هدر واحد SDK را به برنامه اضافه کنید:
 
 ```cpp
-#include <FlovaEsp32.h>
+#include <FlovaSDK.h>
 ```
 
-برای ESP8266، هدر `<FlovaEsp8266.h>` را اضافه کنید و در مسیر
-**Tools → MMU → 16KB cache + 48KB IRAM and 2nd Heap (shared)** این گزینه را
-پیش از کامپایل انتخاب کنید.
+این هدر بر اساس برد انتخاب‌شده، `FlovaEsp32` یا `FlovaEsp8266` را در اختیار
+برنامه می‌گذارد و helperهای مشترک `FLOVA_*` را نیز شامل می‌شود. برای ESP8266
+گزینه **Tools → MMU → 16KB cache + 48KB IRAM and 2nd Heap (shared)** را پیش
+از کامپایل انتخاب کنید.
 
 ## شروع سریع
 
 ```cpp
 #include <Arduino.h>
 #include <WiFi.h>
-#include <FlovaEsp32.h>
+#include <FlovaSDK.h>
 
-FlovaEsp32 flovaDevice;
-auto relay = flovaDevice.datastream<bool>("relay");
+FlovaEsp32 device;
+auto relay = FLOVA_DATASTREAM(device, bool, "relay");
+
+void setRelay(bool enabled) {
+  digitalWrite(2, enabled ? HIGH : LOW);
+}
 
 void setup() {
   WiFi.begin("your-wifi", "your-password");
   pinMode(2, OUTPUT);
-
-  relay.onWrite([](bool enabled) {
-    digitalWrite(2, enabled ? HIGH : LOW);
-  });
-
-  flovaDevice.begin();
+  FLOVA_ON_WRITE(relay, setRelay);
+  device.begin();
 }
 
-void loop() {
-  flovaDevice.run();
-}
+void loop() { device.run(); }
 ```
 
-برای ESP8266 از `<ESP8266WiFi.h>` و `<FlovaEsp8266.h>` استفاده کنید. برای
-راه‌اندازی و استفاده در محیط عملیاتی، [نمونه‌ها](examples) را ببینید یا
+همه helperهای `FLOVA_*` با هر دو انتقال Flova Link و MQTT کار می‌کنند. کلید
+هر datastream باید با template دستگاه یکسان باشد.
+
+## انتقال MQTT
+
+برای MQTT فقط `PubSubClient` خودتان را به سازنده دستگاه بدهید:
+
+```cpp
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <FlovaSDK.h>
+
+WiFiClientSecure socket;
+PubSubClient mqtt(socket);
+FlovaEsp32 device(mqtt);
+```
+
+آدرس MQTT برابر `mqtt.flova.ir:8883` است. شناسه دستگاه username و secret
+دستگاه password است و همان datastreamهای Flova Link را پشتیبانی می‌کند. نمونه کامل را در
+[`examples/custom-mqtt`](examples/custom-mqtt) ببینید.
+
+برای راه‌اندازی و استفاده در محیط عملیاتی، [نمونه‌ها](examples) را ببینید یا
 [مستندات فلووا](https://docs.flova.ir) را دنبال کنید.
 
 ## firmware یونیورسال از SDK

@@ -46,9 +46,17 @@ TLS connect operations can pause the application loop for seconds. Link and OTA
 require sufficient contiguous heap for full TLS records; allocation failures
 are reported without erasing provisioning.
 
-For custom applications, use `<FlovaEsp32.h>` or `<FlovaEsp8266.h>` instead of
-the universal composition and own provisioning, networking, and hardware
-policy in your application.
+For a custom application, include `<FlovaSDK.h>`. It selects the right board
+facade and gives you the shared `FLOVA_*` helpers.
+
+See the [main README](../../README.md#quick-start) for the smallest working
+example.
+
+To use MQTT, create your `PubSubClient` and pass it to the same device
+constructor. MQTT uses `mqtt.flova.ir:8883`, the device UUID as username, and
+the device secret as password. It uses the same datastream helpers as Flova
+Link. See the [main MQTT example](../../README.md#mqtt-transport) and the
+[complete example](../../examples/custom-mqtt).
 
 The canonical source is maintained in
 [`flova-platform/flova-firmware`](https://github.com/flova-platform/flova-firmware).

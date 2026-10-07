@@ -22,13 +22,10 @@ with a portable C++11 core for custom hardware.
 > For provisioning, datastreams, device configuration, OTA, and complete API
 > guides, visit **[docs.flova.ir](https://docs.flova.ir)**.
 
-For custom MQTT firmware, see [`examples/custom-mqtt`](examples/custom-mqtt).
-`FlovaEsp32` and `FlovaEsp8266` use Flova Link by default and also accept an
-application-owned `PubSubClient` directly. MQTT uses the device UUID as the
-username and the device secret as the password; the SDK keeps the MQTT adapter
-inside the Flova facade. The adapter handles reconnects, bounded JSON, device
-presence, and the Last Will. The default broker endpoint is
-`mqtt.flova.ir:8883`.
+`FlovaEsp32` and `FlovaEsp8266` use Flova Link by default. If you prefer MQTT,
+pass your `PubSubClient` to the same device constructor. Your datastream code
+stays the same. See [`examples/custom-mqtt`](examples/custom-mqtt) for the
+complete example.
 
 ## Install
 
@@ -51,14 +48,15 @@ FlovaSDK 0.3.9 supports ESP32 and ESP8266 in Arduino IDE:
 2. Search for **FlovaSDK**.
 3. Select **Install**.
 
-Then include the ESP32 entry point:
+Then include the single SDK entry point:
 
 ```cpp
-#include <FlovaEsp32.h>
+#include <FlovaSDK.h>
 ```
 
-For ESP8266, select the ESP8266 board, then include `<ESP8266WiFi.h>` and
-`<FlovaEsp8266.h>`.
+`FlovaSDK.h` selects the ESP32 or ESP8266 facade for the board you selected.
+It also exposes the custom datastream helpers and the built-in TLS roots used
+by the MQTT adapter.
 
 ### Linux and Raspberry Pi
 
@@ -82,29 +80,48 @@ logging, and supervisor-owned OTA staging. The application supplies its
 ```cpp
 #include <Arduino.h>
 #include <WiFi.h>
-#include <FlovaEsp32.h>
+#include <FlovaSDK.h>
 
-FlovaEsp32 flovaDevice;
-auto relay = flovaDevice.datastream<bool>("relay");
+FlovaEsp32 device;
+auto relay = FLOVA_DATASTREAM(device, bool, "relay");
+
+void setRelay(bool enabled) {
+  digitalWrite(2, enabled ? HIGH : LOW);
+}
 
 void setup() {
   WiFi.begin("your-wifi", "your-password");
   pinMode(2, OUTPUT);
-
-  relay.onWrite([](bool enabled) {
-    digitalWrite(2, enabled ? HIGH : LOW);
-  });
-
-  flovaDevice.begin();
+  FLOVA_ON_WRITE(relay, setRelay);
+  device.begin();
 }
 
-void loop() {
-  flovaDevice.run();
-}
+void loop() { device.run(); }
 ```
 
-For ESP8266, use `<ESP8266WiFi.h>` and `<FlovaEsp8266.h>`. See the
-[examples](examples) or follow the [documentation](https://docs.flova.ir) for
+The same `FLOVA_*` helpers work with both transports. Datastream keys must
+match the device's template.
+
+## MQTT transport
+
+MQTT is optional. Create your MQTT client, then pass it to the device:
+
+```cpp
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <FlovaSDK.h>
+
+WiFiClientSecure socket;
+PubSubClient mqtt(socket);
+FlovaEsp32 device(mqtt);
+```
+
+Use `mqtt.flova.ir:8883` with the device UUID and secret. The MQTT adapter
+uses the same JSON datastream format and helpers as Flova Link.
+
+See the [custom MQTT example](examples/custom-mqtt) for Wi-Fi, TLS, reporting,
+and ESP8266 setup. See the [documentation](https://docs.flova.ir) for
 provisioning and production setup.
 
 ## Firmware logging
@@ -130,11 +147,11 @@ toolchain creates the complete board image, including the bootloader and
 partition table; no prebuilt firmware download is required.
 
 For ESP32, install `FlovaSDK` from Arduino Library Manager or the PlatformIO
-Registry and include `<FlovaUniversalEsp32.h>`:
+Registry and include the universal composition:
 
 ```cpp
 #include <Arduino.h>
-#include <FlovaUniversalEsp32.h>
+#include <FlovaSDK.h>
 
 FlovaUniversalEsp32 device;
 
