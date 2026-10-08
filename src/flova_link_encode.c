@@ -78,6 +78,9 @@ static bool encode_repeated_safety_record_safety_minimum(zcbor_state_t *state, c
 static bool encode_repeated_safety_record_safety_maximum(zcbor_state_t *state, const struct safety_record_safety_maximum *input);
 static bool encode_repeated_safety_record_safety_timeout_ms(zcbor_state_t *state, const struct safety_record_safety_timeout_ms *input);
 static bool encode_safety_record(zcbor_state_t *state, const struct safety_record *input);
+static bool encode_repeated_parameter_record_parameter_value(zcbor_state_t *state, const struct parameter_record_parameter_value *input);
+static bool encode_repeated_parameter_record_parameter_default(zcbor_state_t *state, const struct parameter_record_parameter_default *input);
+static bool encode_parameter_record(zcbor_state_t *state, const struct parameter_record *input);
 static bool encode_config_record_body(zcbor_state_t *state, const struct config_record_body_r *input);
 static bool encode_error(zcbor_state_t *state, const struct zcbor_string *input);
 static bool encode_schedule_end(zcbor_state_t *state, const struct schedule_end *input);
@@ -922,6 +925,51 @@ static bool encode_safety_record(
 	return res;
 }
 
+static bool encode_repeated_parameter_record_parameter_value(
+		zcbor_state_t *state, const struct parameter_record_parameter_value *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (3))))
+	&& (encode_typed_value(state, (&(*input).parameter_record_parameter_value)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_repeated_parameter_record_parameter_default(
+		zcbor_state_t *state, const struct parameter_record_parameter_default *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = ((((zcbor_uint64_put(state, (4))))
+	&& (encode_typed_value(state, (&(*input).parameter_record_parameter_default)))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
+static bool encode_parameter_record(
+		zcbor_state_t *state, const struct parameter_record *input)
+{
+	zcbor_log("%s\r\n", __func__);
+
+	bool res = (((zcbor_map_start_encode(state, 5) && (((((zcbor_uint64_put(state, (0))))
+	&& (zcbor_uint64_put(state, (5))))
+	&& (((zcbor_uint64_put(state, (1))))
+	&& ((((*input).parameter_record_parameter_key.len >= 1)
+	&& ((*input).parameter_record_parameter_key.len <= 48)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_tstr_encode(state, (&(*input).parameter_record_parameter_key))))
+	&& (((zcbor_uint64_put(state, (2))))
+	&& ((((*input).parameter_record_parameter_value_type <= 4)) || (zcbor_error(state, ZCBOR_ERR_WRONG_RANGE), false))
+	&& (zcbor_uint64_encode(state, (&(*input).parameter_record_parameter_value_type))))
+	&& (!(*input).parameter_record_parameter_value_present || encode_repeated_parameter_record_parameter_value(state, (&(*input).parameter_record_parameter_value)))
+	&& (!(*input).parameter_record_parameter_default_present || encode_repeated_parameter_record_parameter_default(state, (&(*input).parameter_record_parameter_default)))) || (zcbor_list_map_end_force_encode(state), false)) && zcbor_map_end_encode(state, 5))));
+
+	log_result(state, res, __func__);
+	return res;
+}
+
 static bool encode_config_record_body(
 		zcbor_state_t *state, const struct config_record_body_r *input)
 {
@@ -932,7 +980,8 @@ static bool encode_config_record_body(
 	: (((*input).config_record_body_choice == config_record_body_schedule_record_m_c) ? ((encode_schedule_record(state, (&(*input).config_record_body_schedule_record_m))))
 	: (((*input).config_record_body_choice == config_record_body_schedule_occurrence_record_m_c) ? ((encode_schedule_occurrence_record(state, (&(*input).config_record_body_schedule_occurrence_record_m))))
 	: (((*input).config_record_body_choice == config_record_body_safety_record_m_c) ? ((encode_safety_record(state, (&(*input).config_record_body_safety_record_m))))
-	: false)))))));
+	: (((*input).config_record_body_choice == config_record_body_parameter_record_m_c) ? ((encode_parameter_record(state, (&(*input).config_record_body_parameter_record_m))))
+	: false))))))));
 
 	log_result(state, res, __func__);
 	return res;

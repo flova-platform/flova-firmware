@@ -63,6 +63,10 @@ class FlovaEsp32Ble final {
   flova::Datastream<T> datastream(const char* key) {
     return client_.datastream<T>(key);
   }
+  template <typename T>
+  flova::Setting<T> setting(const char* key, const T& defaultValue) {
+    return client_.setting<T>(key, defaultValue);
+  }
 
  private:
   FlovaEsp32Entropy entropy_;
