@@ -122,6 +122,15 @@ class ArduinoFlovaLink : public FlovaClientLink {
       const FlovaLinkOtaOffer& input) override {
     return platform_.installOta(input);
   }
+  bool beginOtaInstall(const FlovaLinkOtaOffer& input) override {
+    return platform_.beginOtaInstall(input);
+  }
+  bool otaInstallInProgress() const override {
+    return platform_.otaInstallInProgress();
+  }
+  bool takeOtaInstallResult(flova::OtaInstallResult& output) override {
+    return platform_.takeOtaInstallResult(output);
+  }
 
   uint32_t otaMaxImageBytes() const override {
     return platform_.otaMaxImageBytes();
