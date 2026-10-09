@@ -28,6 +28,7 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
     // The worker finishes TLS using its own deadlines. Never destroy its
     // client or storage from another task.
     while (linkTask_ && !exited_.load()) delay(1);
+    while (otaTask_ && otaStatus_.load() == OtaTaskStatus::Running) delay(1);
   }
 
   bool connected() override {
@@ -218,9 +219,43 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
                             : flova::OtaInstallResult::FlashFailed;
   }
 
+  bool beginOtaInstall(const FlovaLinkOtaOffer& offer) override {
+    if (!linkClosed() || otaStatus_.load() != OtaTaskStatus::Idle) return false;
+    otaOffer_ = offer;
+    otaStatus_.store(OtaTaskStatus::Running);
+    if (xTaskCreate(runOtaTask, "flova-ota", kOtaTaskStackBytes, this,
+                    1, &otaTask_) != pdPASS) {
+      otaStatus_.store(OtaTaskStatus::Idle);
+      otaTask_ = nullptr;
+      return false;
+    }
+    return true;
+  }
+
+  bool otaInstallInProgress() const override {
+    return otaStatus_.load() == OtaTaskStatus::Running;
+  }
+
+  bool takeOtaInstallResult(flova::OtaInstallResult& output) override {
+    if (otaStatus_.load() != OtaTaskStatus::Complete) return false;
+    output = otaResult_;
+    otaStatus_.store(OtaTaskStatus::Idle);
+    return true;
+  }
+
  private:
   enum class LinkOpenStatus : uint8_t { Idle, Opening, Connected, Failed };
+  enum class OtaTaskStatus : uint8_t { Idle, Running, Complete };
   static const uint32_t kLinkTaskStackBytes = 8192;
+  static const uint32_t kOtaTaskStackBytes = 8192;
+
+  static void runOtaTask(void* context) {
+    FlovaEsp32Platform* self = static_cast<FlovaEsp32Platform*>(context);
+    self->otaResult_ = self->installOta(self->otaOffer_);
+    self->otaStatus_.store(OtaTaskStatus::Complete);
+    self->otaTask_ = nullptr;
+    vTaskDelete(nullptr);
+  }
 
   static void runLinkTask(void* context) {
     FlovaEsp32Platform* self = static_cast<FlovaEsp32Platform*>(context);
@@ -309,11 +344,15 @@ class FlovaEsp32Platform final : public FlovaArduinoPlatform {
   }
 
   TaskHandle_t linkTask_ = nullptr;
+  TaskHandle_t otaTask_ = nullptr;
   std::atomic<LinkOpenStatus> linkOpenStatus_{LinkOpenStatus::Idle};
   std::atomic<bool> linkCancel_{false};
   std::atomic<bool> stopping_{false};
   std::atomic<bool> exited_{false};
   std::atomic<uint32_t> generation_{0};
+  std::atomic<OtaTaskStatus> otaStatus_{OtaTaskStatus::Idle};
+  FlovaLinkOtaOffer otaOffer_ = {};
+  flova::OtaInstallResult otaResult_ = flova::OtaInstallResult::DownloadFailed;
   std::atomic<uint32_t> rxProduced_{0}, rxConsumed_{0};
   std::atomic<size_t> txLength_{0};
   uint8_t rx_[1024] = {};

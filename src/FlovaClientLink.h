@@ -44,6 +44,11 @@ class FlovaClientLink : public flova::Link {
   virtual bool publishOtaReport(const FlovaLinkOtaReport& report) = 0;
   virtual flova::OtaInstallResult installOta(
       const FlovaLinkOtaOffer& offer) = 0;
+  // Platforms with a worker can stage OTA without blocking the device loop.
+  // Returning false preserves the synchronous compatibility path.
+  virtual bool beginOtaInstall(const FlovaLinkOtaOffer&) { return false; }
+  virtual bool otaInstallInProgress() const { return false; }
+  virtual bool takeOtaInstallResult(flova::OtaInstallResult&) { return false; }
   virtual uint32_t otaMaxImageBytes() const { return 0; }
   virtual FlovaOtaStrategy otaStrategy() const {
     return FlovaOtaStrategy::None;

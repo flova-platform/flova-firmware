@@ -1,4 +1,4 @@
 #pragma once
 
-#define FLOVA_VERSION "0.3.10"
+#define FLOVA_VERSION "0.3.11"
 #define FLOVA_SDK_VERSION FLOVA_VERSION

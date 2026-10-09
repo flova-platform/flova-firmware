@@ -46,4 +46,7 @@ class FlovaArduinoPlatform : public FlovaLinkStream {
   virtual bool rollbackOtaBoot() { return false; }
   virtual flova::OtaInstallResult installOta(
       const FlovaLinkOtaOffer&) = 0;
+  virtual bool beginOtaInstall(const FlovaLinkOtaOffer&) { return false; }
+  virtual bool otaInstallInProgress() const { return false; }
+  virtual bool takeOtaInstallResult(flova::OtaInstallResult&) { return false; }
 };

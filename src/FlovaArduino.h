@@ -1613,10 +1613,28 @@ class FlovaClient {
 
   void finishOta() {
     if (!link_.maintenanceReady()) return;
-    otaDraining_ = false;
+    if (otaDraining_) {
+      otaDraining_ = false;
+      if (!link_.maintenanceFailed() && link_.beginOtaInstall(otaOfferWorkspace_)) {
+        otaInstallPending_ = true;
+        return;
+      }
+    }
+    if (otaInstallPending_) {
+      if (link_.otaInstallInProgress()) return;
+      flova::OtaInstallResult result = flova::OtaInstallResult::DownloadFailed;
+      if (!link_.takeOtaInstallResult(result)) return;
+      otaInstallPending_ = false;
+      finishOtaResult(result);
+      return;
+    }
     const flova::OtaInstallResult result = link_.maintenanceFailed()
         ? flova::OtaInstallResult::DownloadFailed
         : link_.installOta(otaOfferWorkspace_);
+    finishOtaResult(result);
+  }
+
+  void finishOtaResult(const flova::OtaInstallResult result) {
     link_.endMaintenance();
     if (result == flova::OtaInstallResult::Installed) {
       requestRestart(FlovaRestartReason::OtaActivation);
@@ -2011,6 +2029,7 @@ class FlovaClient {
   FlovaLinkOtaReport otaResult_ = {};
   FlovaLinkOtaOffer otaOfferWorkspace_ = {};
   bool otaResultPending_ = false;
+  bool otaInstallPending_ = false;
   bool otaEnabled_ = false;
   FlovaOtaPendingRecord otaPendingRecord_ = {};
   bool otaPendingRecordValid_ = false;
