@@ -34,7 +34,7 @@ complete example.
 For an existing ESP32 PlatformIO project, add:
 
 ```ini
-  lib_deps = flova-platform/FlovaSDK@^0.3.10
+  lib_deps = flova-platform/FlovaSDK@^0.3.11
 ```
 
 For ESP8266, use the packaged `extras/platformio/esp8266/platformio.ini`.
@@ -42,7 +42,7 @@ It provides the tested ESP8266 board and TLS profile for the SDK.
 
 ### Arduino IDE
 
-FlovaSDK 0.3.10 supports ESP32 and ESP8266 in Arduino IDE:
+FlovaSDK 0.3.11 supports ESP32 and ESP8266 in Arduino IDE:
 
 1. Open **Tools → Manage Libraries**.
 2. Search for **FlovaSDK**.

@@ -12,6 +12,7 @@ class FlovaPubSubClientAdapter {
  public:
   static const size_t kMaxPayload = 2048;
   static const size_t kMaxKeys = 8;
+  static const uint32_t kPresenceIntervalMs = 15000;
   typedef void (*MessageHandler)(void*, const char*, JsonObjectConst);
   typedef void (*SimpleMessageHandler)(const char*, JsonObjectConst);
 
@@ -121,6 +122,12 @@ class FlovaPubSubClientAdapter {
     client_->loop();
     processIncoming();
     flushOutbound();
+    const uint32_t now = millis();
+    if (connected() &&
+        static_cast<uint32_t>(now - lastPresenceMs_) >= kPresenceIntervalMs &&
+        publishPresence(true)) {
+      flushOutbound();
+    }
   }
 
   template <typename T>
@@ -235,11 +242,13 @@ class FlovaPubSubClientAdapter {
 
   static const char* offlinePresence() { return "{\"online\":false}"; }
 
-  void publishPresence(bool online) {
-    if (!makeTopic("up/presence")) return;
+  bool publishPresence(bool online) {
+    if (!makeTopic("up/presence")) return false;
     StaticJsonDocument<64> payload;
     payload["online"] = online;
-    publish(payload.as<JsonObjectConst>());
+    const bool queued = publish(payload.as<JsonObjectConst>());
+    if (queued && online) lastPresenceMs_ = millis();
+    return queued;
   }
 
   bool subscribeTopic(const char* path) {
@@ -387,6 +396,7 @@ class FlovaPubSubClientAdapter {
   bool configured_ = false;
   bool attempted_ = false;
   uint32_t lastAttempt_ = 0;
+  uint32_t lastPresenceMs_ = 0;
   MessageHandler handler_ = nullptr;
   SimpleMessageHandler simpleHandler_ = nullptr;
   void* context_ = nullptr;

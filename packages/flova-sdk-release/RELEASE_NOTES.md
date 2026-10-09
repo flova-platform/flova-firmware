@@ -1,3 +1,10 @@
+FlovaSDK 0.3.11 keeps MQTT device presence fresh from the shared SDK adapter.
+
+- Custom MQTT applications now publish a bounded `online:true` presence
+  heartbeat every 15 seconds while connected.
+- Telemetry reporting remains application-owned and compatible with existing
+  Flova Link and MQTT datastream helpers.
+
 FlovaSDK 0.3.10 adds transport-neutral datastream helpers for custom firmware.
 
 - `FLOVA_DATASTREAM`, `FLOVA_REPORT`, and `FLOVA_ON_WRITE` work with Flova Link
