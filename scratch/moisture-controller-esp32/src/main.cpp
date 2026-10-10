@@ -15,6 +15,8 @@ const char* const WIFI_PASSWORD = FLOVA_WIFI_PASSWORD;
 // GPIO32 is ADC1_CH4 on the classic ESP32 DevKit and remains usable while
 // Wi-Fi is active. Power the sensor from 3V3 so its analog output is safe.
 const uint8_t MOISTURE_PIN = 32;
+// The classic ESP32 DevKit's built-in LED is active-high on LED_BUILTIN.
+const uint8_t LED_PIN = LED_BUILTIN;
 const uint8_t SENSOR_SAMPLES = 8;
 const uint32_t SENSOR_INTERVAL_MS = 250;
 const uint32_t LOG_INTERVAL_MS = 1000;
@@ -31,6 +33,7 @@ auto dryThreshold = FLOVA_SETTING(client, float, "dry_threshold", 35.0f);
 auto dryCalibration = FLOVA_SETTING(client, int64_t, "dry_adc", 3000);
 auto wetCalibration = FLOVA_SETTING(client, int64_t, "wet_adc", 1200);
 auto moisture = FLOVA_DATASTREAM(client, double, "MOISTURE");
+auto led = FLOVA_DATASTREAM(client, bool, "led");
 
 uint16_t latestRaw = 0;
 float latestPercent = 0.0f;
@@ -71,6 +74,11 @@ float moisturePercent(uint16_t raw, int32_t dryAdc, int32_t wetAdc) {
   return constrain(percent, 0.0f, 100.0f);
 }
 
+flova::WriteResult writeLed(bool enabled) {
+  digitalWrite(LED_PIN, enabled ? HIGH : LOW);
+  return flova::WriteResult::accept();
+}
+
 void sampleMoisture() {
   const int32_t dryAdc = boundedCalibration(dryCalibration, 3000);
   const int32_t wetAdc = boundedCalibration(wetCalibration, 1200);
@@ -108,6 +116,14 @@ void setup() {
 
   analogReadResolution(12);
   analogSetPinAttenuation(MOISTURE_PIN, ADC_11db);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+
+  // The SDK publishes the accepted value after this handler returns. That
+  // state update keeps the PWA toggle synchronized after the command ack.
+  FLOVA_ON_WRITE(led, writeLed);
+  led.persist(flova::PersistencePolicy::Persistent);
+  led.offline(flova::OfflinePolicy::KeepLatest);
 
   mqttSocket.setCACert(FLOVA_TLS_ROOT_CERTS);
   mqttSocket.setTimeout(3000);
