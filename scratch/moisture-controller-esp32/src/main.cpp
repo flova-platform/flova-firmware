@@ -15,8 +15,9 @@ const char* const WIFI_PASSWORD = FLOVA_WIFI_PASSWORD;
 // GPIO32 is ADC1_CH4 on the classic ESP32 DevKit and remains usable while
 // Wi-Fi is active. Power the sensor from 3V3 so its analog output is safe.
 const uint8_t MOISTURE_PIN = 32;
-// The classic ESP32 DevKit's built-in LED is active-high on LED_BUILTIN.
-const uint8_t LED_PIN = LED_BUILTIN;
+// The classic ESP32 DevKit's built-in LED is active-high on GPIO2. The
+// PlatformIO esp32dev board definition does not provide LED_BUILTIN.
+const uint8_t LED_PIN = 2;
 const uint8_t SENSOR_SAMPLES = 8;
 const uint32_t SENSOR_INTERVAL_MS = 250;
 const uint32_t LOG_INTERVAL_MS = 1000;
