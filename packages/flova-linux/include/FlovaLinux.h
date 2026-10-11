@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include <FlovaDevice.h>
+#include <FlovaLinuxDevice.h>
 
 namespace flova_linux {
 

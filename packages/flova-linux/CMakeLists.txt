@@ -1,7 +1,8 @@
-add_library(flova-linux STATIC src/FlovaLinux.cpp)
+add_library(flova-linux STATIC src/FlovaLinux.cpp src/FlovaLinuxDevice.cpp)
 add_library(Flova::Linux ALIAS flova-linux)
 set_target_properties(flova-linux PROPERTIES EXPORT_NAME Linux)
-find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto SSL)
+find_package(Threads REQUIRED)
 target_compile_features(flova-linux PUBLIC cxx_std_11)
 target_include_directories(flova-linux
   PUBLIC
@@ -11,6 +12,11 @@ target_include_directories(flova-linux
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(flova-linux PUBLIC flova-core)
 target_link_libraries(flova-linux PRIVATE OpenSSL::Crypto)
+target_link_libraries(flova-linux PRIVATE OpenSSL::SSL)
+target_link_libraries(flova-linux PRIVATE Threads::Threads)
+target_include_directories(flova-linux PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/packages/flova-arduino/include)
 target_compile_options(flova-linux PRIVATE -Wall -Wextra -fno-exceptions -fno-rtti)
 
 include(GNUInstallDirs)
@@ -19,6 +25,8 @@ install(TARGETS flova-linux EXPORT FlovaLinuxTargets
 install(FILES
   include/FlovaLinux.h
   include/FlovaLinuxEthernet.h
+  include/FlovaLinuxDevice.h
+  include/FlovaLinuxDevice.inl
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/flova-linux)
 install(EXPORT FlovaLinuxTargets
   FILE FlovaLinuxTargets.cmake

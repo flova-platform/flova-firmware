@@ -45,7 +45,8 @@ remain an internal implementation detail of that package.
 `flova::` service interfaces and compose an explicit board class as shown in
 `examples/custom-board-basic`.
 
-Linux applications install `Flova::Linux` with CMake, inject the POSIX services
-from `FlovaLinux.h`, and provide their own `flova::Link`. Raspberry Pi service
-startup, restart, and executable activation remain application/supervisor
+Linux applications install `Flova::Linux` with CMake and include
+`FlovaLinux.h`. `FlovaLinux` owns the POSIX services and nonblocking WSS
+transport while applications retain their event loop and hardware ownership.
+Raspberry Pi service startup and executable activation remain supervisor
 responsibilities.

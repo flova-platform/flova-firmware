@@ -71,9 +71,9 @@ sudo cmake --install build
 ```
 
 Linux applications use `find_package(FlovaLinux CONFIG REQUIRED)` and link
-`Flova::Linux`. The package provides POSIX clock, durable file storage,
-logging, and supervisor-owned OTA staging. The application supplies its
-`flova::Link` transport and owns the systemd service.
+`Flova::Linux`. The package provides the ready `FlovaLinux` facade, POSIX WSS,
+durable file storage, logging, and supervisor-owned OTA staging. The
+application calls `run()` from its nonblocking loop.
 
 ## Quick start
 

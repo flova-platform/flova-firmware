@@ -8,7 +8,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 
 namespace {
 
@@ -57,8 +57,13 @@ bool copyFile(const char* source, const char* destination, uint32_t expected,
   }
   uint8_t buffer[4096];
   uint32_t total = 0;
-  SHA256_CTX digest;
-  SHA256_Init(&digest);
+  EVP_MD_CTX* digest = EVP_MD_CTX_new();
+  if (!digest || EVP_DigestInit_ex(digest, EVP_sha256(), nullptr) != 1) {
+    if (digest) EVP_MD_CTX_free(digest);
+    close(output);
+    close(input);
+    return false;
+  }
   bool ok = true;
   for (;;) {
     const ssize_t count = read(input, buffer, sizeof(buffer));
@@ -69,7 +74,10 @@ bool copyFile(const char* source, const char* destination, uint32_t expected,
       ok = false;
       break;
     }
-    SHA256_Update(&digest, buffer, static_cast<size_t>(count));
+    if (EVP_DigestUpdate(digest, buffer, static_cast<size_t>(count)) != 1) {
+      ok = false;
+      break;
+    }
     total += static_cast<uint32_t>(count);
   }
   if (expected && total != expected) ok = false;
@@ -78,12 +86,17 @@ bool copyFile(const char* source, const char* destination, uint32_t expected,
   close(output);
   close(input);
   if (ok && digestHex && digestCapacity >= 65) {
-    uint8_t digestBytes[SHA256_DIGEST_LENGTH] = {};
-    SHA256_Final(digestBytes, &digest);
+    uint8_t digestBytes[EVP_MAX_MD_SIZE] = {};
+    unsigned digestLength = 0;
+    if (EVP_DigestFinal_ex(digest, digestBytes, &digestLength) != 1 ||
+        digestLength != 32) {
+      ok = false;
+    }
     for (size_t i = 0; i < sizeof(digestBytes); ++i)
-      snprintf(digestHex + i * 2, 3, "%02x", digestBytes[i]);
-    digestHex[64] = 0;
+      if (i < digestLength) snprintf(digestHex + i * 2, 3, "%02x", digestBytes[i]);
+    if (digestLength == 32) digestHex[64] = 0;
   }
+  EVP_MD_CTX_free(digest);
   return ok;
 }
 
@@ -228,19 +241,50 @@ OtaStageResult OtaUpdater::stage(const char* sourcePath, const char* version,
 bool OtaUpdater::activate(const char* version) {
   char staged[sizeof(root_) + 128] = {};
   if (!pathFor("staged", version, staged, sizeof(staged))) return false;
+  char previous[sizeof(root_) + 128] = {};
+  if (snprintf(previous, sizeof(previous), "%s/previous", root_) >=
+      static_cast<int>(sizeof(previous)))
+    return false;
+  unlink(previous);
+  if (access(activeLink_, F_OK) == 0 && rename(activeLink_, previous) != 0)
+    return false;
   return rename(staged, activeLink_) == 0;
 }
 
 bool OtaUpdater::confirm(const char* version) {
-  char active[sizeof(root_) + 128] = {};
-  if (!pathFor("active", version, active, sizeof(active))) return false;
-  return rename(activeLink_, active) == 0;
+  if (!safeComponent(version) || access(activeLink_, F_OK) != 0) return false;
+  char confirmed[sizeof(root_) + 128] = {};
+  char pending[sizeof(confirmed) + 8] = {};
+  if (snprintf(confirmed, sizeof(confirmed), "%s/confirmed", root_) >=
+          static_cast<int>(sizeof(confirmed)) ||
+      snprintf(pending, sizeof(pending), "%s.tmp", confirmed) >=
+          static_cast<int>(sizeof(pending)))
+    return false;
+  int fd = open(pending, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0640);
+  if (fd < 0) return false;
+  const size_t length = strlen(version);
+  const bool ok = write(fd, version, length) == static_cast<ssize_t>(length) &&
+                  fsync(fd) == 0;
+  close(fd);
+  if (!ok || rename(pending, confirmed) != 0) {
+    unlink(pending);
+    return false;
+  }
+  return true;
 }
 
 bool OtaUpdater::rollback() {
   char previous[sizeof(root_) + 128] = {};
   if (snprintf(previous, sizeof(previous), "%s/previous", root_) >=
       static_cast<int>(sizeof(previous)))
+    return false;
+  if (access(previous, F_OK) != 0) return false;
+  char failed[sizeof(root_) + 128] = {};
+  if (snprintf(failed, sizeof(failed), "%s/failed", root_) >=
+      static_cast<int>(sizeof(failed)))
+    return false;
+  unlink(failed);
+  if (access(activeLink_, F_OK) == 0 && rename(activeLink_, failed) != 0)
     return false;
   return rename(previous, activeLink_) == 0;
 }

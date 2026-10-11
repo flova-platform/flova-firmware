@@ -101,6 +101,8 @@ struct FlovaStatusEvent {
 
 typedef void (*FlovaStatusListener)(void* context,
                                     const FlovaStatusEvent& event);
+typedef void (*FlovaConfigurationReportHandler)(
+    void* context, const FlovaLinkConfigurationReport& report);
 
 // Internal Arduino orchestration. Board packages expose the public API.
 class FlovaClient {
@@ -139,7 +141,7 @@ class FlovaClient {
     flovaPrintStartup();
     managedProvisioning_ = allowProvisioning;
     pending_.lastError[0] = 0;
-    if (!storage_.begin()) {
+    if (!beginStorage()) {
       setLastError("storage_begin_failed");
       FLOVA_LOG_ERROR(logger_, "[flova] lifecycle failed reason=storage_begin_failed");
       lifecycle_ = FlovaLifecycle::Failed;
@@ -228,6 +230,36 @@ class FlovaClient {
   void run() {
     runLifecycle();
     dispatchStatusChanges();
+  }
+
+  bool beginExternalConfiguration() {
+    if (!beginStorage() || !ensureConfigurationMemory()) return false;
+    externalConfigurationMode_ = true;
+    return true;
+  }
+
+  bool queueExternalConfiguration(
+      const FlovaLinkConfigurationRecord& record) {
+    if (!externalConfigurationMode_ || externalConfigurationPending_) return false;
+    externalConfigurationRecord_ = record;
+    externalConfigurationPending_ = true;
+    return true;
+  }
+
+  void runExternalConfiguration() {
+    if (!externalConfigurationMode_) return;
+    if (!configurationMemory_ && !ensureConfigurationMemory()) return;
+    if (configurationWork_.mode != ConfigurationWorkMode::None) {
+      stepConfigurationWork();
+      return;
+    }
+    if (externalConfigurationPending_) drainConfiguration(false);
+  }
+
+  void setExternalConfigurationReportHandler(
+      FlovaConfigurationReportHandler handler, void* context = nullptr) {
+    externalConfigurationReportHandler_ = handler;
+    externalConfigurationReportContext_ = context;
   }
 
  private:
@@ -837,11 +869,19 @@ class FlovaClient {
   }
 
   void drainConfiguration(bool bootstrapping) {
-    if (!link_.configurationRecordPending()) return;
+    if (!externalConfigurationPending_ && !link_.configurationRecordPending()) return;
     if (!ensureConfigurationMemory()) return;
     if (configurationWork_.mode != ConfigurationWorkMode::None) return;
     configurationMemory_->record = FlovaLinkConfigurationRecord();
-    if (!link_.takeConfigurationRecord(configurationMemory_->record)) {
+    bool received = false;
+    if (externalConfigurationPending_) {
+      configurationMemory_->record = externalConfigurationRecord_;
+      externalConfigurationPending_ = false;
+      received = true;
+    } else {
+      received = link_.takeConfigurationRecord(configurationMemory_->record);
+    }
+    if (!received) {
       if (!configurationTransferActive_) releaseConfigurationMemory();
       return;
     }
@@ -1385,11 +1425,18 @@ class FlovaClient {
                       static_cast<unsigned long>(configurationReportWorkspace_.sequence),
                       static_cast<unsigned>(status));
     }
-    if (!bootstrapping && phase == FlovaLinkConfigurationPhase::End &&
+    if (!externalConfigurationMode_ && !bootstrapping && phase == FlovaLinkConfigurationPhase::End &&
         configurationReportWorkspace_.status == FlovaLinkResultStatus::Ok) {
       configurationActivation_.begin(millis());
     } else {
-      link_.publishConfigurationReport(configurationReportWorkspace_);
+      if (externalConfigurationMode_ &&
+          (phase == FlovaLinkConfigurationPhase::End ||
+           configurationReportWorkspace_.status == FlovaLinkResultStatus::Error) &&
+          externalConfigurationReportHandler_)
+        externalConfigurationReportHandler_(externalConfigurationReportContext_,
+                                            configurationReportWorkspace_);
+      else
+        link_.publishConfigurationReport(configurationReportWorkspace_);
     }
     if (phase == FlovaLinkConfigurationPhase::End) configurationTransferActive_ = false;
     if (phase == FlovaLinkConfigurationPhase::End &&
@@ -1990,12 +2037,19 @@ class FlovaClient {
     lifecycle_ = FlovaLifecycle::Failed;
     return false;
   }
+
+  bool beginStorage() { return storage_.begin(); }
   void releaseConfigurationMemory() {
     configurationMemory_.reset();
     configurationTransferActive_ = false;
   }
   FlovaPhaseStorage<ConfigurationMemory> configurationMemory_;
   bool configurationTransferActive_ = false;
+  bool externalConfigurationMode_ = false;
+  bool externalConfigurationPending_ = false;
+  FlovaLinkConfigurationRecord externalConfigurationRecord_ = {};
+  FlovaConfigurationReportHandler externalConfigurationReportHandler_ = nullptr;
+  void* externalConfigurationReportContext_ = nullptr;
 
   ProvisioningConfig provisioningConfig_;
   FlovaClientLink& link_;

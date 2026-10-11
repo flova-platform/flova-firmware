@@ -26,13 +26,20 @@ const uint8_t DRY_INDICATOR_PIN = LED_BUILTIN;
 const uint16_t SCREEN_WIDTH = 240;
 const uint16_t SCREEN_HEIGHT = 240;
 const uint8_t SENSOR_SAMPLES = 8;
+const uint8_t CHART_POINTS = 24;
+const int16_t CHART_LEFT = 20;
+const int16_t CHART_TOP = 132;
+const int16_t CHART_WIDTH = 210;
+const int16_t CHART_HEIGHT = 70;
 const uint32_t SENSOR_INTERVAL_MS = 250;
+const uint32_t CHART_SAMPLE_INTERVAL_MS = 1000;
 const uint32_t DISPLAY_INTERVAL_MS = 500;
 const uint32_t REPORT_INTERVAL_MS = 10000;
 const uint32_t MIN_REPORT_INTERVAL_MS = 1000;
 const uint32_t MAX_REPORT_INTERVAL_MS = 60000;
-const uint32_t MQTT_TLS_TIMEOUT_MS = 750;
+const uint32_t MQTT_TLS_TIMEOUT_MS = 150;
 const uint16_t MQTT_PACKET_TIMEOUT_SECONDS = 1;
+const uint32_t MQTT_RECONNECT_INTERVAL_MS = 15000;
 const uint32_t NTP_VALID_EPOCH = 1700000000;
 
 Adafruit_ST7789 display(TFT_CS, TFT_DC, TFT_RST);
@@ -62,8 +69,14 @@ uint16_t minimumRaw = 1023;
 uint16_t maximumRaw = 0;
 bool hasMoistureReading = false;
 uint32_t lastSensorMs = 0;
+uint32_t lastChartSampleMs = 0;
 uint32_t lastDisplayMs = 0;
 uint32_t lastReportMs = 0;
+uint32_t lastNetworkAttemptMs = 0;
+uint8_t moistureHistory[CHART_POINTS] = {};
+uint8_t moistureHistoryHead = 0;
+uint8_t moistureHistoryCount = 0;
+bool chartDirty = true;
 
 int32_t boundedCalibration(const flova::Setting<int64_t>& setting,
                            int32_t fallback) {
@@ -124,6 +137,15 @@ void sampleMoisture() {
   updateIndicator(latest.dry);
 }
 
+void recordMoistureHistory() {
+  moistureHistory[moistureHistoryHead] = static_cast<uint8_t>(
+      constrain(latest.percent + 0.5f, 0.0f, 100.0f));
+  moistureHistoryHead =
+      static_cast<uint8_t>((moistureHistoryHead + 1) % CHART_POINTS);
+  if (moistureHistoryCount < CHART_POINTS) ++moistureHistoryCount;
+  chartDirty = true;
+}
+
 uint16_t connectionColor() {
   if (client.connected()) return ST77XX_GREEN;
   const wl_status_t status = WiFi.status();
@@ -134,6 +156,59 @@ uint16_t connectionColor() {
 
 void drawStaticDisplay() {
   display.fillScreen(ST77XX_BLACK);
+}
+
+void drawMoistureChart() {
+  const uint16_t gridColor = 0x4208;
+  const uint16_t areaColor = 0x0320;
+  const int16_t chartBottom = CHART_TOP + CHART_HEIGHT - 1;
+
+  display.fillRect(CHART_LEFT, CHART_TOP, CHART_WIDTH, CHART_HEIGHT,
+                   ST77XX_BLACK);
+  display.setTextSize(1);
+  display.setTextColor(ST77XX_WHITE);
+  display.setCursor(1, CHART_TOP - 1);
+  display.print(F("100"));
+  display.setCursor(8, chartBottom - 7);
+  display.print(F("0"));
+
+  for (uint8_t step = 0; step <= 4; ++step) {
+    const int16_t y = chartBottom -
+                      static_cast<int16_t>((CHART_HEIGHT - 1) * step / 4);
+    display.drawFastHLine(CHART_LEFT, y, CHART_WIDTH, gridColor);
+  }
+  display.drawRect(CHART_LEFT, CHART_TOP, CHART_WIDTH, CHART_HEIGHT,
+                   gridColor);
+
+  if (moistureHistoryCount == 0) return;
+
+  const uint8_t first = moistureHistoryCount == CHART_POINTS
+                            ? moistureHistoryHead
+                            : 0;
+  int16_t previousX = CHART_LEFT;
+  int16_t previousY = chartBottom;
+  for (uint8_t index = 0; index < moistureHistoryCount; ++index) {
+    const uint8_t historyIndex =
+        static_cast<uint8_t>((first + index) % CHART_POINTS);
+    const int16_t x = moistureHistoryCount == 1
+                          ? CHART_LEFT + CHART_WIDTH / 2
+                          : CHART_LEFT + static_cast<int16_t>(
+                                            (CHART_WIDTH - 1) * index /
+                                            (moistureHistoryCount - 1));
+    const int16_t y = chartBottom - static_cast<int16_t>(
+                                      (CHART_HEIGHT - 1) *
+                                      moistureHistory[historyIndex] / 100);
+    if (index > 0) {
+      display.fillTriangle(previousX, previousY, x, y, x, chartBottom,
+                           areaColor);
+      display.fillTriangle(previousX, previousY, previousX, chartBottom, x,
+                           chartBottom, areaColor);
+      display.drawLine(previousX, previousY, x, y, ST77XX_GREEN);
+    }
+    display.fillCircle(x, y, 1, ST77XX_GREEN);
+    previousX = x;
+    previousY = y;
+  }
 }
 
 void drawDisplay() {
@@ -169,6 +244,11 @@ void drawDisplay() {
     lastMaximumRaw = maximumRaw;
   }
 
+  if (!rendered || chartDirty) {
+    drawMoistureChart();
+    chartDirty = false;
+  }
+
   static uint16_t lastConnectionColor = 0;
   const uint16_t currentConnectionColor = connectionColor();
   if (currentConnectionColor != lastConnectionColor) {
@@ -181,6 +261,25 @@ void drawDisplay() {
 
 bool networkReady() {
   return WiFi.status() == WL_CONNECTED && time(nullptr) > NTP_VALID_EPOCH;
+}
+
+void serviceNetwork(uint32_t now) {
+  if (!networkReady()) {
+    if (client.connected()) client.run(false);
+    return;
+  }
+
+  if (client.connected()) {
+    client.run(true);
+    return;
+  }
+
+  // PubSubClient uses a synchronous BearSSL handshake on ESP8266. Keep that
+  // expensive path out of every loop iteration and bound failed handshakes so
+  // local sensing and display refresh remain the primary loop workload.
+  if (now - lastNetworkAttemptMs < MQTT_RECONNECT_INTERVAL_MS) return;
+  lastNetworkAttemptMs = now;
+  client.run(true);
 }
 
 void reportMoisture(uint32_t now) {
@@ -227,6 +326,8 @@ void setup() {
   display.invertDisplay(true);
   drawStaticDisplay();
   sampleMoisture();
+  recordMoistureHistory();
+  lastChartSampleMs = millis();
   drawDisplay();
   Serial.println(F("[display] initialized"));
 }
@@ -240,14 +341,19 @@ void loop() {
     sampleMoisture();
   }
 
+  if (now - lastChartSampleMs >= CHART_SAMPLE_INTERVAL_MS) {
+    lastChartSampleMs = now;
+    recordMoistureHistory();
+  }
+
   if (now - lastDisplayMs >= DISPLAY_INTERVAL_MS) {
     lastDisplayMs = now;
     drawDisplay();
   }
 
-  // The MQTT adapter owns reconnect backoff. Keeping it gated until Wi-Fi and
-  // NTP are ready avoids a blocking TLS attempt during ESP8266 boot/reset.
-  client.run(networkReady());
+  // Keep network maintenance after local work. Failed reconnects are sparse
+  // and bounded; connected MQTT service remains a short per-loop poll.
+  serviceNetwork(now);
   reportMoisture(now);
   yield();
   delay(10);

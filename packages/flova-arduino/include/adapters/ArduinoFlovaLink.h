@@ -78,6 +78,23 @@ class ArduinoFlovaLink : public FlovaClientLink {
     return true;
   }
 
+  bool queueConfigurationRecord(const FlovaLinkConfigurationRecord& input) {
+    if (!pendingRecords_.create() ||
+        configurationPendingCount_ >= kConfigurationPendingSlots)
+      return false;
+    pendingRecords_->configuration_[configurationPendingTail_] = input;
+    configurationPendingTail_ = static_cast<uint8_t>(
+        (configurationPendingTail_ + 1) % kConfigurationPendingSlots);
+    ++configurationPendingCount_;
+    return true;
+  }
+
+  bool decodeConfigurationPayload(const char* phase, const uint8_t* payload,
+                                  size_t length,
+                                  FlovaLinkConfigurationRecord& output) {
+    return transport_.decodeConfigurationPayload(phase, payload, length, output);
+  }
+
   bool publishConfigurationReport(
       const FlovaLinkConfigurationReport& report) override {
     return transport_.publishConfigurationReport(report);

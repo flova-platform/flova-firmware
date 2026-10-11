@@ -1,40 +1,31 @@
 #include <FlovaLinux.h>
 
-#include <FlovaCustomCode.h>
+#include <unistd.h>
 
-// Linux applications provide the Link implementation for their transport or
-// gateway. The POSIX services below are ready to inject into flova::Device.
-class LinuxLink final : public flova::Link {
- public:
-  bool begin() override { return true; }
-  bool connected() const override { return true; }
-  bool send(const flova::Message&) override { return true; }
-  void poll() override {}
-  void setReceiver(flova::MessageReceiver receiver, void* context) override {
-    receiver_ = receiver;
-    context_ = context;
-  }
-  uint32_t messageNonce() const override { return 1; }
-  bool bindDatastreams(const char* const*, size_t count,
-                      DatastreamId* ids) override {
-    if (count > 1 || (count && !ids)) return false;
-    if (count) ids[0] = 1;
-    return true;
-  }
+namespace {
 
- private:
-  flova::MessageReceiver receiver_ = nullptr;
-  void* context_ = nullptr;
-};
+void applyRelay(bool enabled) {
+  // Replace this with the application's GPIO, serial, or process adapter.
+  fprintf(stdout, "relay=%s\n", enabled ? "on" : "off");
+}
+
+}  // namespace
 
 int main() {
-  LinuxLink link;
-  flova_linux::FileStorage storage("/var/lib/flova/device");
-  flova_linux::Clock clock;
-  flova_linux::Logger logger;
-  flova::Device device(link, storage, clock, logger);
+  FlovaLinux device;
   auto relay = FLOVA_DATASTREAM(device, bool, "relay");
-  if (!device.begin()) return 1;
-  relay.write(true);
-  for (;;) device.run();
+  FLOVA_ON_WRITE(relay, applyRelay);
+
+  if (!device.begin()) {
+    fprintf(stderr, "Flova startup failed: %s\n", device.lastError());
+    return 1;
+  }
+
+  while (device.running()) {
+    device.run();
+    // The SDK performs bounded, nonblocking work. Applications may replace
+    // this short yield with their own poll/epoll event loop.
+    usleep(1000);
+  }
+  return 0;
 }
