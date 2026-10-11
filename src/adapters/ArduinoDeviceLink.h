@@ -108,6 +108,84 @@ class ArduinoDeviceLink final {
     return readConfigurationUnit(output, value.config_record_record_body);
   }
 
+  // MQTT configuration uses the same bounded CBOR payloads as Flova Link,
+  // wrapped in a small JSON envelope. Decode them through this existing codec
+  // so MQTT cannot create a second configuration representation.
+  bool decodeConfigurationPayload(const char* phase, const uint8_t* payload,
+                                  size_t length,
+                                  FlovaLinkConfigurationRecord& output) {
+    if (!phase || !payload || length > kPayloadBytes || !ensureWorkspace())
+      return false;
+    output = FlovaLinkConfigurationRecord();
+    struct config_begin begin = {};
+    struct config_end end = {};
+    memset(&workspace_->configurationDecodeWorkspace_, 0,
+           sizeof(workspace_->configurationDecodeWorkspace_));
+    struct config_record& record = workspace_->configurationDecodeWorkspace_;
+
+    if (!strcmp(phase, "begin")) {
+      if (flova::link::decodeCanonical(payload, length, begin,
+                                       cbor_decode_config_begin,
+                                       cbor_encode_config_begin,
+                                       workspace_->tx_, kPayloadBytes) !=
+          flova::link::CborResult::Complete)
+        return false;
+      output.phase = FlovaLinkConfigurationPhase::Begin;
+      output.generation = static_cast<uint32_t>(begin.config_begin_config_generation);
+      output.recordCount = static_cast<uint32_t>(begin.config_begin_config_record_count);
+      output.schemaVersion = 1;
+      output.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+      copyBytes(output.checksum, begin.config_begin_config_checksum);
+      return true;
+    }
+    if (!strcmp(phase, "record")) {
+      size_t encodedLength = 0;
+      if (flova::link::decodeCanonical(payload, length, record,
+                                       cbor_decode_config_record,
+                                       cbor_encode_config_record,
+                                       workspace_->tx_, kPayloadBytes) !=
+              flova::link::CborResult::Complete ||
+          cbor_encode_config_record(output.record, FLOVA_LINK_RECORD_BYTES,
+                                    &record, &encodedLength) != 0 ||
+          encodedLength > FLOVA_LINK_RECORD_BYTES)
+        return false;
+      output.phase = FlovaLinkConfigurationPhase::Record;
+      output.generation = static_cast<uint32_t>(record.config_record_record_generation);
+      output.sequence = static_cast<uint32_t>(record.config_record_record_sequence);
+      switch (record.config_record_record_body.config_record_body_choice) {
+        case config_record_body_r::config_record_body_datastream_record_m_c:
+          output.recordType = 0; break;
+        case config_record_body_r::config_record_body_system_record_m_c:
+          output.recordType = 1; break;
+        case config_record_body_r::config_record_body_schedule_record_m_c:
+          output.recordType = 2; break;
+        case config_record_body_r::config_record_body_safety_record_m_c:
+          output.recordType = 3; break;
+        case config_record_body_r::config_record_body_schedule_occurrence_record_m_c:
+          output.recordType = 4; break;
+        case config_record_body_r::config_record_body_parameter_record_m_c:
+          output.recordType = 5; break;
+        default: return false;
+      }
+      output.recordLength = static_cast<uint16_t>(encodedLength);
+      return true;
+    }
+    if (strcmp(phase, "end")) return false;
+    if (flova::link::decodeCanonical(payload, length, end,
+                                     cbor_decode_config_end,
+                                     cbor_encode_config_end,
+                                     workspace_->tx_, kPayloadBytes) !=
+        flova::link::CborResult::Complete)
+      return false;
+    output.phase = FlovaLinkConfigurationPhase::End;
+    output.generation = static_cast<uint32_t>(end.config_end_end_generation);
+    output.recordCount = static_cast<uint32_t>(end.config_end_end_record_count);
+    output.schemaVersion = 1;
+    output.maximumRecordBytes = flova::config::kMaximumRecordBytes;
+    copyBytes(output.checksum, end.config_end_end_checksum);
+    return true;
+  }
+
   bool begin() {
     return parseUrl();
   }

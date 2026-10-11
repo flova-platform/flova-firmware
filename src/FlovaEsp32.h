@@ -43,12 +43,18 @@ class FlovaEsp32 final {
 
   bool begin() { return !mqttSelected_ && client_.begin(false); }
   bool begin(const char* deviceId, const char* secret) {
-    return mqttTransport_ && mqttTransport_->begin(deviceId, secret);
+    if (!mqttTransport_ || !mqttTransport_->begin(deviceId, secret) ||
+        !client_.beginExternalConfiguration())
+      return false;
+    client_.setExternalConfigurationReportHandler(mqttConfigurationReport, this);
+    mqttTransport_->onConfiguration(mqttConfiguration, this);
+    return true;
   }
   void run() { run(true); }
   void run(bool networkReady) {
     if (mqttSelected_) {
       if (mqttTransport_) mqttTransport_->run(networkReady);
+      client_.runExternalConfiguration();
       return;
     }
     client_.run();
@@ -230,6 +236,49 @@ class FlovaEsp32 final {
   }
 
  private:
+  static uint8_t hexNibble(char value) {
+    if (value >= '0' && value <= '9') return static_cast<uint8_t>(value - '0');
+    if (value >= 'a' && value <= 'f') return static_cast<uint8_t>(value - 'a' + 10);
+    if (value >= 'A' && value <= 'F') return static_cast<uint8_t>(value - 'A' + 10);
+    return 0xff;
+  }
+
+  static void mqttConfiguration(void* context, const char* phase,
+                                const char* encoded, size_t length) {
+    FlovaEsp32& self = *static_cast<FlovaEsp32*>(context);
+    if (!phase || !encoded || length == 0 || (length & 1) != 0 ||
+        length / 2 > sizeof(self.mqttConfigurationPayload_)) return;
+    for (size_t i = 0; i < length; i += 2) {
+      const uint8_t high = hexNibble(encoded[i]);
+      const uint8_t low = hexNibble(encoded[i + 1]);
+      if (high == 0xff || low == 0xff) return;
+      self.mqttConfigurationPayload_[i / 2] = static_cast<uint8_t>((high << 4) | low);
+    }
+    FlovaLinkConfigurationRecord record = {};
+    if (self.defaultLink_.decodeConfigurationPayload(
+            phase, self.mqttConfigurationPayload_, length / 2, record))
+      self.client_.queueExternalConfiguration(record);
+  }
+
+  static void mqttConfigurationReport(
+      void* context, const FlovaLinkConfigurationReport& report) {
+    FlovaEsp32& self = *static_cast<FlovaEsp32*>(context);
+    if (!self.mqttTransport_) return;
+    StaticJsonDocument<256> payload;
+    char checksum[65] = {};
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(report.checksum); ++i) {
+      checksum[i * 2] = digits[report.checksum[i] >> 4];
+      checksum[i * 2 + 1] = digits[report.checksum[i] & 0x0f];
+    }
+    payload["generation"] = report.generation;
+    payload["sequence"] = report.sequence;
+    payload["status"] = report.status == FlovaLinkResultStatus::Error ? 2 : 0;
+    payload["checksum"] = checksum;
+    payload["reason"] = report.errorCode[0] ? report.errorCode : "ok";
+    self.mqttTransport_->acknowledgeConfig(payload.as<JsonObjectConst>());
+  }
+
   FlovaEsp32Entropy entropy_;
   FlovaEsp32Platform linkPlatform_;
   ArduinoFlovaLink defaultLink_;
@@ -248,5 +297,6 @@ class FlovaEsp32 final {
   WebServer* provisioningServer_ = nullptr;
   flova::ProvisioningHandoff provisioningInput_;
   char response_[192] = {};
+  uint8_t mqttConfigurationPayload_[flova::link::kMaximumPayloadBytes] = {};
   bool routesAttached_ = false;
 };

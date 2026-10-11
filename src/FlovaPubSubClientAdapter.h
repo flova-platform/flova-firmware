@@ -15,6 +15,7 @@ class FlovaPubSubClientAdapter {
   static const uint32_t kPresenceIntervalMs = 15000;
   typedef void (*MessageHandler)(void*, const char*, JsonObjectConst);
   typedef void (*SimpleMessageHandler)(const char*, JsonObjectConst);
+  typedef void (*ConfigurationHandler)(void*, const char*, const char*, size_t);
 
   explicit FlovaPubSubClientAdapter(PubSubClient* client = nullptr)
       : client_(client) {}
@@ -59,6 +60,11 @@ class FlovaPubSubClientAdapter {
     simpleHandler_ = handler;
     handler_ = nullptr;
     context_ = nullptr;
+  }
+
+  void onConfiguration(ConfigurationHandler handler, void* context = nullptr) {
+    configurationHandler_ = handler;
+    configurationContext_ = context;
   }
 
   bool subscribe(const char* key) {
@@ -194,6 +200,14 @@ class FlovaPubSubClientAdapter {
     frameKind_ = FrameKind::None;
     frameLength_ = 0;
     if (invalid) return;
+    if (!strcmp(incomingPath_, "config")) {
+      if (configurationHandler_)
+        configurationHandler_(configurationContext_,
+                             document_["phase"] | "",
+                             document_["payload"] | "",
+                             strlen(document_["payload"] | ""));
+      return;
+    }
     if (dispatchDatastream()) return;
     if (handler_)
       handler_(context_, incomingPath_, document_.as<JsonObjectConst>());
@@ -400,4 +414,6 @@ class FlovaPubSubClientAdapter {
   MessageHandler handler_ = nullptr;
   SimpleMessageHandler simpleHandler_ = nullptr;
   void* context_ = nullptr;
+  ConfigurationHandler configurationHandler_ = nullptr;
+  void* configurationContext_ = nullptr;
 };
