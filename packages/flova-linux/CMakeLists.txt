@@ -15,6 +15,7 @@ target_link_libraries(flova-linux PRIVATE OpenSSL::Crypto)
 target_link_libraries(flova-linux PRIVATE OpenSSL::SSL)
 target_link_libraries(flova-linux PRIVATE Threads::Threads)
 target_include_directories(flova-linux PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/packages/flova-arduino/include)
 target_compile_options(flova-linux PRIVATE -Wall -Wextra -fno-exceptions -fno-rtti)

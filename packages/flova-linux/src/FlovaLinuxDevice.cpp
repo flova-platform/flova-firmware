@@ -1,6 +1,6 @@
 #include <FlovaLinux.h>
 
-#include <Arduino.h>
+#include <FlovaLinuxArduinoCompat.h>
 
 #include <FlovaArduinoPlatform.h>
 #include <FlovaWs.h>
