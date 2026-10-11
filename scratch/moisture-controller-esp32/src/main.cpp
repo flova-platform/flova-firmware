@@ -30,7 +30,7 @@ WiFiClientSecure mqttSocket;
 PubSubClient mqtt(mqttSocket);
 FlovaEsp32 client(mqtt);
 
-auto dryThreshold = FLOVA_SETTING(client, float, "dry_threshold", 35.0f);
+auto dryThreshold = FLOVA_SETTING(client, double, "dry_threshold", 35.0);
 auto dryCalibration = FLOVA_SETTING(client, int64_t, "dry_adc", 3000);
 auto wetCalibration = FLOVA_SETTING(client, int64_t, "wet_adc", 1200);
 auto moisture = FLOVA_DATASTREAM(client, double, "MOISTURE");
