@@ -1,3 +1,13 @@
+FlovaSDK 0.3.12 delivers bounded MQTT configuration transfer and keeps the
+desktop Linux compatibility surface isolated from embedded Arduino builds.
+
+- MQTT configuration frames use the existing bounded Flova Link codec and
+  report accepted or rejected configuration phases through the MQTT adapter.
+- ESP32 builds retain the external MQTT configuration path without increasing
+  the reviewed ESP8266 image ceiling.
+- PlatformIO and host CMake builds no longer confuse Linux compatibility APIs
+  with the board Arduino framework.
+
 FlovaSDK 0.3.11 keeps MQTT device presence fresh from the shared SDK adapter.
 
 - Custom MQTT applications now publish a bounded `online:true` presence
